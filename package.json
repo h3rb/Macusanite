@@ -1,0 +1,32 @@
+{
+  "name": "macusanite",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Macusanite — a vault viewer for markdown chambers, veins and concept graphs.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test",
+    "cli": "node cli/macusanite.mjs",
+    "docs": "node scripts/make-docs.mjs",
+    "docs:check": "node scripts/make-docs.mjs --check",
+    "mcp": "node cli/macusanite.mjs mcp serve",
+    "harness": "vite --port 1421 --strictPort",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "vault:sample": "node scripts/make-reference-vault.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "setup": "bash scripts/setup-toolchain.sh"
+  },
+  "dependencies": {
+    "marked": "^18.1.0",
+    "mermaid": "^12.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.2",
+    "vite": "^8.3.4"
+  }
+}

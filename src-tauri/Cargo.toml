@@ -1,0 +1,37 @@
+[package]
+name = "macusanite"
+version = "0.1.0"
+description = "Macusanite — a vault viewer for markdown chambers, veins and concept graphs"
+authors = ["Macusanite"]
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"
+default-run = "macusanite"
+
+[lib]
+name = "macusanite_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Cross-platform filesystem notifications: the vault stays live when something
+# outside the viewer adds, edits or removes a vein.
+notify = "8"
+
+[features]
+# Enabled by `tauri build`; keeps the release binary free of a console window.
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

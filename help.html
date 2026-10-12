@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Macusanite Help</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="help-window">
+    <!--
+      The help window is its own page (and its own OS window on the desktop), so
+      reading the manual never costs you the vein you had open. It renders the
+      generated document from src/lib/helpDoc.js — the same text `macusanite docs`
+      prints and the MCP server serves — and it needs no vault access at all.
+    -->
+    <div id="help-root" class="help-root" data-booting="true"></div>
+    <noscript>This manual is rendered by JavaScript. Run <code>macusanite docs</code> for the same text.</noscript>
+    <script type="module" src="/src/help.js"></script>
+  </body>
+</html>

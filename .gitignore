@@ -1,0 +1,15 @@
+# Local tool state, not part of the project: this checkout's workspace id.
+.freebuff/
+
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+logs/
+*.log
+.DS_Store
+reference-vault/.macusanite/logs/
+reference-vault/.macusanite/state.json
+reference-vault/.macusanite/history.json
+# The index cache is derived from the veins: it is rebuilt on the next open.
+reference-vault/.macusanite/index.json

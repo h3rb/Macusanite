@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Macusanite</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app" data-booting="true">
+      <!-- ── top bar: burger menu, vault identity, wiki breadcrumbs ───────── -->
+      <header class="topbar" id="topbar">
+        <button
+          id="menu-btn"
+          class="icon-btn burger"
+          type="button"
+          title="Menu"
+          aria-haspopup="menu"
+          aria-expanded="false"
+        >☰</button>
+        <div id="menu" class="menu-popover hidden" role="menu" aria-label="Main menu"></div>
+
+        <div class="vault-identity" title="Loaded vault">
+          <span class="vault-badge" aria-hidden="true">◈</span>
+          <span id="vault-name" class="vault-name">No vault loaded</span>
+          <span id="vault-desc" class="vault-desc"></span>
+        </div>
+
+        <nav id="wiki-crumbs" class="wiki-crumbs" aria-label="Wiki breadcrumbs"></nav>
+
+        <div class="topbar-right">
+          <button id="jump-btn" class="icon-btn" type="button" title="Quick jump (Ctrl+K)">⌕</button>
+          <button id="graph-btn" class="icon-btn" type="button" title="Show or hide the concept graph">◫</button>
+          <!-- The manual is its own window: reading it keeps your vein open. -->
+          <button id="help-btn" class="icon-btn" type="button" title="Help and manual — every feature, the CLI, the API (F1)">?</button>
+          <button id="settings-btn" class="icon-btn" type="button" title="Settings">⚙</button>
+        </div>
+      </header>
+
+      <!-- ── second bar: back/forward, file location, recent trail, undo/redo ── -->
+      <div class="navbar" id="navbar">
+        <div class="nav-arrows">
+          <button id="back-btn" class="nav-arrow" type="button" title="Back (Alt+←)" disabled>←</button>
+          <button id="fwd-btn" class="nav-arrow" type="button" title="Forward (Alt+→)" disabled>→</button>
+        </div>
+        <div id="file-location" class="file-location"></div>
+        <div id="nav-trail" class="nav-trail" aria-label="Recently visited veins"></div>
+        <div class="nav-actions">
+          <button id="undo-btn" class="btn btn-ghost btn-mini" type="button" title="Undo (Ctrl+Z)" disabled>↶</button>
+          <button id="redo-btn" class="btn btn-ghost btn-mini" type="button" title="Redo (Ctrl+Shift+Z)" disabled>↷</button>
+        </div>
+      </div>
+
+      <!-- ── workspace: sidebar │ document │ graph ───────────────────────── -->
+      <main class="workspace" id="workspace">
+        <aside class="sidebar" id="sidebar" aria-label="Vault tree and search">
+          <div class="sidebar-head" id="sidebar-head"></div>
+          <div class="pane pane-tree" id="tree-pane"></div>
+          <div class="pane pane-search hidden" id="search-pane" role="tabpanel" aria-label="Search results"></div>
+        </aside>
+        <div class="resizer" id="sidebar-resizer" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+        <section class="viewer" id="viewer" aria-label="Document"></section>
+        <div class="resizer" id="graph-resizer" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+        <aside class="graph-panel" id="graph-panel" aria-label="Concept graph"></aside>
+      </main>
+
+      <div id="toasts" class="toasts" aria-live="polite"></div>
+      <div id="jump-overlay" class="jump-overlay hidden"></div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

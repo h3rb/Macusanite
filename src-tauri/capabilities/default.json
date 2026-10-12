@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the Macusanite windows. Filesystem access is performed by this app's own Rust commands, so no fs/dialog plugin permissions are granted to the webview. The help window is listed too: it reads no vault, but it is a real window and gets the same core permissions as the viewer.",
+  "windows": ["main", "help"],
+  "permissions": ["core:default"]
+}
