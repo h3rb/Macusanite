@@ -1,5 +1,7 @@
 # Macusanite
 
+![Logo](docs/Macusanite.jpg)
+
 A viewer for a **vault**: a folder tree of markdown that behaves like a wiki.
 Folders are **chambers**, markdown files are **veins**, and concepts are graphed
 both inside a document and across the vault. No database server, no accounts —
