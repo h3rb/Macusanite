@@ -501,6 +501,21 @@ export function buildHelpMarkdown({ section = null, commandsOnly = false } = {})
   return lines.join('\n');
 }
 
+/**
+ * A manual with its generation date pinned, so two manuals can be compared.
+ *
+ * The date belongs in the file — it says when the text was built — but it also
+ * changes at midnight, and a clean checkout must not fail `docs:check` because
+ * the committed manual was generated on a different day.
+ */
+export function normalizeManual(markdown) {
+  return String(markdown ?? '')
+    // A Windows checkout may hold the file with CRLF line endings; the
+    // generator always writes LF, and that difference is git's business.
+    .replace(/\r\n/g, '\n')
+    .replace(/generated \d{4}-\d{2}-\d{2}/, 'generated (date-pinned)');
+}
+
 /** Machine-readable index of everything the manual documents (handy for tests). */
 export function helpIndex() {
   return {

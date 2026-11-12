@@ -845,6 +845,25 @@ const app = {
     app.scheduleStatePersist();
   },
 
+  /** Switch the centre pane between the reader, the source editor and the canvas. */
+  setMode(mode) {
+    if (!state.current) return;
+    const next = mode === 'edit' || mode === 'world' ? mode : 'read';
+    if (next !== 'read' && state.current.readOnly) return;
+    state.ui.mode = next;
+    viewer.render(state.current);
+    // Arriving from the canvas the draft is newer than the file on disk, and a
+    // re-render fills the textarea from the saved text: put the draft back.
+    if (next === 'edit') viewer.syncEditor(state.draft);
+    app.scheduleStatePersist();
+  },
+
+  /** The upper-right switch: the same vein as notes rather than as lines. */
+  toggleWorldbuilding() {
+    if (!state.current || state.current.readOnly) return;
+    app.setMode(state.ui.mode === 'world' ? 'read' : 'world');
+  },
+
   revertDraft() {
     if (!state.current) return;
     // Discarding the draft answers the clash too: there is no second version left
@@ -2113,6 +2132,7 @@ function wireGlobalEvents() {
         return;
       }
       if (state.ui.mode === 'edit') app.toggleEdit();
+      if (state.ui.mode === 'world') app.setMode('read');
     }
   });
 

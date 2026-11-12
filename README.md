@@ -44,9 +44,12 @@ npm run tauri:build
 
 | Platform | Artefact |
 | --- | --- |
-| Windows | `src-tauri/target/release/macusanite.exe` (portable) and `*.msi`/`*-setup.exe` in `src-tauri/target/release/bundle/nsis/` |
-| macOS | `Macusanite.app` plus a `.dmg` (arm64/x86_64 built on the same host) |
-| Linux | AppImage/deb in `src-tauri/target/release/bundle/` |
+| Windows | `release/macusanite.exe` (portable) and `release/Macusanite_*-setup.exe` |
+| macOS | `release/Macusanite.app` plus a `.dmg` (arm64/x86_64 built on the same host) |
+| Linux | AppImage/deb in `release/` |
+
+`npm run tauri:build` collects the finished files into `release/` at the project
+root; Cargo's own cache stays under `src-tauri/target/release/`.
 
 Windows and Linux builds rely on the system webview (WebView2 / WebKitGTK); it is
 the only external runtime the portable binary needs.
@@ -398,7 +401,7 @@ tests/node/     unit tests for everything under src/lib plus the renderers
 ### Tests
 
 ```bash
-npm test                                  # 209 JS tests
+npm test                                  # 223 JS tests
 cargo test --manifest-path src-tauri/Cargo.toml   # 40 Rust tests
 ```
 

@@ -3,6 +3,9 @@
 
 node_modules/
 dist/
+# Collected build output: copied out of src-tauri/target/release by
+# scripts/collect-release.mjs, so both are generated.
+release/
 src-tauri/target/
 src-tauri/gen/
 logs/

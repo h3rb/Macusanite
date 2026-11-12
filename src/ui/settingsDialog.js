@@ -5,6 +5,7 @@
 import { el, clear } from './dom.js';
 import { normalizeColor, X11_COLORS, PALETTE, nearestX11Name } from '../lib/colors.js';
 import { colorStats } from '../lib/colorStore.js';
+import { MAX_GRAPH_DEPTH } from '../lib/settings.js';
 import { META } from '../backend.js';
 
 export function createSettingsDialog({ app }) {
@@ -135,7 +136,7 @@ export function createSettingsDialog({ app }) {
         el('section', { class: 'settings-section' }, [
           el('h3', { text: 'Concept graph' }),
           el('div', { class: 'settings-grid' }, [
-            field('Depth', numberInput(settings.graph.depth, { min: 1, max: 4, onchange: (v) => app.setGraphOption('depth', v) })),
+            field('Depth', numberInput(settings.graph.depth, { min: 1, max: MAX_GRAPH_DEPTH, onchange: (v) => app.setGraphOption('depth', v) }), `Hops out from the open vein, 1–${MAX_GRAPH_DEPTH}. Nodes fade as they get further from the vein you are reading.`),
             field('Layout iterations', numberInput(settings.graph.iterations, { min: 40, max: 1200, step: 20, onchange: (v) => app.setGraphOption('iterations', v) })),
             field('Node radius', numberInput(settings.graph.nodeRadius, { min: 3, max: 20, step: 0.5, onchange: (v) => app.setGraphOption('nodeRadius', v) })),
             field('Fade steps', numberInput(settings.linkFadeSteps, { min: 2, max: 12, onchange: (v) => app.updateSettings({ linkFadeSteps: v }) }), 'Gradient stops used along link edges.'),

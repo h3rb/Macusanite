@@ -9,8 +9,15 @@ import { el, clear, qs, appendAll } from './dom.js';
 import { buildGraph, layoutGraph, graphStats, neighbours, NODE, EDGE } from '../lib/graph.js';
 import { contrastColor, withAlpha } from '../lib/colors.js';
 import { titleFromPath } from '../lib/path.js';
+import { MAX_GRAPH_DEPTH } from '../lib/settings.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/**
+ * Opacity at the deepest ring in view: distant nodes are still there as a hint
+ * of structure, but no longer compete with the vein being read.
+ */
+const MIN_FADE = 0.06;
 
 function svgNode(tag, attrs = {}) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -80,8 +87,9 @@ export function createGraphPanel({ app, root }) {
         el('input', {
           type: 'number',
           min: '1',
-          max: '4',
+          max: String(MAX_GRAPH_DEPTH),
           value: String(app.state.settings.graph.depth),
+          title: `Hops out from this vein (1–${MAX_GRAPH_DEPTH}); each hop further out is fainter`,
           onchange: (event) => app.setGraphOption('depth', Number(event.target.value)),
         }),
       ]),
@@ -111,12 +119,23 @@ export function createGraphPanel({ app, root }) {
     laidOut = layoutGraph(graph, {
       width,
       height,
-      iterations: app.state.settings.graph.iterations,
+      iterations: layoutIterations(graph),
       seed: 20261011,
     });
 
     draw();
     renderStats();
+  }
+
+  /**
+   * The force layout is quadratic in the node count, and a deep map can hold
+   * hundreds of nodes: give big graphs fewer passes so the panel stays usable.
+   */
+  function layoutIterations(next) {
+    const wanted = app.state.settings.graph.iterations;
+    const nodes = next.nodes.length;
+    if (nodes <= 120) return wanted;
+    return Math.max(60, Math.round((wanted * 120) / nodes));
   }
 
   function renderStats() {
@@ -150,12 +169,24 @@ export function createGraphPanel({ app, root }) {
 
     const nodeById = new Map(size.nodes.map((n) => [n.id, n]));
 
+    // Distance sets opacity: the open vein and its own sections are solid, each
+    // link out is fainter, and the deepest ring sits at MIN_FADE — nearly
+    // transparent. Ring 1 is "here", so a vein with sections still reads fully.
+    const maxRing = Math.max(1, ...size.nodes.map((node) => node.ring ?? 0));
+    const span = Math.max(1, maxRing - 1);
+    const fadeFor = (ring) => {
+      const hop = Math.max(0, Math.min(span, (Number(ring) || 0) - 1));
+      return Math.round((1 - Math.pow(hop / span, 0.75) * (1 - MIN_FADE)) * 100) / 100;
+    };
+
     // ---- edges with per-edge gradients --------------------------------
     size.edges.forEach((edge, index) => {
       const from = nodeById.get(edge.from);
       const to = nodeById.get(edge.to);
       if (!from || !to) return;
 
+      // A line is only as visible as its furthest end.
+      const fade = Math.min(fadeFor(from.ring), fadeFor(to.ring));
       const gradientId = `grad-${index}`;
       const gradient = svgNode('linearGradient', {
         id: gradientId,
@@ -188,6 +219,7 @@ export function createGraphPanel({ app, root }) {
         'data-source': edge.from,
         'data-target': edge.to,
       });
+      path.style.setProperty('--fade', String(fade));
       const edgeTitle = svgNode('title');
       edgeTitle.textContent = edge.label
         ? `${from.label} → ${to.label} (${edge.label})`
@@ -206,6 +238,7 @@ export function createGraphPanel({ app, root }) {
         tabindex: '0',
         role: 'button',
       });
+      group.style.setProperty('--fade', String(fadeFor(node.ring)));
       const nodeTitleNode = svgNode('title');
       nodeTitleNode.textContent = nodeTitle(node);
       group.append(nodeTitleNode);

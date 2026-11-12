@@ -16,6 +16,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createVaultApi } from '../src/lib/api.js';
+import { normalizeManual } from '../src/lib/helpDoc.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -29,7 +30,8 @@ const { markdown } = await api.dispatch('docs', {});
 
 if (check) {
   const current = existsSync(target) ? readFileSync(target, 'utf8') : null;
-  if (current === markdown) {
+  // The generated date is compared pinned: a manual built yesterday is not stale.
+  if (current !== null && normalizeManual(current) === normalizeManual(markdown)) {
     console.log(`docs in sync: ${target}`);
     process.exit(0);
   }

@@ -2,10 +2,12 @@
  * The centre pane: the rendered vein.
  *
  * Handles wiki-link clicks (including ghosts that offer to be created), colour
- * swatch clicks, in-place editing with autosave, and the backlink list.
+ * swatch clicks, in-place editing with autosave, the worldbuilding canvas and the
+ * backlink list.
  */
 import { el, clear, qs, htmlNode } from './dom.js';
 import { renderMarkdown, renderMermaidIn, colorSwatch } from './markdown.js';
+import { createWorldbuildPanel } from './worldbuildPanel.js';
 import { findMatches } from '../lib/search.js';
 
 /** Never highlight inside these: our own marks, diagrams, swatches and chrome. */
@@ -45,8 +47,10 @@ export function createViewer({ app, root }) {
     }),
   ]);
 
-  root.append(head, body, editor, foot);
+  const world = el('div', { class: 'world-view hidden' });
+  root.append(head, body, world, editor, foot);
 
+  const worldPanel = createWorldbuildPanel({ app, root: world });
   const textarea = qs('.editor-textarea', editor);
   const emptyState = el('div', { class: 'empty-state' }, [
     el('h1', { text: 'Macusanite' }),
@@ -63,7 +67,32 @@ export function createViewer({ app, root }) {
     clear(foot);
     clearHits();
     editor.classList.add('hidden');
+    world.classList.add('hidden');
+    worldPanel.render(null);
     body.classList.remove('hidden');
+  }
+
+  /**
+   * The worldbuilding switch, in the document's upper-right corner.
+   *
+   * It is a checkbox rather than a button so the reader can see at a glance
+   * which of the two views of the vein they are in.
+   */
+  function worldSwitch(mode) {
+    const input = el('input', {
+      type: 'checkbox',
+      class: 'mode-switch-input',
+      'aria-label': 'Worldbuilding mode',
+      onchange: () => app.toggleWorldbuilding(),
+    });
+    input.checked = mode === 'world';
+    return el('label', {
+      class: `mode-switch ${mode === 'world' ? 'is-on' : ''}`,
+      title: 'Worldbuilding: arrange this vein as notes instead of lines',
+    }, [
+      el('span', { class: 'mode-switch-label', text: 'Worldbuilding' }),
+      el('span', { class: 'mode-switch-track' }, [input, el('span', { class: 'mode-switch-knob' })]),
+    ]);
   }
 
   /* --------------------------------------------------------- search hits -- */
@@ -144,8 +173,10 @@ export function createViewer({ app, root }) {
 
     const mode = app.state.ui.mode;
     const readOnly = Boolean(doc.readOnly);
+    const inWorld = mode === 'world' && !readOnly;
     editor.classList.toggle('hidden', mode !== 'edit' || readOnly);
-    body.classList.toggle('hidden', mode === 'edit' && !readOnly);
+    body.classList.toggle('hidden', (mode === 'edit' && !readOnly) || inWorld);
+    world.classList.toggle('hidden', !inWorld);
     clear(head);
     clear(foot);
 
@@ -162,13 +193,14 @@ export function createViewer({ app, root }) {
         readOnly ? el('span', { class: 'tag-chip', text: 'shipped guide' }) : null,
         el('div', { class: 'spacer' }),
         el('span', { class: 'viewer-path', text: doc.path, title: doc.path }),
+        readOnly ? null : worldSwitch(mode),
       ]),
       el('div', { class: 'viewer-tools' }, [
         readOnly ? null : el('button', {
           class: `btn btn-ghost ${mode === 'edit' ? 'is-active' : ''}`,
           type: 'button',
           text: mode === 'edit' ? 'Preview' : 'Edit',
-          onclick: () => app.toggleEdit(),
+          onclick: () => app.setMode(mode === 'edit' ? 'read' : 'edit'),
         }),
         readOnly ? null : el('button', { class: 'btn btn-ghost', type: 'button', text: 'Save', onclick: () => app.saveCurrent() }),
         el('div', { class: 'spacer' }),
@@ -213,6 +245,7 @@ export function createViewer({ app, root }) {
 
     textarea.value = doc.text;
     if (mode === 'edit') textarea.focus();
+    if (inWorld) worldPanel.render(doc);
     await renderMermaidIn(body, rendered.mermaid, app.mermaid);
     body.classList.add('rendered');
     // A re-render (colour change, save, external edit) keeps the reader's hits.
@@ -282,6 +315,9 @@ export function createViewer({ app, root }) {
     },
     get editor() {
       return editor;
+    },
+    get world() {
+      return world;
     },
     clearScrollMemory() {
       scrollPositions = new Map();

@@ -27,6 +27,7 @@ import {
   commandReference,
   helpSections,
   helpIndex,
+  normalizeManual,
   DOC_TITLE,
   DEFAULT_DOC_SECTIONS,
   FEATURES,
@@ -196,7 +197,9 @@ test('the checked-in manual matches the generator', () => {
   // source the window, the CLI and GitHub would tell three different stories.
   const target = path.join(process.cwd(), 'docs', 'Help.md');
   assert.ok(fs.existsSync(target), 'docs/Help.md is missing — run `npm run docs`');
-  assert.equal(fs.readFileSync(target, 'utf8'), manual, 'docs/Help.md is stale — run `npm run docs`');
+  // Compared with the footer date pinned: the manual is regenerated on release,
+  // not every midnight, so an older date is not drift.
+  assert.equal(normalizeManual(fs.readFileSync(target, 'utf8')), normalizeManual(manual), 'docs/Help.md is stale — run `npm run docs`');
 });
 
 test('every feature section has prose worth reading', () => {

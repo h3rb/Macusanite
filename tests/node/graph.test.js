@@ -128,3 +128,22 @@ test('stats and neighbours describe the graph', () => {
   assert.ok(stats.ghosts >= 1);
   assert.ok(neighbours(graph, docId('Home.md')).includes(sectionId('Home.md', 'the-three-panes')));
 });
+
+test('the graph defaults to ten hops of context', () => {
+  assert.equal(DEFAULT_SETTINGS.graph.depth, 10);
+});
+
+test('the graph walks past four hops when the depth setting asks', () => {
+  const LAST = 12;
+  const bodies = {};
+  for (let i = 0; i <= LAST; i += 1) {
+    bodies[`Hop ${i}.md`] = `# Hop ${i}\n\n${i < LAST ? `See [[Hop ${i + 1}]].` : 'End.'}\n`;
+  }
+  const index = buildDocumentIndex(bodies);
+  const settings = { ...DEFAULT_SETTINGS, graph: { ...DEFAULT_SETTINGS.graph, depth: LAST } };
+  const graph = buildGraph({ index, settings, focusPath: 'Hop 0.md', colorOf: makeColorOf() });
+
+  const far = graph.nodes.find((node) => node.id === docId(`Hop ${LAST}.md`));
+  assert.ok(far, `hop ${LAST} is in the graph`);
+  assert.ok(far.ring > 4, 'and it sits further out than the old four-level ceiling');
+});

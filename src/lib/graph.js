@@ -14,6 +14,13 @@ export const NODE = { DOCUMENT: 'document', SECTION: 'section', CONCEPT: 'concep
 export const EDGE = { LINK: 'link', CONTAINS: 'contains', TAG: 'tag' };
 
 /**
+ * Ceiling on the node list, whatever `depth` asks for: the panel is a few
+ * hundred pixels wide and the layout is quadratic, so this is where a very deep
+ * map stops widening instead of taking the window with it.
+ */
+const MAX_GRAPH_NODES = 600;
+
+/**
  * Graph node kinds mapped onto the colour-store kinds. The `colorOf` callback
  * handed to {@link buildGraph} therefore always speaks the store's language
  * (`page`, `section`, `link`, `concept`), never the graph's.
@@ -197,6 +204,7 @@ export function buildGraph({ index, settings, focusPath = null, colorOf }) {
     const next = [];
     for (const { doc, ring, via } of frontier) {
       if (ring > depthLimit + (focus ? 1 : 0)) continue;
+      if (nodes.size >= MAX_GRAPH_NODES) break;
       const isFocus = focus ? doc.path === focus.path : false;
       const fromNodeId = via?.fromNodeId && via.fromNodeId.startsWith('sec:')
         ? via.fromNodeId
@@ -223,6 +231,7 @@ export function buildGraph({ index, settings, focusPath = null, colorOf }) {
       }
 
       for (const link of doc.links) {
+        if (nodes.size >= MAX_GRAPH_NODES) break;
         const resolved = resolveTarget(
           { ...link, target: link.target, section: link.section, samePage: link.target === '', anchor: link.section ? slugify(link.section) : '' },
           doc.path,
@@ -325,6 +334,7 @@ export function buildGraph({ index, settings, focusPath = null, colorOf }) {
   // ---- pass 3: tags ------------------------------------------------------
   if (showTags) {
     for (const doc of focus ? [focus] : index.slice(0, 40)) {
+      if (nodes.size >= MAX_GRAPH_NODES) break;
       for (const tag of doc.tags) {
         const id = tagId(tag);
         addNode({
@@ -409,10 +419,15 @@ export function layoutGraph(graph, options = {}) {
 
   const cx = width / 2;
   const cy = height / 2;
+  // Rings are spread over the canvas that actually exists: a ten-hop map must
+  // not crush its outer rings against the same frame as a two-hop one. The
+  // deepest ring lands near 0.48 of the shorter side, inside the margin.
+  const deepest = Math.max(1, ...graph.nodes.map((node) => node.ring ?? 1));
+  const ringStep = (Math.min(width, height) * 0.34) / deepest;
   const nodes = graph.nodes.map((node, i) => {
     const ring = node.ring ?? 1;
     const angle = (i / Math.max(1, graph.nodes.length)) * Math.PI * 2 + rand() * 0.3;
-    const radius = ring === 0 ? 0 : Math.min(width, height) * (0.14 + ring * 0.13);
+    const radius = ring === 0 ? 0 : Math.min(width, height) * 0.14 + ring * ringStep;
     return {
       ...node,
       x: ring === 0 ? cx : cx + Math.cos(angle) * radius,

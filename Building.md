@@ -125,8 +125,12 @@ Artefacts:
 
 | File | What it is |
 | --- | --- |
-| `src-tauri\target\release\Macusanite.exe` | the portable binary (~5 MB) — copy it anywhere, WebView2 is the only runtime it needs |
-| `src-tauri\target\release\bundle\nsis\Macusanite_0.1.0_x64-setup.exe` | the installer (~2.6 MB; NSIS is fetched by Tauri's bundler on first use) |
+| `release\macusanite.exe` | the portable binary (~5.6 MB, named after the Cargo package) — copy it anywhere, WebView2 is the only runtime it needs |
+| `release\Macusanite_0.1.0_x64-setup.exe` | the installer (~2.6 MB; NSIS is fetched by Tauri's bundler on first use) |
+
+`tauri:build` collects both into `release/` at the top of the repository; the
+same files are also left under `src-tauri\target\release\`, which is Cargo's
+build cache.
 
 `src-tauri\tauri.conf.json` sets `bundle.targets: ["nsis"]`, so `tauri:build` on
 Windows produces exactly that installer. To also produce an MSI you would need
@@ -180,8 +184,8 @@ Artefacts (defaults for `.app` and `.dmg`):
 
 | Path | What it is |
 | --- | --- |
-| `src-tauri/target/release/bundle/macos/Macusanite.app` | the application bundle |
-| `src-tauri/target/release/bundle/dmg/Macusanite_*.dmg` | the disk image |
+| `release/Macusanite.app` | the application bundle |
+| `release/Macusanite_*.dmg` | the disk image |
 
 **Pass `--bundles` explicitly on macOS.** The repository's
 `bundle.targets` is `["nsis"]`, which is the Windows installer format; without
@@ -263,9 +267,9 @@ Artefacts:
 
 | Path | What it is |
 | --- | --- |
-| `src-tauri/target/release/macusanite` | the plain binary (named after the Cargo package) |
-| `src-tauri/target/release/bundle/deb/*.deb` | Debian package (pulls `libwebkit2gtk-4.1-0` and `libgtk-3-0` at install time) |
-| `src-tauri/target/release/bundle/appimage/*.AppImage` | self-contained AppImage |
+| `release/macusanite` | the plain binary (named after the Cargo package) |
+| `release/*.deb` | Debian package (pulls `libwebkit2gtk-4.1-0` and `libgtk-3-0` at install time) |
+| `release/*.AppImage` | self-contained AppImage |
 
 As on macOS, pass `--bundles` explicitly: the repository's `bundle.targets` is
 the Windows `nsis` one.
@@ -299,8 +303,8 @@ the Windows `nsis` one.
 | `npm run harness` | the same, on a fixed port (1421) | Node |
 | `npm run build` | bundle the interface into `dist/` (`index.html` and `help.html`) | Node |
 | `npm run tauri:dev` | the real desktop window, hot reload | everything |
-| `npm run tauri:build` | release binary + installer (runs `npm run build` first) | everything |
-| `npm test` | 209 JavaScript tests (`node --test`, no browser needed) | Node |
+| `npm run tauri:build` | release binary + installer, collected into `release/` (runs `npm run build` first) | everything |
+| `npm test` | 223 JavaScript tests (`node --test`, no browser needed) | Node |
 | `npm run test -- tests/node/mcp.test.js` | one suite | Node |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | 40 Rust tests (paths, scanning, writes, undo/redo, watcher) | Rust |
 | `npm run docs` | regenerate [docs/Help.md](docs/Help.md) from the catalogue | Node |
@@ -315,6 +319,30 @@ usual `cargo build`, `cargo check` and `cargo clippy` work from the repository
 root. `cargo check` is much faster than a release build when you are only
 verifying that the Rust half compiles.
 
+### Building the portable binary without Node
+
+`npm run tauri:build` runs `npm run build` first, so the *full* pipeline needs
+Node for the interface. The window itself only needs the Rust side plus an
+already-built `dist/`:
+
+```bash
+npm run build                                     # once, where Node exists
+cargo build --release --features custom-protocol  # portable binary, no Node
+```
+
+That produces the same artefact as the full build —
+`src-tauri/target/release/macusanite.exe` on Windows,
+`src-tauri/target/release/macusanite` on Linux — skipping only the installer
+bundling. The `custom-protocol` feature is what embeds `dist/` into the binary;
+without it the window loads `devUrl` and needs the Vite dev server running.
+
+A bare `cargo build` does not run npm lifecycle scripts, so copy the result out
+by hand when that path is the one you used:
+
+```bash
+node scripts/collect-release.mjs   # -> release/macusanite(.exe)
+```
+
 ---
 
 ## 7. Verifying the install
@@ -324,11 +352,11 @@ the checklist, in order, cheapest first:
 
 ```bash
 # 1. the logic (no display, no Rust, ~3 s)
-npm test                                   # expect: 209 pass, 0 fail
+npm test                                   # expect: 223 pass, 0 fail
 npm run docs:check                         # expect: docs in sync
 
 # 2. the Rust half
-cargo test --manifest-path src-tauri/Cargo.toml    # expect: 37 pass
+cargo test --manifest-path src-tauri/Cargo.toml    # expect: 40 pass
 
 # 3. the interface bundle (both pages must be emitted)
 npm run build && ls dist/index.html dist/help.html

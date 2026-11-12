@@ -12,6 +12,13 @@ export const DEFAULT_COLOR = '#ffffff';
 
 export const SETTINGS_VERSION = 1;
 
+/**
+ * Hops the concept graph is allowed to walk out from the open vein. The canvas
+ * fades each hop further into the background, so a deep number is a choice about
+ * how much of the wider vault stays visible, not a hard limit on the vault.
+ */
+export const MAX_GRAPH_DEPTH = 144;
+
 export const DEFAULT_SETTINGS = {
   version: SETTINGS_VERSION,
   theme: 'dark',
@@ -26,7 +33,9 @@ export const DEFAULT_SETTINGS = {
   palette: PALETTE,
   recentColors: [],
   graph: {
-    depth: 2,
+    // Ten hops is a readable neighbourhood around the open vein: far enough to
+    // see the chambers it belongs to, close enough that the fade still reads.
+    depth: 10,
     showSections: true,
     showTags: true,
     showUnresolved: true,
@@ -107,7 +116,7 @@ export function validateSettings(settings) {
     ...DEFAULT_SETTINGS.graph,
     ...(isPlainObject(s.graph) ? s.graph : {}),
   };
-  s.graph.depth = clamp(Number(s.graph.depth), 1, 4, DEFAULT_SETTINGS.graph.depth);
+  s.graph.depth = clamp(Number(s.graph.depth), 1, MAX_GRAPH_DEPTH, DEFAULT_SETTINGS.graph.depth);
   s.graph.iterations = clamp(Number(s.graph.iterations), 40, 1200, DEFAULT_SETTINGS.graph.iterations);
   s.graph.nodeRadius = clamp(Number(s.graph.nodeRadius), 3, 20, DEFAULT_SETTINGS.graph.nodeRadius);
   s.layout = {
