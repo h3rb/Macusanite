@@ -12,6 +12,7 @@ import { el, clear, appendAll } from './dom.js';
 import {
   parseNotes, serializeNotes, updateNote, updateIntro, addNote, removeNote,
   noteEdges, hierarchyEdges, noteStats, countWords, DEFAULT_LEVEL,
+  normalizeTag, addNoteTags, removeNoteTag, tagRecord,
 } from '../lib/worldbuild.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -129,7 +130,7 @@ export function createWorldbuildPanel({ app, root }) {
         el('span', { class: 'wb-dot' }),
         el('strong', { text: 'Worldbuilding' }),
       ]),
-      el('span', { class: 'wb-hint', text: 'Each card is a heading of this vein — typing here edits the markdown' }),
+      el('span', { class: 'wb-hint', text: 'Each card is a heading of this vein — typing here edits the markdown, and cards can be tagged #like this' }),
       el('div', { class: 'spacer' }),
       el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: '+ Note',
@@ -153,12 +154,27 @@ export function createWorldbuildPanel({ app, root }) {
 
   function renderStats() {
     const stats = noteStats(model ?? {});
+    // The vault-wide tag record: every tag the vault index knows about, read
+    // from the same live index as search and the graph, most-used first.
+    const record = tagRecord(app.state?.index ?? []);
+    const limit = 24;
     appendAll(clear(statsBar), [
       el('span', { class: 'wb-stat', text: `${stats.notes} notes` }),
       el('span', { class: 'wb-stat', text: `${stats.associations} associations` }),
       el('span', { class: 'wb-stat', text: `${stats.links} links` }),
       stats.tags ? el('span', { class: 'wb-stat', text: `${stats.tags} tags` }) : null,
       el('span', { class: 'wb-stat', text: `${stats.words} words` }),
+      record.length ? (
+        el('span', { class: 'wb-vault-tags' }, [
+          el('span', { class: 'wb-stat-label', text: 'vault tags' }),
+          ...record.slice(0, limit).map((row) => el('span', {
+            class: 'wb-vault-tag',
+            text: `#${row.tag} ×${row.count}`,
+            title: `${row.count} vein${row.count === 1 ? '' : 's'}: ${row.veins.join(', ')}`,
+          })),
+          record.length > limit ? el('span', { class: 'wb-stat', text: `+${record.length - limit} more` }) : null,
+        ])
+      ) : null,
       el('span', { class: 'wb-legend', text: 'solid: links in the prose · dotted: section outline' }),
     ]);
   }
@@ -210,10 +226,12 @@ export function createWorldbuildPanel({ app, root }) {
     body.value = note.body;
 
     const linkRow = el('div', { class: 'wb-links' });
+    const tagsRow = el('div', { class: 'wb-tags' });
     const linker = el('select', { class: 'wb-linker', 'aria-label': 'Associate this note with another note' });
     const words = el('span', { class: 'wb-words' });
     const foot = el('div', { class: 'wb-card-foot' }, [
       linkRow,
+      tagsRow,
       el('div', { class: 'wb-card-tools' }, [linker, el('span', { class: 'spacer' }), words]),
     ]);
 
@@ -230,9 +248,15 @@ export function createWorldbuildPanel({ app, root }) {
       model = updateNote(model, index, { body: body.value });
       commit();
       refreshLinks();
+      refreshTags();
     });
 
     linker.addEventListener('change', () => {
+      if (linker.value === '__new__') {
+        linker.value = '';
+        createLinkedNote(index);
+        return;
+      }
       const target = model.notes[Number(linker.value)];
       if (!target) return;
       const live = model.notes[index];
@@ -319,11 +343,77 @@ export function createWorldbuildPanel({ app, root }) {
         if (j === index) return;
         linker.append(el('option', { value: String(j), text: other.title || `Note ${j + 1}` }));
       });
+      // Creating from the same menu: the new note is written into this vein and
+      // linked back, so the user never has to leave the canvas to start one.
+      linker.append(el('option', { value: '__new__', text: '+ New Note' }));
 
       words.textContent = `${countWords(live.title) + countWords(live.body)} words`;
     }
 
+    /** The note's tags as chips, with a field for tagging the note. */
+    function refreshTags() {
+      const live = model.notes[index];
+      if (!live) return;
+      clear(tagsRow);
+
+      for (const tag of live.tags ?? []) {
+        tagsRow.append(el('span', { class: 'wb-tag', title: `Tag: ${tag}` }, [
+          el('span', { text: `#${tag}` }),
+          el('button', {
+            class: 'wb-tag-x', type: 'button', text: '✕',
+            title: `Remove #${tag} from this note`,
+            onclick: () => {
+              model = removeNoteTag(model, index, tag);
+              // The textarea is the body: it must show what the model holds, or
+              // the next keystroke would resurrect the tag just removed.
+              body.value = model.notes[index].body;
+              commit();
+              refreshTags();
+              refreshLinks();
+            },
+          }),
+        ]));
+      }
+
+      const input = el('input', {
+        class: 'wb-tag-input',
+        placeholder: '#add tag',
+        spellcheck: 'false',
+        'aria-label': `Add a tag to ${live.title || 'this note'}`,
+      });
+      const addFromInput = () => {
+        const parts = input.value.split(/\s+/).filter(Boolean);
+        if (!parts.length) return;
+        const invalid = parts.filter((part) => !normalizeTag(part));
+        if (invalid.length) {
+          app.toast(`Not a tag: ${invalid.slice(0, 3).join(', ')}`, 'warn', 1800);
+        }
+        const before = (model.notes[index].tags ?? []).length;
+        model = addNoteTags(model, index, parts);
+        const added = (model.notes[index].tags ?? []).length - before;
+        if (added > 0) {
+          body.value = model.notes[index].body;
+          commit();
+          refreshTags();
+          refreshLinks();
+          tagsRow.querySelector('.wb-tag-input')?.focus();
+        } else if (!invalid.length) {
+          app.toast('That note already has those tags', 'info', 1800);
+        }
+        input.value = '';
+      };
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') addFromInput();
+      });
+      // Clicking a tag's ✕ inside the same row should not commit half a tag.
+      input.addEventListener('blur', (event) => {
+        if (!event.relatedTarget?.closest?.('.wb-tags')) addFromInput();
+      });
+      tagsRow.append(input);
+    }
+
     refreshLinks();
+    refreshTags();
     return card;
   }
 
@@ -372,6 +462,26 @@ export function createWorldbuildPanel({ app, root }) {
     const input = cardEls[added.index]?.querySelector('.wb-card-title');
     input?.focus();
     input?.select();
+  }
+
+  /**
+   * The "Link to… + New Note" path: create a note in this vein and link the
+   * current card to it, in one step.
+   */
+  function createLinkedNote(fromIndex) {
+    if (!model) return;
+    const added = addNote(model, { title: 'New note', level: DEFAULT_LEVEL });
+    model = added.model;
+    const target = model.notes[added.index];
+    const live = model.notes[fromIndex];
+    const nextBody = `${live.body}${live.body ? '\n\n' : ''}[[#${target.title}]]`;
+    model = updateNote(model, fromIndex, { body: nextBody });
+    commit();
+    build();
+    const input = cardEls[added.index]?.querySelector('.wb-card-title');
+    input?.focus();
+    input?.select();
+    app.toast(`Created “${target.title}” and linked it here`, 'ok', 1800);
   }
 
   /* -------------------------------------------------------------- canvas -- */

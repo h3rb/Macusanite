@@ -167,6 +167,11 @@ body.resizing {
   border-color: var(--border);
 }
 
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 /* ── top bar ─────────────────────────────────────────────────────────── */
 
 .topbar {
@@ -2538,5 +2543,82 @@ dialog::backdrop {
   margin-left: auto;
   color: var(--text-faint);
   font-size: 11px;
+}
+
+/* Node tags on a card: chips plus an always-visible add field. */
+.wb-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.wb-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 3px 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 10.5px;
+}
+
+.wb-tag-x {
+  padding: 0 2px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.wb-tag-x:hover {
+  color: var(--error);
+  background: var(--bg-sunken);
+}
+
+.wb-tag-input {
+  flex: 1 1 70px;
+  min-width: 64px;
+  padding: 1px 7px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 10.5px;
+  outline: none;
+}
+
+.wb-tag-input:focus {
+  border-color: var(--accent);
+  background: var(--bg-sunken);
+}
+
+/* The vault-wide tag record in the stats bar. */
+.wb-vault-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.wb-stat-label {
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.wb-vault-tag {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 10.5px;
+  cursor: help;
 }
 

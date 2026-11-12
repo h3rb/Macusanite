@@ -304,7 +304,7 @@ the Windows `nsis` one.
 | `npm run build` | bundle the interface into `dist/` (`index.html` and `help.html`) | Node |
 | `npm run tauri:dev` | the real desktop window, hot reload | everything |
 | `npm run tauri:build` | release binary + installer, collected into `release/` (runs `npm run build` first) | everything |
-| `npm test` | 223 JavaScript tests (`node --test`, no browser needed) | Node |
+| `npm test` | 227 JavaScript tests (`node --test`, no browser needed) | Node |
 | `npm run test -- tests/node/mcp.test.js` | one suite | Node |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | 40 Rust tests (paths, scanning, writes, undo/redo, watcher) | Rust |
 | `npm run docs` | regenerate [docs/Help.md](docs/Help.md) from the catalogue | Node |
@@ -352,7 +352,7 @@ the checklist, in order, cheapest first:
 
 ```bash
 # 1. the logic (no display, no Rust, ~3 s)
-npm test                                   # expect: 223 pass, 0 fail
+npm test                                   # expect: 227 pass, 0 fail
 npm run docs:check                         # expect: docs in sync
 
 # 2. the Rust half

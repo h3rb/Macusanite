@@ -401,7 +401,7 @@ tests/node/     unit tests for everything under src/lib plus the renderers
 ### Tests
 
 ```bash
-npm test                                  # 223 JS tests
+npm test                                  # 227 JS tests
 cargo test --manifest-path src-tauri/Cargo.toml   # 40 Rust tests
 ```
 

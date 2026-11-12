@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseNotes, serializeNotes, updateNote, updateIntro, addNote, removeNote,
   noteEdges, hierarchyEdges, noteStats, countWords, DEFAULT_LEVEL,
+  normalizeTag, addNoteTags, removeNoteTag, tagRecord,
 } from '../../src/lib/worldbuild.js';
 
 const VEIN = `---
@@ -125,6 +126,57 @@ test('hierarchyEdges nest each note under the nearest shallower one', () => {
   const model = parseNotes(VEIN);
   assert.deepEqual(hierarchyEdges(model).map((edge) => [edge.from, edge.to]), [
     [0, 1], [1, 2], [0, 3],
+  ]);
+});
+
+test('normalizeTag cleans up and rejects what the reader cannot read back', () => {
+  assert.equal(normalizeTag('#Glass '), 'glass');
+  assert.equal(normalizeTag('a/b_c-d'), 'a/b_c-d');
+  assert.equal(normalizeTag('##'), null);
+  assert.equal(normalizeTag('my tag'), null);
+  assert.equal(normalizeTag(''), null);
+  assert.equal(normalizeTag(null), null);
+});
+
+test('addNoteTags writes the tokens into the prose and reads them back', () => {
+  const model = parseNotes('## Sieve\n\nCoarse to fine.\n');
+  const next = addNoteTags(model, 0, ['#Glass', 'petrology']);
+  assert.deepEqual(next.notes[0].tags, ['glass', 'petrology']);
+  assert.equal(serializeNotes(next), '## Sieve\n\nCoarse to fine.\n\n#glass #petrology\n');
+  // The tag survives a round trip: the vault index will see the same tags.
+  assert.deepEqual(parseNotes(serializeNotes(next)).notes[0].tags, ['glass', 'petrology']);
+  // Re-adding existing tags is a no-op — the same model comes back.
+  assert.equal(addNoteTags(next, 0, ['glass']), next);
+  // A trailing tags line takes the new tokens instead of growing a second one.
+  const more = addNoteTags(next, 0, ['methods']);
+  assert.ok(serializeNotes(more).endsWith('#glass #petrology #methods\n'));
+});
+
+test('removeNoteTag strips the token, keeps the prose, and respects fences', () => {
+  const vein = '## Sieve\n\nCoarse #glass to fine.\n\n```bash\n#glass in a fence\n```\n\n#glass #petrology\n';
+  const model = parseNotes(vein);
+  const next = removeNoteTag(model, 0, 'glass');
+  assert.deepEqual(next.notes[0].tags, ['petrology']);
+  const body = next.notes[0].body;
+  assert.ok(body.includes('Coarse to fine.'));
+  assert.ok(body.includes('#glass in a fence'));
+  assert.ok(body.trimEnd().endsWith('#petrology'));
+  assert.equal(serializeNotes(parseNotes(serializeNotes(next))), serializeNotes(next));
+  // Untagging a tag the note does not have returns the same model.
+  assert.equal(removeNoteTag(next, 0, 'absent'), next);
+});
+
+test('tagRecord counts every tag across the vault index, most-used first', () => {
+  const record = tagRecord([
+    { path: 'a.md', tags: ['glass', 'Petrology'] },
+    { path: 'b.md', tags: ['glass', 'glass'] },
+    { path: 'c.md', tags: ['methods'] },
+    { path: 'd.md', tags: [], indexed: false },
+  ]);
+  assert.deepEqual(record, [
+    { tag: 'glass', count: 2, veins: ['a.md', 'b.md'] },
+    { tag: 'methods', count: 1, veins: ['c.md'] },
+    { tag: 'petrology', count: 1, veins: ['a.md'] },
   ]);
 });
 

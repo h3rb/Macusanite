@@ -254,6 +254,135 @@ export function hierarchyEdges(model = {}) {
   return edges;
 }
 
+/** The tag token shape `parseTags` reads: `#name`, with slashes and dashes inside. */
+const TAG_RE = /^[\p{L}\p{N}][\p{L}\p{N}/_-]*$/u;
+
+/**
+ * Normalise a tag typed on a card: drop the `#`, trim, lowercase, and reject
+ * anything the prose reader would not read back as a tag.
+ * @returns {string|null} the tag, or null when it cannot be a tag
+ */
+export function normalizeTag(value) {
+  const tag = String(value ?? '').trim().replace(/^#+/, '').toLowerCase();
+  return TAG_RE.test(tag) ? tag : null;
+}
+
+/** True for a line made of nothing but `#tag` tokens — where addNoteTags writes. */
+function isTagLine(line) {
+  const words = String(line ?? '').trim().split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.every((word) => word.startsWith('#') && normalizeTag(word));
+}
+
+/**
+ * Tag a note: append the new `#tag` tokens to the note's prose (a trailing
+ * tags line when one is already there, a fresh line otherwise), so the tag is
+ * plain markdown the vault index can read back.
+ *
+ * @returns {object} a new model — the same model when nothing is new
+ */
+export function addNoteTags(model, index, tags = []) {
+  const wanted = [...new Set((tags ?? []).map((tag) => normalizeTag(tag)).filter(Boolean))];
+  const note = (model?.notes ?? [])[index];
+  if (!wanted.length || !note) return model;
+  const have = new Set((note.tags ?? []).map((tag) => String(tag).toLowerCase()));
+  const fresh = wanted.filter((tag) => !have.has(tag));
+  if (!fresh.length) return model;
+
+  const tokens = fresh.map((tag) => `#${tag}`).join(' ');
+  const lines = String(note.body ?? '').split('\n');
+  let lastTagLine = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (!String(lines[i]).trim()) continue;
+    if (isTagLine(lines[i])) lastTagLine = i;
+    break;
+  }
+  if (lastTagLine >= 0) {
+    lines[lastTagLine] = `${lines[lastTagLine].trim()} ${tokens}`;
+  } else {
+    const body = String(note.body ?? '');
+    lines.push(body.trim() ? '' : '', tokens);
+  }
+  return updateNote(model, index, { body: lines.join('\n') });
+}
+
+/**
+ * Untag a note: strip that `#tag` token from the note's prose, leaving code
+ * fences alone (the reader's tag reader ignores them too). Lines that were
+ * only the token disappear with it.
+ *
+ * @returns {object} a new model — the same model when the note has no such tag
+ */
+export function removeNoteTag(model, index, tag) {
+  const norm = normalizeTag(tag);
+  const note = (model?.notes ?? [])[index];
+  if (!norm || !note) return model;
+  const have = new Set((note.tags ?? []).map((value) => String(value).toLowerCase()));
+  if (!have.has(norm)) return model;
+
+  // `norm` is TAG_RE-validated, so it holds no regex specials to escape.
+  const token = new RegExp(`(^|\\s)#${norm}(?=$|\\s)`, 'gi');
+  let inFence = false;
+  let fenceMarker = '';
+  const lines = [];
+  for (const line of String(note.body ?? '').split('\n')) {
+    const fence = FENCE_RE.exec(line);
+    if (fence) {
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = fence[1][0];
+      } else if (fence[1][0] === fenceMarker) {
+        inFence = false;
+      }
+    }
+    if (inFence) {
+      lines.push(line);
+      continue;
+    }
+    const replaced = line.replace(token, (match, gap) => gap);
+    if (replaced === line) {
+      lines.push(line);
+      continue;
+    }
+    // Only lines the strip touched get tidied: the space the token stood in
+    // must not leave a double space (or a dangling leading one) behind.
+    const cleaned = replaced.replace(/[ \t]+/g, ' ').trim();
+    // A line that held only the token(s) disappears with them; a tags line
+    // that still holds other tags keeps just those.
+    if (isTagLine(line) && (!cleaned || isTagLine(cleaned))) {
+      if (cleaned) lines.push(cleaned);
+      continue;
+    }
+    lines.push(cleaned);
+  }
+  return updateNote(model, index, { body: lines.join('\n') });
+}
+
+/**
+ * The vault's tag record: every tag the index knows about, with how many veins
+ * carry it. Reads the same index entries the search pane and graph read, so
+ * the canvas stays in step with the vault.
+ *
+ * @param {Array} index index entries (`{path, tags, indexed}`)
+ * @returns {Array<{tag: string, count: number, veins: string[]}>}
+ */
+export function tagRecord(index = []) {
+  const counts = new Map();
+  for (const doc of index ?? []) {
+    if (!doc || doc.indexed === false) continue;
+    const seen = new Set();
+    for (const raw of doc.tags ?? []) {
+      const tag = normalizeTag(raw) ?? String(raw).toLowerCase();
+      if (!tag || seen.has(tag)) continue;
+      seen.add(tag);
+      const row = counts.get(tag) ?? { tag, count: 0, veins: [] };
+      row.count += 1;
+      row.veins.push(String(doc.path ?? ''));
+      counts.set(tag, row);
+    }
+  }
+  return [...counts.values()].sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+}
+
 /** Word count of a block of prose, for the card footers and the toolbar. */
 export function countWords(text) {
   const trimmed = String(text ?? '').trim();

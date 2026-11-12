@@ -65,6 +65,22 @@ export function createGraphPanel({ app, root }) {
     });
   }
 
+  /**
+   * Movement through the graph is recorded in the navigation history (the same
+   * record the header's arrows use, persisted in `.macusanite/state.json`), so
+   * these buttons walk the focus the reader has already moved through.
+   */
+  function navButton(label, key, title, navigate) {
+    return el('button', {
+      class: 'icon-btn',
+      type: 'button',
+      text: label,
+      title,
+      disabled: !app.state.nav[key],
+      onclick: navigate,
+    });
+  }
+
   function renderHeader() {
     clear(header).append(
       el('div', { class: 'graph-title' }, [
@@ -72,6 +88,8 @@ export function createGraphPanel({ app, root }) {
         el('strong', { text: 'Concept graph' }),
       ]),
       el('div', { class: 'spacer' }),
+      navButton('←', 'canBack', 'Back to the previous vein in this graph journey', () => app.navigateBack()),
+      navButton('→', 'canForward', 'Forward to the next vein in this graph journey', () => app.navigateForward()),
       el('button', { class: 'icon-btn', type: 'button', title: 'Re-fit graph', text: '⤢', onclick: () => { view = { x: 0, y: 0, k: 1 }; draw(); } }),
       el('button', { class: 'icon-btn', type: 'button', title: 'Hide graph panel', text: '⇥', onclick: () => app.toggleGraph(false) }),
     );
