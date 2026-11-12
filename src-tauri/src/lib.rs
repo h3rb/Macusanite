@@ -6,6 +6,7 @@
 
 mod history;
 mod meta;
+mod s3;
 mod vault;
 mod watch;
 
@@ -375,6 +376,19 @@ fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
         .map(|p| p.to_string_lossy().to_string()))
 }
 
+/// Pick one file — the private key for an SSH backup.
+#[tauri::command]
+fn pick_file(app: AppHandle) -> Result<Option<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog().file().pick_file(move |file| {
+        let _ = tx.send(file);
+    });
+    let picked = rx.recv_timeout(std::time::Duration::from_secs(600)).map_err(|e| e.to_string())?;
+    Ok(picked
+        .and_then(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().to_string()))
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -431,6 +445,19 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| format!("could not open {url}: {e}"))
 }
 
+/// Upload the whole vault to S3 as one timestamped tar.gz.
+///
+/// The secret access key arrives from the dialog, is used for this request, and
+/// is not stored anywhere. See `s3.rs` for the signing and archive rules.
+#[tauri::command]
+async fn backup_vault_s3(
+    state: State<'_, VaultState>,
+    request: s3::BackupRequest,
+) -> Result<s3::Report, String> {
+    let root = state.root()?;
+    s3::backup(&root, request).await
+}
+
 /* ── builder ───────────────────────────────────────────────────────────── */
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -462,8 +489,10 @@ pub fn run() {
             history_redo,
             open_help_window,
             pick_folder,
+            pick_file,
             quit_app,
             open_external,
+            backup_vault_s3,
         ])
         .setup(|app| {
             // Keep the default window label stable: capabilities and the

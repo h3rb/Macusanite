@@ -25,6 +25,7 @@
  *   returns: 'markdown description of the result',
  *   examples: ['macusanite vein write Home.md --text -'],
  *   mutates: true,        // writes to the vault
+ *   external: true,       // reaches a remote service (an upload), vault untouched
  *   undoable: true,       // appears in the undo stack (so `undo` reverses it)
  *   mcp: true,            // exposed as an MCP tool (default true)
  * }
@@ -205,6 +206,52 @@ export const COMMANDS = {
     ],
     mutates: true,
     undoable: true,
+  },
+
+  'vault.backup': {
+    group: 'Vault',
+    summary: 'Upload the whole vault to an S3 bucket as one timestamped tar.gz, directly or over SSH.',
+    description:
+      'One object per run, at `<prefix><vault>/<YYYYMMDDTHHMMSSZ>.tar.gz`, normally uploaded with a '
+      + 'signed `PutObject` request (or over SSH, below). The archive holds every file in the vault — '
+      + 'veins, chambers and `.macusanite` — so restoring is “untar it and open the folder”. A vault '
+      + 'that is also a git repository does not back up `.git`, and symlinks are left out.\n\n'
+      + 'Credentials come from `--access-key` plus `--secret-key`, from `--secret-key-file` (a file '
+      + 'holding the secret, which keeps it off the command line), from `AWS_ACCESS_KEY_ID` / '
+      + '`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, or from `~/.aws/credentials` (or a named '
+      + '`--profile`). Region comes from `--region`, `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile, '
+      + 'and defaults to `us-east-1`. `--endpoint` points the upload at an S3-compatible service, '
+      + 'addressed path-style. `--dry-run` assembles the archive and reports the key and size without '
+      + 'sending anything. Nothing in the vault is changed.\n\n'
+      + 'With `--ssh-host user@host` the archive travels over SSH instead: it is streamed to that '
+      + 'machine, uploaded there by its own `aws` CLI from a temporary file, and the file is removed. '
+      + 'No AWS credential is needed — or read — on this machine. `--ssh-key` names the private key '
+      + '(a `.pem` is fine), `--ssh-port` changes the port, and `--region`, `--profile` and '
+      + '`--endpoint` are handed to the remote `aws` command rather than resolved locally. The remote '
+      + 'host needs the AWS CLI and its own working credentials.',
+    external: true,
+    params: [
+      { name: 'bucket', type: 'string', required: true, positional: true, description: 'Destination bucket.' },
+      { name: 'region', type: 'string', description: 'Bucket region; defaults to the environment or profile; with `--ssh-host`, the remote region.' },
+      { name: 'prefix', type: 'string', description: 'Key prefix, so several vaults can share a bucket.', default: 'macusanite/' },
+      { name: 'endpoint', type: 'string', description: 'S3-compatible endpoint, e.g. `https://minio.example:9000` (path-style).' },
+      { name: 'access-key', type: 'string', description: 'AWS access key id.' },
+      { name: 'secret-key', type: 'string', description: 'AWS secret access key. Prefer `--secret-key-file` or the environment.' },
+      { name: 'secret-key-file', type: 'string', description: 'Read the secret access key from this file instead (direct uploads only).' },
+      { name: 'session-token', type: 'string', description: 'Session token, for temporary credentials.' },
+      { name: 'profile', type: 'string', description: 'Profile in `~/.aws/credentials` (the remote host’s, with `--ssh-host`).' },
+      { name: 'ssh-host', type: 'string', description: 'Upload over SSH from this host (`user@host`), with its credentials instead of this machine’s.' },
+      { name: 'ssh-key', type: 'string', description: 'Private key for the SSH connection, e.g. a `.pem` file.' },
+      { name: 'ssh-port', type: 'integer', description: 'SSH port; defaults to the client\'s own configuration.' },
+      { name: 'dry-run', type: 'boolean', description: 'Build the archive and report where it would go, without uploading.' },
+    ],
+    returns: '`{ ok, transport, sshHost, bucket, key, region, endpoint, files, bytes, url, credentials, dryRun }`',
+    examples: [
+      'macusanite vault backup my-notes-backups --region eu-west-1',
+      'macusanite vault backup my-notes-backups --secret-key-file ~/.aws/vault-secret --prefix fieldwork/',
+      'macusanite vault backup my-notes-backups --endpoint https://minio.local:9000 --dry-run',
+      'macusanite vault backup my-notes-backups --ssh-host backup@notes.example --ssh-key ~/.ssh/backup.pem',
+    ],
   },
 
   'vault.state': {
@@ -735,13 +782,15 @@ export function isUndoable(command) {
 
 /** MCP annotations for a command, derived from the same flags the CLI documents. */
 export function annotations(command) {
+  const entry = COMMANDS[command] ?? {};
   const mutates = isMutating(command);
   const undoable = isUndoable(command);
   return {
-    readOnlyHint: !mutates,
+    readOnlyHint: !mutates && entry.external !== true,
     destructiveHint: command === 'vein.delete' || command === 'vault.index.drop',
     idempotentHint: !mutates || undoable,
-    openWorldHint: false,
+    // An upload leaves the machine; everything else here is local.
+    openWorldHint: entry.external === true,
   };
 }
 

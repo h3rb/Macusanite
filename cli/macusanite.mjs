@@ -38,6 +38,7 @@ import {
 import { commandPage } from '../src/lib/helpDoc.js';
 import { createVaultApi } from '../src/lib/api.js';
 import { openVault } from './vaultFs.js';
+import { backupVaultToS3 } from './s3Backup.js';
 import { formatResult } from './format.js';
 
 const PROGRAM = 'macusanite';
@@ -286,7 +287,8 @@ async function createSession(globals) {
     fs.writeFileSync(absolute, contents, 'utf8');
     return { path: absolute, bytes: Buffer.byteLength(contents) };
   };
-  const api = createVaultApi({ openVault, writeFile });
+  const readFile = async (target) => fs.readFileSync(path.resolve(process.cwd(), target), 'utf8');
+  const api = createVaultApi({ openVault, writeFile, readFile, backupS3: backupVaultToS3 });
   if (globals.vault) {
     const store = await openVault(globals.vault, { create: false });
     api.attach(store, store.root);

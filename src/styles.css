@@ -1553,6 +1553,88 @@ dialog::backdrop {
   overflow: auto;
 }
 
+/* ── S3 backups ───────────────────────────────────────────────────────── */
+
+.backup-dialog {
+  width: min(560px, 94vw);
+  max-height: 88vh;
+  overflow: auto;
+}
+
+.backup-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.backup-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.backup-credentials {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+
+.backup-credentials[hidden] {
+  display: none;
+}
+
+.backup-key-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.backup-key-row .md-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.backup-auto {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.backup-auto input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.backup-status {
+  min-height: 1.2em;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.backup-status.is-ok {
+  color: var(--ok);
+}
+
+.backup-status.is-error {
+  color: var(--error);
+}
+
+.backup-key {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
 .merge-body {
   display: flex;
   flex-direction: column;

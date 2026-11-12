@@ -206,6 +206,45 @@ of the undo stack.
 Full syntax details — wiki links, aliases, section anchors, mermaid, tags,
 callouts — are in [Wiki.md](Wiki.md).
 
+### Backups
+
+A vault is a folder, so a backup is that folder: **☰ → Back up to S3…** writes
+one timestamped `.tar.gz` of every vein, chamber and `.macusanite` file and
+uploads it to a bucket. The archive skips `.git` and symlinks, and restoring is
+“untar it and open the folder”.
+
+The CLI does the same, which is what a cron job or an agent uses:
+
+```bash
+node cli/macusanite.mjs --vault ./notes vault backup my-notes-backups --region eu-west-1
+node cli/macusanite.mjs --vault ./notes vault backup my-notes-backups \
+  --access-key AKIA… --secret-key-file ~/.aws/vault-secret --prefix fieldwork/
+node cli/macusanite.mjs --vault ./notes vault backup my-notes-backups \
+  --endpoint https://minio.local:9000 --dry-run
+node cli/macusanite.mjs --vault ./notes vault backup my-notes-backups \
+  --ssh-host backup@notes.example --ssh-key ~/.ssh/backup.pem
+```
+
+Credentials come from the flags, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+`AWS_SESSION_TOKEN`, or `~/.aws/credentials` (with `--profile`). Keys are
+`<prefix><vault>/<YYYYMMDDTHHMMSSZ>.tar.gz` under `macusanite/` by default, so
+several vaults can share a bucket. `--endpoint` targets an S3-compatible service
+(path-style), and `--dry-run` builds the archive without sending it. The secret
+is never written into the vault or the session log.
+
+`--ssh-host user@host` takes the other route: the archive is streamed over SSH
+and uploaded there by the host's own `aws` CLI, so this machine needs no AWS
+credential. `--ssh-key` names the private key (a `.pem` works), and `--region`,
+`--profile` and `--endpoint` then describe the remote host's settings. The
+dialog offers the same choice, and the host needs the AWS CLI and its own
+working credentials.
+
+Ticking *Upload automatically after each save* in that dialog makes the window
+repeat the upload over the same transport: it waits five seconds after saving
+stops, runs one upload at a time, and pauses for five minutes after a failure.
+Only the non-secret fields are remembered; the AWS environment or
+`~/.aws/credentials` covers a restart.
+
 ---
 
 ## Driving Macusanite without a window
@@ -228,7 +267,7 @@ node cli/macusanite.mjs --vault ./notes vein write Home.md --text - < new-home.m
 node cli/macusanite.mjs help vein.write        # one command's full documentation
 ```
 
-44 commands, in seven groups: identity and settings, documents, chambers, search
+45 commands, in seven groups: identity and settings, documents, chambers, search
 and the graph, colours, history, help. Everything takes `--json` for
 machine-readable output and `--vault <folder>` (or `MACUSANITE_VAULT`) to choose a
 vault; results go to stdout, diagnostics to stderr, and the exit code is non-zero
@@ -322,9 +361,10 @@ which is what makes `npm run dev` and the tests useful without a build.
 src/
   lib/          pure, testable logic (path, wikilinks, colors, colorStore,
                 graph, tree, settings, frontmatter, history, watch, search,
-                indexCache, fixtures)
+                indexCache, fixtures, sigv4, tar, backup)
   ui/           rendering + DOM (markdown, viewer, sidebar, searchPanel, chrome,
-                graphPanel, colorpicker, settingsDialog, resizer, helpWindow, dom)
+                graphPanel, colorpicker, settingsDialog, backupDialog, resizer,
+                helpWindow, dom)
   lib/          also: api.js (every vault operation), catalogue.js (their
                 declaration), helpDoc.js (the manual), helpSearch.js,
                 vaultStore.js (the shared vault store), indexCache.js
@@ -335,6 +375,7 @@ cli/
   macusanite.mjs  the CLI: catalogue commands, argument parsing, help output
   mcp.js          the MCP server: tools, resources, prompts, stdio/HTTP/intake
   vaultFs.js      the vault adapter over node:fs
+  s3Backup.js     the CLI's S3 upload: walk, tar, sign, PUT, or stream over SSH
   format.js       human-readable output for every command
 docs/Help.md      the generated manual (the Help window shows this text)
 help.html         the manual's own page — the second window in the desktop app
@@ -348,14 +389,15 @@ src-tauri/src/
                 writes, slug parity
   meta.rs       .macusanite files, ISO timestamps, session logs
   history.rs    the undo/redo stacks
+  s3.rs         S3 backups: SigV4, the vault tarball, direct and SSH uploads
 tests/node/     unit tests for everything under src/lib plus the renderers
 ```
 
 ### Tests
 
 ```bash
-npm test                                  # 170 JS tests
-cargo test --manifest-path src-tauri/Cargo.toml   # 30 Rust tests
+npm test                                  # 209 JS tests
+cargo test --manifest-path src-tauri/Cargo.toml   # 40 Rust tests
 ```
 
 The Rust suite covers path traversal refusal, vault scanning (including the

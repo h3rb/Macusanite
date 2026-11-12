@@ -28,6 +28,7 @@ import { createViewer } from './ui/viewer.js';
 import { createGraphPanel } from './ui/graphPanel.js';
 import { createColorPicker } from './ui/colorpicker.js';
 import { createSettingsDialog } from './ui/settingsDialog.js';
+import { createBackupDialog } from './ui/backupDialog.js';
 import { askMerge } from './ui/mergeDialog.js';
 import { createSearchPanel } from './ui/searchPanel.js';
 import { createResizers } from './ui/resizer.js';
@@ -102,6 +103,7 @@ let viewer;
 let graphPanel;
 let colorPicker;
 let settingsDialog;
+let backupDialog;
 let resizers;
 let pageOverrides = {};
 // The live document index. `state.index` is this list, so replacing an entry
@@ -199,6 +201,7 @@ const app = {
     searchPanel = createSearchPanel({ app, root: qs('#search-pane') });
     colorPicker = createColorPicker({ app, root });
     settingsDialog = createSettingsDialog({ app });
+    backupDialog = createBackupDialog({ app });
     resizers = createResizers({ app, root });
 
     app.configureMermaid();
@@ -884,6 +887,9 @@ const app = {
         app.toast(`Saved with ${conflicts} unresolved conflict${conflicts === 1 ? '' : 's'} still marked`, 'warn', 5600);
       }
       await backend.log('info', `saved ${state.current.path}${conflicts ? ` (${conflicts} conflict${conflicts === 1 ? '' : 's'} left marked)` : ''}`);
+      // Saves are the moment the vault on disk changed; if automatic backup is
+      // on, this schedules one after the typing settles.
+      backupDialog?.noteSaved();
     } catch (error) {
       app.toast(`Save failed: ${error.message}`, 'error');
     }
@@ -1100,6 +1106,19 @@ const app = {
 
   openSettings() {
     settingsDialog.open();
+  },
+
+  /** The S3 backup dialog; the CLI has the same command as `vault backup`. */
+  openBackup() {
+    if (!state.vault) {
+      app.toast('Open a vault first', 'warn');
+      return;
+    }
+    if (!isDesktop) {
+      app.toast('S3 backups run in the desktop app — use `macusanite vault backup` from the CLI.', 'warn', 5200);
+      return;
+    }
+    backupDialog.open();
   },
 
   openSyntaxGuide() {

@@ -387,7 +387,11 @@ export const backend = {
   history: () => invoke('history_state', {}),
   undo: () => invoke('history_undo', {}),
   redo: () => invoke('history_redo', {}),
+  /** Upload the whole vault to S3. Never persisted: the secret lives in memory. */
+  backupS3: (request) => invoke('backup_vault_s3', { request }),
   pickFolder: () => invoke('pick_folder', {}),
+  /** One file, e.g. an SSH private key. Desktop only; the dialog hides its button in a browser. */
+  pickFile: () => invoke('pick_file', {}),
   quit: () => invoke('quit_app', {}),
   onVaultChange,
   log,

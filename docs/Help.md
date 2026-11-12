@@ -16,6 +16,7 @@ Everything Macusanite does — the window, the vault format, the CLI, the API an
 * [Undo and redo](#undo)
 * [Following the vault](#watching)
 * [Opening a large vault](#lazy-index)
+* [Backing up to S3](#backups)
 * [Keyboard](#keyboard)
 * [Driving Macusanite without a window](#agents)
 * [This manual](#this-manual)
@@ -218,6 +219,50 @@ changing size is the one blind spot: the watcher covers edits made while the vau
 saved by the viewer refreshes its own entry immediately. `vault index` reports the cache's state and
 `vault index rebuild` rewrites it.
 
+## Backing up to S3
+
+A vault is a folder, so its backup is the folder: one timestamped `.tar.gz` of every vein,
+chamber and `.macusanite` file, uploaded as a single object. A run never changes the vault.
+
+| Where | How |
+| --- | --- |
+| The window | **☰ → Back up to S3…** — bucket, region, prefix, endpoint, and credentials or an SSH host |
+| The CLI | `macusanite vault backup <bucket>` — same options as flags |
+| An MCP client | the `vault_backup` tool |
+
+The key is `<prefix><vault>/<YYYYMMDDTHHMMSSZ>.tar.gz`; the prefix defaults to `macusanite/`, so one
+bucket can hold several vaults, and restoring means untarring an object and opening the folder it made.
+The archive skips `.git` and symlinks, and includes the viewer's metadata, so settings, colours and the
+undo stacks come back with the notes.
+
+The other route is SSH. `--ssh-host user@backup-host` streams the archive over the connection
+(`--ssh-key ~/keys/backup.pem` for a PEM private key, `--ssh-port` when it is not 22); the host
+writes it to a temporary file, uploads it with its own `aws` CLI, and deletes it. This machine then
+needs no AWS credential at all — and the command reads none — while `--region`, `--profile` and
+`--endpoint` name settings on the remote host. The window's dialog offers the same choice. The remote
+host needs an OpenSSH server, a POSIX shell, the AWS CLI and its own working identity. The connection
+runs with `BatchMode=yes`, so a passphrase-protected key or a password prompt fails at once instead of
+waiting.
+
+**☰ → Back up to S3…** can also repeat the upload by itself: tick *Upload automatically after each
+save*, and the window waits five seconds after saving stops, then uploads with the same transport
+and settings. One upload runs at a time — a save during an upload queues another — and a failed run
+pauses automatic uploads for five minutes so a misconfiguration does not fill the session log. Only
+the non-secret fields are remembered: a hand-typed AWS secret lasts until the window closes, after
+which the environment or `~/.aws/credentials` supplies it (SSH needs no local secret at all).
+Automatic uploads are a window feature; `vault backup` remains one upload per invocation, which is
+what a cron job or an agent uses.
+
+Credentials are resolved the way AWS's own tools resolve them: the access key and secret from the
+command's flags (or the dialog), otherwise `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+`AWS_SESSION_TOKEN`, otherwise `~/.aws/credentials` and `~/.aws/config` — with `--profile` naming a
+profile. `--secret-key-file` reads the secret from a file, which keeps it out of shell history and a
+process list. A region comes from `--region`, `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile and
+defaults to `us-east-1`. `--endpoint` sends the upload to an S3-compatible service (MinIO, R2, a
+gateway), addressed path-style; AWS itself is virtual-host addressed. `--dry-run` builds the archive
+and prints where it would go, without uploading. The secret is never written to the vault or to the
+session log.
+
 ## Keyboard
 
 | Keys | Action |
@@ -303,26 +348,27 @@ The sections below are the windows into the manual's own structure: `search`, `c
 
 ### Vault
 
-| Command | What it does | Writes |
+| Command | What it does | Effect |
 | --- | --- | --- |
-| [`vault.open`](#vault-open) | Point this session at a vault folder, creating `.macusanite` if it is not there yet. | yes |
-| [`vault.info`](#vault-info) | Identity of the open vault, with its settings and colour count. | no |
-| [`vault.create`](#vault-create) | Create a vault folder (and its `.macusanite`), optionally seeded with the sample vault. | yes |
+| [`vault.open`](#vault-open) | Point this session at a vault folder, creating `.macusanite` if it is not there yet. | write |
+| [`vault.info`](#vault-info) | Identity of the open vault, with its settings and colour count. | read |
+| [`vault.create`](#vault-create) | Create a vault folder (and its `.macusanite`), optionally seeded with the sample vault. | write |
 | [`vault.update`](#vault-update) | Change the vault name or description. | undoable |
-| [`vault.stats`](#vault-stats) | Numbers that describe the vault: veins, chambers, links, tags, ghosts, orphans, bytes. | no |
-| [`vault.tree`](#vault-tree) | The chamber/vein tree exactly as the sidebar draws it. | no |
-| [`vault.veins`](#vault-veins) | Every vein in the vault, as vault-relative paths. | no |
-| [`vault.chambers`](#vault-chambers) | Every chamber (folder) in the vault, outermost first. | no |
-| [`vault.settings`](#vault-settings) | Read the viewer settings, merged over the defaults. | no |
+| [`vault.stats`](#vault-stats) | Numbers that describe the vault: veins, chambers, links, tags, ghosts, orphans, bytes. | read |
+| [`vault.tree`](#vault-tree) | The chamber/vein tree exactly as the sidebar draws it. | read |
+| [`vault.veins`](#vault-veins) | Every vein in the vault, as vault-relative paths. | read |
+| [`vault.chambers`](#vault-chambers) | Every chamber (folder) in the vault, outermost first. | read |
+| [`vault.settings`](#vault-settings) | Read the viewer settings, merged over the defaults. | read |
 | [`vault.settings.set`](#vault-settings-set) | Change viewer settings. | undoable |
-| [`vault.state`](#vault-state) | Read the viewer state: the last vein read, expanded chambers, panel widths. | no |
-| [`vault.state.set`](#vault-state-set) | Write viewer state. | yes |
-| [`vault.log`](#vault-log) | Append a line to the session log. | yes |
-| [`vault.logs`](#vault-logs) | Read the session log. | no |
-| [`vault.index`](#vault-index) | Report the state of `.macusanite/index.json`, the document index cache. | no |
-| [`vault.index.rebuild`](#vault-index-rebuild) | Read every vein again and rewrite the index cache. | yes |
-| [`vault.index.drop`](#vault-index-drop) | Delete the index cache. | yes |
-| [`vault.doctor`](#vault-doctor) | Check the vault for things that are probably wrong. | no |
+| [`vault.backup`](#vault-backup) | Upload the whole vault to an S3 bucket as one timestamped tar.gz, directly or over SSH. | upload |
+| [`vault.state`](#vault-state) | Read the viewer state: the last vein read, expanded chambers, panel widths. | read |
+| [`vault.state.set`](#vault-state-set) | Write viewer state. | write |
+| [`vault.log`](#vault-log) | Append a line to the session log. | write |
+| [`vault.logs`](#vault-logs) | Read the session log. | read |
+| [`vault.index`](#vault-index) | Report the state of `.macusanite/index.json`, the document index cache. | read |
+| [`vault.index.rebuild`](#vault-index-rebuild) | Read every vein again and rewrite the index cache. | write |
+| [`vault.index.drop`](#vault-index-drop) | Delete the index cache. | write |
+| [`vault.doctor`](#vault-doctor) | Check the vault for things that are probably wrong. | read |
 
 ### `vault.open`
 
@@ -504,6 +550,44 @@ macusanite vault settings set --patch '{"graph":{"depth":3}}'
 ```
 
 
+### `vault.backup`
+
+Upload the whole vault to an S3 bucket as one timestamped tar.gz, directly or over SSH.
+
+One object per run, at `<prefix><vault>/<YYYYMMDDTHHMMSSZ>.tar.gz`, normally uploaded with a signed `PutObject` request (or over SSH, below). The archive holds every file in the vault — veins, chambers and `.macusanite` — so restoring is “untar it and open the folder”. A vault that is also a git repository does not back up `.git`, and symlinks are left out.
+
+Credentials come from `--access-key` plus `--secret-key`, from `--secret-key-file` (a file holding the secret, which keeps it off the command line), from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, or from `~/.aws/credentials` (or a named `--profile`). Region comes from `--region`, `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile, and defaults to `us-east-1`. `--endpoint` points the upload at an S3-compatible service, addressed path-style. `--dry-run` assembles the archive and reports the key and size without sending anything. Nothing in the vault is changed.
+
+With `--ssh-host user@host` the archive travels over SSH instead: it is streamed to that machine, uploaded there by its own `aws` CLI from a temporary file, and the file is removed. No AWS credential is needed — or read — on this machine. `--ssh-key` names the private key (a `.pem` is fine), `--ssh-port` changes the port, and `--region`, `--profile` and `--endpoint` are handed to the remote `aws` command rather than resolved locally. The remote host needs the AWS CLI and its own working credentials.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bucket` | string | yes | Destination bucket. |
+| `region` | string | no | Bucket region; defaults to the environment or profile; with `--ssh-host`, the remote region. |
+| `prefix` | string | no | Key prefix, so several vaults can share a bucket. Default `"macusanite/"`. |
+| `endpoint` | string | no | S3-compatible endpoint, e.g. `https://minio.example:9000` (path-style). |
+| `access-key` | string | no | AWS access key id. |
+| `secret-key` | string | no | AWS secret access key. Prefer `--secret-key-file` or the environment. |
+| `secret-key-file` | string | no | Read the secret access key from this file instead (direct uploads only). |
+| `session-token` | string | no | Session token, for temporary credentials. |
+| `profile` | string | no | Profile in `~/.aws/credentials` (the remote host’s, with `--ssh-host`). |
+| `ssh-host` | string | no | Upload over SSH from this host (`user@host`), with its credentials instead of this machine’s. |
+| `ssh-key` | string | no | Private key for the SSH connection, e.g. a `.pem` file. |
+| `ssh-port` | integer | no | SSH port; defaults to the client's own configuration. |
+| `dry-run` | boolean | no | Build the archive and report where it would go, without uploading. |
+
+**Returns** `{ ok, transport, sshHost, bucket, key, region, endpoint, files, bytes, url, credentials, dryRun }`
+
+**Kind** uploads to a remote service · MCP tool `vault_backup`
+
+```bash
+macusanite vault backup my-notes-backups --region eu-west-1
+macusanite vault backup my-notes-backups --secret-key-file ~/.aws/vault-secret --prefix fieldwork/
+macusanite vault backup my-notes-backups --endpoint https://minio.local:9000 --dry-run
+macusanite vault backup my-notes-backups --ssh-host backup@notes.example --ssh-key ~/.ssh/backup.pem
+```
+
+
 ### `vault.state`
 
 Read the viewer state: the last vein read, expanded chambers, panel widths.
@@ -638,20 +722,20 @@ macusanite vault doctor --json
 
 ### Documents
 
-| Command | What it does | Writes |
+| Command | What it does | Effect |
 | --- | --- | --- |
-| [`vein.read`](#vein-read) | Read one vein as plain text. | no |
-| [`vein.info`](#vein-info) | Metadata of one vein: title, aliases, tags, headings, links, colours, word count. | no |
+| [`vein.read`](#vein-read) | Read one vein as plain text. | read |
+| [`vein.info`](#vein-info) | Metadata of one vein: title, aliases, tags, headings, links, colours, word count. | read |
 | [`vein.write`](#vein-write) | Replace the contents of a vein, recording an undo step. | undoable |
 | [`vein.create`](#vein-create) | Create a vein, with front matter and a title heading unless you provide the text. | undoable |
 | [`vein.append`](#vein-append) | Append text to the end of a vein. | undoable |
 | [`vein.section`](#vein-section) | Replace a section's body, or add the section when it is not there yet. | undoable |
 | [`vein.rename`](#vein-rename) | Move or rename a vein. | undoable |
 | [`vein.delete`](#vein-delete) | Delete a vein. | undoable |
-| [`vein.links`](#vein-links) | The wiki links a vein contains, in source order. | no |
-| [`vein.headings`](#vein-headings) | A vein's outline, with the anchor id each heading can be linked by. | no |
-| [`vein.backlinks`](#vein-backlinks) | Veins that link to this one. | no |
-| [`vein.resolve`](#vein-resolve) | Resolve a wiki target the way the viewer would. | no |
+| [`vein.links`](#vein-links) | The wiki links a vein contains, in source order. | read |
+| [`vein.headings`](#vein-headings) | A vein's outline, with the anchor id each heading can be linked by. | read |
+| [`vein.backlinks`](#vein-backlinks) | Veins that link to this one. | read |
+| [`vein.resolve`](#vein-resolve) | Resolve a wiki target the way the viewer would. | read |
 
 ### `vein.read`
 
@@ -882,9 +966,9 @@ macusanite vein resolve "Analytical Methods" --from Home.md --json
 
 ### Chambers
 
-| Command | What it does | Writes |
+| Command | What it does | Effect |
 | --- | --- | --- |
-| [`chamber.create`](#chamber-create) | Create a chamber (folder) inside the vault. | yes |
+| [`chamber.create`](#chamber-create) | Create a chamber (folder) inside the vault. | write |
 
 ### `chamber.create`
 
@@ -907,12 +991,12 @@ macusanite chamber create Chambers/Lab
 
 ### Search and graph
 
-| Command | What it does | Writes |
+| Command | What it does | Effect |
 | --- | --- | --- |
-| [`search`](#search) | Search every vein: titles, headings, tags and body text, ranked in that order. | no |
-| [`tags`](#tags) | Every tag in the vault, with how many veins carry it. | no |
-| [`ghosts`](#ghosts) | Wiki links that point at veins which do not exist yet. | no |
-| [`graph`](#graph) | The concept graph as data: document, section and tag nodes with their edges. | no |
+| [`search`](#search) | Search every vein: titles, headings, tags and body text, ranked in that order. | read |
+| [`tags`](#tags) | Every tag in the vault, with how many veins carry it. | read |
+| [`ghosts`](#ghosts) | Wiki links that point at veins which do not exist yet. | read |
+| [`graph`](#graph) | The concept graph as data: document, section and tag nodes with their edges. | read |
 
 ### `search`
 
@@ -987,12 +1071,12 @@ macusanite graph --focus Home.md --json
 
 ### Colours
 
-| Command | What it does | Writes |
+| Command | What it does | Effect |
 | --- | --- | --- |
 | [`color.set`](#color-set) | Assign a colour to a page, section, link or concept. | undoable |
 | [`color.clear`](#color-clear) | Remove a colour assignment, so the target inherits again. | undoable |
 | [`color.reset`](#color-reset) | Clear every colour assignment in the vault. | undoable |
-| [`color.resolve`](#color-resolve) | The colour a target would actually be painted. | no |
+| [`color.resolve`](#color-resolve) | The colour a target would actually be painted. | read |
 
 ### `color.set`
 
@@ -1082,11 +1166,11 @@ macusanite color resolve page --path Home.md
 
 ### History
 
-| Command | What it does | Writes |
+| Command | What it does | Effect |
 | --- | --- | --- |
-| [`history`](#history) | The undo and redo stacks, newest first. | no |
-| [`undo`](#undo) | Undo the most recent recorded change. | yes |
-| [`redo`](#redo) | Redo the last undone change. | yes |
+| [`history`](#history) | The undo and redo stacks, newest first. | read |
+| [`undo`](#undo) | Undo the most recent recorded change. | write |
+| [`redo`](#redo) | Redo the last undone change. | write |
 
 ### `history`
 
@@ -1133,10 +1217,10 @@ macusanite redo
 
 ### Help
 
-| Command | What it does | Writes |
+| Command | What it does | Effect |
 | --- | --- | --- |
-| [`help`](#help) | The command reference: every command, its parameters and examples. | no |
-| [`docs`](#docs) | The whole manual, as markdown: every feature of Macusanite, then every command. | no |
+| [`help`](#help) | The command reference: every command, its parameters and examples. | read |
+| [`docs`](#docs) | The whole manual, as markdown: every feature of Macusanite, then every command. | read |
 
 ### `help`
 
@@ -1195,6 +1279,9 @@ macusanite docs --sections
   [Undo and redo](#undo-and-redo).
 * **Embeds** (`![[Note]]`) render as reference cards, not as transcluded content.
 * **The undo stack is snapshots, not diffs**, capped at 400 entries.
+* **A backup is assembled in memory and uploaded as one object.** A markdown vault is small; a vault
+  holding large binaries is read whole into memory, and every run is a fresh full copy rather than an
+  incremental sync.
 * **MCP over HTTP is unauthenticated.** It binds loopback by default; `--host` is your decision.
 * **A merge can only see lines.** Two sides that insert at the same point — both appending to the end
   of a vein, say — are marked as a conflict rather than guessed at, and a vein whose whole body changed
@@ -1209,4 +1296,4 @@ macusanite docs --sections
 
 ---
 
-44 commands · generated 2026-10-12
+45 commands · generated 2026-11-05

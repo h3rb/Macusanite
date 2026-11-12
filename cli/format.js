@@ -117,6 +117,24 @@ export function formatResult(command, result, { color = false } = {}) {
       lines.push(`${result.name}${result.description ? ` — ${result.description}` : ''}`);
       break;
 
+    case 'vault.backup': {
+      const size = bytes(result.bytes);
+      if (result.dryRun) {
+        lines.push(paint.yellow('dry run') + ` — ${plural(result.files ?? 0, 'file')} (${size}) would go to ${result.url}`);
+      } else {
+        lines.push(`${paint.green('backed up')} ${plural(result.files ?? 0, 'file')} (${size})`);
+      }
+      lines.push(fields([
+        ['transport', result.transport === 'ssh' ? `ssh ${result.sshHost}` : 'direct'],
+        ['bucket', result.bucket],
+        ['key', result.key],
+        ['region', result.region],
+        ['endpoint', result.endpoint],
+        ['credentials', result.transport === 'ssh' ? 'the remote host' : result.credentials],
+      ], paint));
+      break;
+    }
+
     case 'vault.stats':
       lines.push(fields([
         ['vault', result.path],

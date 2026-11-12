@@ -300,9 +300,9 @@ the Windows `nsis` one.
 | `npm run build` | bundle the interface into `dist/` (`index.html` and `help.html`) | Node |
 | `npm run tauri:dev` | the real desktop window, hot reload | everything |
 | `npm run tauri:build` | release binary + installer (runs `npm run build` first) | everything |
-| `npm test` | 170 JavaScript tests (`node --test`, no browser needed) | Node |
+| `npm test` | 209 JavaScript tests (`node --test`, no browser needed) | Node |
 | `npm run test -- tests/node/mcp.test.js` | one suite | Node |
-| `cargo test --manifest-path src-tauri/Cargo.toml` | 30 Rust tests (paths, scanning, writes, undo/redo, watcher) | Rust |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | 40 Rust tests (paths, scanning, writes, undo/redo, watcher) | Rust |
 | `npm run docs` | regenerate [docs/Help.md](docs/Help.md) from the catalogue | Node |
 | `npm run docs:check` | fail if the manual is out of date (used by the tests) | Node |
 | `npm run vault:sample` | write the bundled sample vault to `reference-vault/` | Node |
@@ -324,11 +324,11 @@ the checklist, in order, cheapest first:
 
 ```bash
 # 1. the logic (no display, no Rust, ~3 s)
-npm test                                   # expect: 170 pass, 0 fail
+npm test                                   # expect: 209 pass, 0 fail
 npm run docs:check                         # expect: docs in sync
 
 # 2. the Rust half
-cargo test --manifest-path src-tauri/Cargo.toml    # expect: 30 pass
+cargo test --manifest-path src-tauri/Cargo.toml    # expect: 37 pass
 
 # 3. the interface bundle (both pages must be emitted)
 npm run build && ls dist/index.html dist/help.html

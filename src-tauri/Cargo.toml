@@ -24,6 +24,13 @@ serde_json = "1"
 # Cross-platform filesystem notifications: the vault stays live when something
 # outside the viewer adds, edits or removes a vein.
 notify = "8"
+# S3 backups: the window signs and uploads the same archive the CLI writes.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+hmac = "0.12"
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+url = "2"
 
 [features]
 # Enabled by `tauri build`; keeps the release binary free of a console window.

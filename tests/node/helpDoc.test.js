@@ -99,7 +99,7 @@ test('every command is documented with its arguments, result and examples', () =
       assert.match(example, /^macusanite /);
     }
     const expected = [
-      isMutating(name) ? 'writes to the vault' : 'reads only',
+      entry.external ? 'uploads to a remote service' : (isMutating(name) ? 'writes to the vault' : 'reads only'),
       isUndoable(name) ? 'records an undo step' : null,
       entry.mcp === false ? 'CLI only, not exposed over MCP' : `MCP tool \`${toolName(name)}\``,
     ].filter(Boolean).join(' · ');

@@ -228,6 +228,52 @@ saved by the viewer refreshes its own entry immediately. \`vault index\` reports
 \`vault index rebuild\` rewrites it.`,
   },
   {
+    slug: 'backups',
+    title: 'Backing up to S3',
+    body: `A vault is a folder, so its backup is the folder: one timestamped \`.tar.gz\` of every vein,
+chamber and \`.macusanite\` file, uploaded as a single object. A run never changes the vault.
+
+| Where | How |
+| --- | --- |
+| The window | **☰ → Back up to S3…** — bucket, region, prefix, endpoint, and credentials or an SSH host |
+| The CLI | \`macusanite vault backup <bucket>\` — same options as flags |
+| An MCP client | the \`vault_backup\` tool |
+
+The key is \`<prefix><vault>/<YYYYMMDDTHHMMSSZ>.tar.gz\`; the prefix defaults to \`macusanite/\`, so one
+bucket can hold several vaults, and restoring means untarring an object and opening the folder it made.
+The archive skips \`.git\` and symlinks, and includes the viewer's metadata, so settings, colours and the
+undo stacks come back with the notes.
+
+The other route is SSH. \`--ssh-host user@backup-host\` streams the archive over the connection
+(\`--ssh-key ~/keys/backup.pem\` for a PEM private key, \`--ssh-port\` when it is not 22); the host
+writes it to a temporary file, uploads it with its own \`aws\` CLI, and deletes it. This machine then
+needs no AWS credential at all — and the command reads none — while \`--region\`, \`--profile\` and
+\`--endpoint\` name settings on the remote host. The window's dialog offers the same choice. The remote
+host needs an OpenSSH server, a POSIX shell, the AWS CLI and its own working identity. The connection
+runs with \`BatchMode=yes\`, so a passphrase-protected key or a password prompt fails at once instead of
+waiting.
+
+**☰ → Back up to S3…** can also repeat the upload by itself: tick *Upload automatically after each
+save*, and the window waits five seconds after saving stops, then uploads with the same transport
+and settings. One upload runs at a time — a save during an upload queues another — and a failed run
+pauses automatic uploads for five minutes so a misconfiguration does not fill the session log. Only
+the non-secret fields are remembered: a hand-typed AWS secret lasts until the window closes, after
+which the environment or \`~/.aws/credentials\` supplies it (SSH needs no local secret at all).
+Automatic uploads are a window feature; \`vault backup\` remains one upload per invocation, which is
+what a cron job or an agent uses.
+
+Credentials are resolved the way AWS's own tools resolve them: the access key and secret from the
+command's flags (or the dialog), otherwise \`AWS_ACCESS_KEY_ID\` / \`AWS_SECRET_ACCESS_KEY\` /
+\`AWS_SESSION_TOKEN\`, otherwise \`~/.aws/credentials\` and \`~/.aws/config\` — with \`--profile\` naming a
+profile. \`--secret-key-file\` reads the secret from a file, which keeps it out of shell history and a
+process list. A region comes from \`--region\`, \`AWS_REGION\`, \`AWS_DEFAULT_REGION\` or the profile and
+defaults to \`us-east-1\`. \`--endpoint\` sends the upload to an S3-compatible service (MinIO, R2, a
+gateway), addressed path-style; AWS itself is virtual-host addressed. \`--dry-run\` builds the archive
+and prints where it would go, without uploading. The secret is never written to the vault or to the
+session log.`,
+  },
+
+  {
     slug: 'keyboard',
     title: 'Keyboard',
     body: `| Keys | Action |
@@ -346,7 +392,7 @@ export function commandPage(name, { long = true } = {}) {
     lines.push('');
   }
   if (entry.returns) lines.push(`**Returns** ${entry.returns}`, '');
-  const flags = [!isMutating(name) ? 'reads only' : 'writes to the vault',
+  const flags = [entry.external ? 'uploads to a remote service' : (!isMutating(name) ? 'reads only' : 'writes to the vault'),
     isUndoable(name) ? 'records an undo step' : null,
     entry.mcp === false ? 'CLI only, not exposed over MCP' : `MCP tool \`${toolName(name)}\``,
   ].filter(Boolean);
@@ -365,6 +411,7 @@ export function commandSummary(name) {
   const parts = [entry.summary];
   if (params.length) parts.push(`Arguments: ${params.join(', ')}.`);
   if (isMutating(name)) parts.push(isUndoable(name) ? 'Writes to the vault; undoable.' : 'Writes to the vault.');
+  else if (entry.external) parts.push('Uploads to a remote service; the vault is unchanged.');
   return parts.join(' ');
 }
 
@@ -374,9 +421,12 @@ export function commandReference({ commandsOnly = false } = {}) {
   for (const [group, entries] of commandsByGroup()) {
     if (!entries.length) continue;
     lines.push(`### ${group}`, '');
-    lines.push('| Command | What it does | Writes |', '| --- | --- | --- |');
+    lines.push('| Command | What it does | Effect |', '| --- | --- | --- |');
     for (const entry of entries) {
-      lines.push(`| [\`${entry.name}\`](#${slugify(entry.name)}) | ${entry.summary} | ${isMutating(entry.name) ? (isUndoable(entry.name) ? 'undoable' : 'yes') : 'no'} |`);
+      const effect = entry.external
+        ? 'upload'
+        : isMutating(entry.name) ? (isUndoable(entry.name) ? 'undoable' : 'write') : 'read';
+      lines.push(`| [\`${entry.name}\`](#${slugify(entry.name)}) | ${entry.summary} | ${effect} |`);
     }
     lines.push('');
     for (const entry of entries) lines.push(commandPage(entry.name), '');
@@ -396,6 +446,9 @@ const LIMITATIONS = `## Limitations
   [Undo and redo](#undo-and-redo).
 * **Embeds** (\`![[Note]]\`) render as reference cards, not as transcluded content.
 * **The undo stack is snapshots, not diffs**, capped at 400 entries.
+* **A backup is assembled in memory and uploaded as one object.** A markdown vault is small; a vault
+  holding large binaries is read whole into memory, and every run is a fresh full copy rather than an
+  incremental sync.
 * **MCP over HTTP is unauthenticated.** It binds loopback by default; \`--host\` is your decision.
 * **A merge can only see lines.** Two sides that insert at the same point — both appending to the end
   of a vein, say — are marked as a conflict rather than guessed at, and a vein whose whole body changed

@@ -40,8 +40,12 @@ const withExtension = (path) => (/\.(md|markdown|mdx)$/i.test(path) ? path : `${
  * @param {string|null} [input.root] where that store's vault lives
  * @param {(path: string, options: object) => Promise<object>} [input.openVault]
  *   how to open another folder; required only for `vault.open`/`vault.create`
+ * @param {(path: string) => Promise<string>} [input.readFile] text reader, for files named by an argument
+ * @param {(options: object) => Promise<object>} [input.backupS3]
+ *   uploads a vault; the CLI passes the Node implementation, and a runtime that
+ *   has no network or filesystem leaves it out
  */
-export function createVaultApi({ store = null, root = null, openVault = null, writeFile = null } = {}) {
+export function createVaultApi({ store = null, root = null, openVault = null, writeFile = null, readFile = null, backupS3 = null } = {}) {
   let session = store;
   let vaultRoot = root ?? store?.root ?? null;
 
@@ -163,6 +167,60 @@ export function createVaultApi({ store = null, root = null, openVault = null, wr
       if (args.set?.length) patch = applyAssignments(patch, args.set);
       if (!Object.keys(patch).length) throw new ApiError('nothing to set — pass --set key=value or --patch {...}', { code: 'bad-args' });
       return vault.updateSettings(patch, { record: args['no-undo'] !== true });
+    },
+
+    async 'vault.backup'(args) {
+      const vault = inVault();
+      if (!backupS3) {
+        throw new ApiError('this session cannot upload to S3 (no backup provider is available)', {
+          code: 'unsupported',
+        });
+      }
+      // The secret may live in a file so that it does not appear in a process
+      // list or a shell history. Only the first line is used, because that file
+      // is often written by hand or copied from a credentials file.
+      // An SSH backup needs no local secret at all: the remote host has its own
+      // credentials, so a `--secret-key-file` alongside `--ssh-host` is ignored
+      // rather than read.
+      const overSsh = Boolean(args['ssh-host']);
+      let secretKey = args['secret-key'] ?? null;
+      if (!secretKey && args['secret-key-file'] && !overSsh) {
+        if (!readFile) {
+          throw new ApiError('this session cannot read files, so --secret-key-file is unavailable', { code: 'unsupported' });
+        }
+        let text;
+        try {
+          text = await readFile(args['secret-key-file']);
+        } catch (error) {
+          throw new ApiError(`could not read ${args['secret-key-file']}: ${error.message}`, { code: 'bad-args' });
+        }
+        secretKey = String(text ?? '').trim().split(/\r?\n/)[0].trim() || null;
+        if (!secretKey) {
+          throw new ApiError(`secret key file is empty: ${args['secret-key-file']}`, { code: 'bad-args' });
+        }
+      }
+
+      const info = await vault.info();
+      try {
+        return await backupS3({
+          root: vaultRoot,
+          vaultName: info.name,
+          bucket: args.bucket,
+          region: args.region ?? null,
+          prefix: args.prefix ?? null,
+          endpoint: args.endpoint ?? null,
+          accessKey: args['access-key'] ?? null,
+          secretKey,
+          sessionToken: args['session-token'] ?? null,
+          profile: args.profile ?? null,
+          sshHost: args['ssh-host'] ?? null,
+          sshKey: args['ssh-key'] ?? null,
+          sshPort: args['ssh-port'] ?? null,
+          dryRun: args['dry-run'] === true,
+        });
+      } catch (error) {
+        throw new ApiError(error?.message ?? String(error), { code: 'backup-failed' });
+      }
     },
 
     async 'vault.state'() {
