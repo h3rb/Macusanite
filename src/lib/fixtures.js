@@ -373,16 +373,19 @@ const DEMO_IMAGE_REF = '.macusanite/node-images/demo.png';
 function showcaseWorldRecord() {
   // The progression board occupies the top tiers: tier 0 at x=40, tier 1 at
   // x=436, tier 2 at x=832 (300px cards, 96px gaps), stacked down 336px.
+  // Its box runs to y=648, so the demo groups sit below it (y>=712) in
+  // side-by-side boxes that touch neither the board's lanes nor each other:
+  // pinned on the left (x=40), locked on the right (x=436).
   const positions = {
     'welcome-to-your-vault': { x: 40, y: 40 },
     diagramming: { x: 436, y: 40 },
     'reference-cards-and-hand-written-links': { x: 436, y: 376 },
     flowchart: { x: 832, y: 40 },
     'sequence-diagram': { x: 832, y: 376 },
-    'the-three-panes': { x: 40, y: 376 },
-    'where-to-go-next': { x: 40, y: 712 },
-    'colour-everywhere': { x: 40, y: 1048 },
-    'try-the-worldbuilding-canvas': { x: 40, y: 1384 },
+    'the-three-panes': { x: 40, y: 712 },
+    'try-the-worldbuilding-canvas': { x: 40, y: 1048 },
+    'where-to-go-next': { x: 436, y: 712 },
+    'colour-everywhere': { x: 436, y: 1048 },
   };
   const groups = {
     'g-locked': {

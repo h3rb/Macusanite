@@ -1069,7 +1069,7 @@ export function createWorldbuildPanel({ app, root }) {
           record.length > limit ? el('span', { class: 'wb-stat', text: `+${record.length - limit} more` }) : null,
         ])
       ) : null,
-      el('span', { class: 'wb-legend', text: 'solid: links in the prose · dotted: section outline' }),
+      el('span', { class: 'wb-legend-key', text: 'solid: links in the prose · dotted: section outline' }),
     ]);
   }
 
@@ -3149,11 +3149,9 @@ export function createWorldbuildPanel({ app, root }) {
     if (!menuEl) return;
     menuEl.remove();
     menuEl = null;
-    // Its toggle may have been rebuilt since, and is the only button that
-    // carries this state.
-    document.querySelector('[data-legend-toggle]')?.setAttribute('aria-expanded', 'false');
-    document.querySelector('[data-history-toggle]')?.setAttribute('aria-expanded', 'false');
-    document.querySelector('[data-health-toggle]')?.setAttribute('aria-expanded', 'false');
+    // A toggle may have been rebuilt since it opened; clear every one.
+    document.querySelectorAll('[data-legend-toggle], [data-help-toggle], [data-history-toggle], [data-health-toggle]')
+      .forEach((button) => button.setAttribute('aria-expanded', 'false'));
     document.removeEventListener('pointerdown', dismissMenu, true);
     document.removeEventListener('keydown', escapeMenu);
   }
@@ -3173,10 +3171,9 @@ export function createWorldbuildPanel({ app, root }) {
   // ignores them rather than closing on the first press.
   function dismissMenu(event) {
     if (event.target.closest?.('.wb-menu')) return;
-    // The Legend and History buttons, though: they toggle, so they must be
-    // allowed through to their own handlers, or their press would close and
-    // reopen the popover at once.
-    if (event.target.closest?.('[data-legend-toggle], [data-history-toggle], [data-health-toggle]')) return;
+    // The dropdown buttons toggle, so their press must reach the handler;
+    // dismissing here would close and reopen the menu at once.
+    if (event.target.closest?.('[data-legend-toggle], [data-help-toggle], [data-history-toggle], [data-health-toggle]')) return;
     closeMenu();
   }
 
@@ -3191,13 +3188,10 @@ export function createWorldbuildPanel({ app, root }) {
     return svg;
   }
 
-  /** One legend entry: a wire or a glyph, then what it means. */
+  /** One legend entry: a drawn wire or a glyph, then what it means. */
   function legendRow(mark, title, blurb) {
-    const sample = typeof mark === 'string'
-      ? el('span', { class: 'wb-legend-glyph', text: mark })
-      : legendSample(mark);
     return el('div', { class: 'wb-legend-row' }, [
-      sample,
+      typeof mark === 'string' ? el('span', { class: 'wb-legend-glyph', text: mark }) : mark,
       el('span', { class: 'wb-legend-text' }, [el('strong', { text: title }), ` — ${blurb}`]),
     ]);
   }
@@ -3206,14 +3200,14 @@ export function createWorldbuildPanel({ app, root }) {
   function legendRows() {
     return [
       el('div', { class: 'wb-menu-label', text: 'Lines' }),
-      legendRow('wb-edge wb-edge-contains', 'Dotted', 'the vein’s outline: each card nested under its nearest shallower heading.'),
-      legendRow('wb-edge wb-edge-section', 'Solid', 'a link in the prose — [[#Heading]] — between two notes.'),
-      legendRow('wb-edge wb-edge-mention', 'Green and faint', 'a mention, [[Another note]], reaching across the vault.'),
-      legendRow('wb-edge wb-edge-section wb-rel-affects', 'A word on the line', 'is its relationship: associate, member of, template, parent, child, contains, controls, affects, and on to ally and foe — thickening as it strengthens. Click the word to step it.'),
-      legendRow('wb-edge wb-edge-bond wb-rel-ally', 'No prose link', 'a bond stated on the canvas itself, and drawn like any other bond of its kind.'),
-      legendRow('wb-edge wb-edge-group wb-rel-ally', 'To a group', 'drawn at twice the weight of a note bond of the same kind, and coloured as it is.'),
+      legendRow(legendSample('wb-edge wb-edge-contains'), 'Dotted', 'the vein’s outline: each card nested under its nearest shallower heading.'),
+      legendRow(legendSample('wb-edge wb-edge-section'), 'Solid', 'a link in the prose — [[#Heading]] — between two notes.'),
+      legendRow(legendSample('wb-edge wb-edge-mention'), 'Green and faint', 'a mention, [[Another note]], reaching across the vault.'),
+      legendRow(legendSample('wb-edge wb-edge-section wb-rel-affects'), 'A word on the line', 'is its relationship: associate, member of, template, parent, child, contains, controls, affects, and on to ally and foe — thickening as it strengthens. Click the word to step it.'),
+      legendRow(legendSample('wb-edge wb-edge-bond wb-rel-ally'), 'No prose link', 'a bond stated on the canvas itself, and drawn like any other bond of its kind.'),
+      legendRow(legendSample('wb-edge wb-edge-group wb-rel-ally'), 'To a group', 'drawn at twice the weight of a note bond of the same kind, and coloured as it is.'),
       el('div', { class: 'wb-menu-label', text: 'Colour' }),
-      legendRow('wb-edge wb-rel-ally', 'Green', 'ally, and mentions; red is a foe. Every other kind rides on the accent.'),
+      legendRow(legendSample('wb-edge wb-rel-ally'), 'Green', 'ally, and mentions; red is a foe. Every other kind rides on the accent.'),
       el('div', { class: 'wb-menu-label', text: 'Icons' }),
       legendRow('⠿', 'The grip', 'drag it to move the card, or a group’s tab to move the whole group.'),
       legendRow('▾', 'Fold', 'collapse a card to its header.'),
@@ -3223,20 +3217,26 @@ export function createWorldbuildPanel({ app, root }) {
     ];
   }
 
-  /** The legend as a drop-down below the toolbar, on the menu's own terms:
-   * dismissed by an outside press or Escape, and it toggles from its button. */
-  function toggleLegend(button) {
-    const open = menuEl?.classList.contains('wb-legend') ?? false;
+  /** One toolbar dropdown: open its rows below `button`, or close it. It opens
+   * below, scrolling in the room left, and closes on an outside press or Escape. */
+  function toggleDropdown(button, name, label, rows) {
+    const open = menuEl?.classList.contains(name) ?? false;
     closeMenu();
     if (open) return;
     button.setAttribute('aria-expanded', 'true');
-    menuEl = el('div', { class: 'wb-menu wb-legend', role: 'dialog', 'aria-label': 'Worldbuilding legend' }, legendRows());
+    menuEl = el('div', { class: `wb-menu ${name}`, role: 'dialog', 'aria-label': label }, rows);
     document.body.append(menuEl);
     const rect = button.getBoundingClientRect();
+    menuEl.style.maxHeight = `${Math.max(0, window.innerHeight - rect.bottom - 14)}px`;
     menuEl.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuEl.offsetWidth - 8))}px`;
-    menuEl.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - menuEl.offsetHeight - 8)}px`;
+    menuEl.style.top = `${rect.bottom + 6}px`;
     document.addEventListener('pointerdown', dismissMenu, true);
     document.addEventListener('keydown', escapeMenu);
+  }
+
+  /** The legend as a drop-down below the toolbar; it toggles from its button. */
+  function toggleLegend(button) {
+    toggleDropdown(button, 'wb-legend', 'Worldbuilding legend', legendRows());
   }
 
   /** The gestures the canvas runs on, one cheatsheet row each. */
@@ -3256,19 +3256,9 @@ export function createWorldbuildPanel({ app, root }) {
     ];
   }
 
-  /** The gesture cheatsheet: like the legend, a drop-down on the menu's terms. */
+  /** The gesture cheatsheet, on the legend's terms. */
   function toggleHelp(button) {
-    const open = menuEl?.classList.contains('wb-help') ?? false;
-    closeMenu();
-    if (open) return;
-    button.setAttribute('aria-expanded', 'true');
-    menuEl = el('div', { class: 'wb-menu wb-legend wb-help', role: 'dialog', 'aria-label': 'Canvas gestures' }, helpRows());
-    document.body.append(menuEl);
-    const rect = button.getBoundingClientRect();
-    menuEl.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuEl.offsetWidth - 8))}px`;
-    menuEl.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - menuEl.offsetHeight - 8)}px`;
-    document.addEventListener('pointerdown', dismissMenu, true);
-    document.addEventListener('keydown', escapeMenu);
+    toggleDropdown(button, 'wb-help', 'Canvas gestures', helpRows());
   }
   /** One history entry, as a jump target. */
   function historyRow(entry, kind, glyph, steps) {
@@ -3304,26 +3294,12 @@ export function createWorldbuildPanel({ app, root }) {
    * own terms: dismissed by an outside press or Escape, and it toggles from
    * its button. Picking an entry undoes or redoes all the way to it. */
   function toggleHistory(button) {
-    const open = menuEl?.classList.contains('wb-history') ?? false;
-    closeMenu();
-    if (open) return;
-    button.setAttribute('aria-expanded', 'true');
-    menuEl = el('div', { class: 'wb-menu wb-history', role: 'dialog', 'aria-label': 'Canvas history' }, historyRows());
-    document.body.append(menuEl);
-    const rect = button.getBoundingClientRect();
-    menuEl.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuEl.offsetWidth - 8))}px`;
-    menuEl.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - menuEl.offsetHeight - 8)}px`;
-    document.addEventListener('pointerdown', dismissMenu, true);
-    document.addEventListener('keydown', escapeMenu);
+    toggleDropdown(button, 'wb-history', 'Canvas history', historyRows());
   }
 
   /** The health panel as a drop-down below the toolbar, on the menu's own
    * terms: orphans centre on click, thin groups fit on click. */
   function toggleHealth(button) {
-    const open = menuEl?.classList.contains('wb-health') ?? false;
-    closeMenu();
-    if (open) return;
-    button.setAttribute('aria-expanded', 'true');
     const health = canvasHealth(model ?? {}, { relations, groups });
     const notes = model?.notes ?? [];
     const indexOf = (anchor) => notes.findIndex((note) => note.anchor === anchor);
@@ -3380,13 +3356,7 @@ export function createWorldbuildPanel({ app, root }) {
         text: 'Every card connects to something, and every group holds at least two cards.',
       }));
     }
-    menuEl = el('div', { class: 'wb-menu wb-health', role: 'dialog', 'aria-label': 'Canvas health' }, rows);
-    document.body.append(menuEl);
-    const rect = button.getBoundingClientRect();
-    menuEl.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuEl.offsetWidth - 8))}px`;
-    menuEl.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - menuEl.offsetHeight - 8)}px`;
-    document.addEventListener('pointerdown', dismissMenu, true);
-    document.addEventListener('keydown', escapeMenu);
+    toggleDropdown(button, 'wb-health', 'Canvas health', rows);
   }
 
   function setGroupColor(id, color) {
@@ -5137,6 +5107,9 @@ export function createWorldbuildPanel({ app, root }) {
   // ready: the pane may be shown long after it was first drawn.
   if (typeof ResizeObserver === 'function') {
     const stageObserver = new ResizeObserver(() => {
+      // Leaving Worldbuilding hides the stage with the pane, but the panel's
+      // menus attach to the body: close them so none floats over the reader.
+      if (!stage.offsetWidth) closeMenu();
       applyView();
       scheduleEdges();
     });

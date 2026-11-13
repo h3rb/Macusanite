@@ -2940,7 +2940,7 @@ dialog::backdrop {
   font-size: 11px;
 }
 
-/* The legend is an ordinary menu, wider, with rows of a sample and its meaning. */
+/* The node-type picker: a grid of icon buttons. */
 .wb-menu-icons {
   display: grid;
   grid-template-columns: repeat(6, 26px);
@@ -2973,7 +2973,9 @@ dialog::backdrop {
   border-color: var(--text-dim);
 }
 
-.wb-legend {
+/* Wider menus: the legend and gesture cheatsheet carry full-sentence rows. */
+.wb-legend,
+.wb-help {
   width: min(380px, calc(100vw - 16px));
 }
 
@@ -3871,7 +3873,8 @@ dialog::backdrop {
   font-size: 11.5px;
 }
 
-.wb-legend {
+/* The footer's key line. */
+.wb-legend-key {
   margin-left: auto;
   color: var(--text-faint);
   font-size: 11px;

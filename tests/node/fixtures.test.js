@@ -50,9 +50,32 @@ test('the sample vault ships a working Worldbuilding canvas on Home', () => {
   // No card belongs to two groups: board, locked and pinned sets are disjoint.
   const grouped = Object.values(record.groups).flatMap((group) => group.members);
   assert.equal(new Set(grouped).size, grouped.length, 'group membership is disjoint');
+
+  // On first open the demo group boxes must not overlap the progression
+  // board's lanes or cards: each box (12px pad, plus the board's 30px tier
+  // header strip) is disjoint from every other group's box.
+  const boxOf = (group) => {
+    const rects = group.members.map((anchor) => record.positions[anchor]);
+    const topPad = group.layout === 'progression' ? 30 : 12;
+    return {
+      x1: Math.min(...rects.map((r) => r.x)) - 12,
+      y1: Math.min(...rects.map((r) => r.y)) - topPad,
+      x2: Math.max(...rects.map((r) => r.x)) + 300 + 12,
+      y2: Math.max(...rects.map((r) => r.y)) + 260 + 12,
+    };
+  };
+  const boxes = Object.values(record.groups).map((group) => [group.name, boxOf(group)]);
+  for (let i = 0; i < boxes.length; i += 1) {
+    for (let j = i + 1; j < boxes.length; j += 1) {
+      const [nameA, a] = boxes[i];
+      const [nameB, b] = boxes[j];
+      const overlap = !(a.x2 <= b.x1 || b.x2 <= a.x1 || a.y2 <= b.y1 || b.y2 <= a.y1);
+      assert.equal(overlap, false, `${nameA} box overlaps ${nameB} box`);
+    }
+  }
   assert.equal(record.pinned['colour-everywhere'], true);
   assert.equal(record.locked['where-to-go-next'], true, 'one node content-locked');
-  assert.deepEqual(normalizeRouting(record.routing), { elbow: true, arrows: true, edges: {} });
+  assert.deepEqual(normalizeRouting(record.routing), { elbow: true, arrows: true, cut: false, edges: {} });
   assert.equal(Object.keys(cleanAnnotations(record.annotations)).length, 2);
   assert.equal(record.types.diagramming, 'stat');
   assert.deepEqual(record.fields.diagramming, { value: '3 diagrams' });

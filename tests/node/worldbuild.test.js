@@ -3,23 +3,24 @@ import assert from 'node:assert/strict';
 import {
   parseNotes, serializeNotes, updateNote, updateIntro, addNote, removeNote,
   noteEdges, hierarchyEdges, noteStats, countWords, DEFAULT_LEVEL,
-  normalizeTag, addNoteTags, removeNoteTag, tagRecord,
+  normalizeTag, addNoteTags, removeNoteTag, tagRecord, tagTarget,
   RELATION_KINDS, DEFAULT_RELATION, relationKind, relationKey,
   setRelation, dropRelations, relationOf, groupEndpoint, groupRelationEdges, bondEdges,
   NODE_TYPES, DEFAULT_NODE_TYPE, nodeType, nodeTypeOf, setNodeType,
-  NODE_FIELDS, nodeFields, nodeFieldOf, setNodeField, fieldRangeHint,
+  NODE_FIELDS, nodeFields, nodeFieldOf, setNodeField, fieldRangeHint, UNIT_SUGGESTIONS, normalizeUnit, unitSuggestions,
   ZOOM_MIN, ZOOM_MAX, clampView, zoomViewAt, anchorOfView, viewOfAnchor,
   DROP_MIN_PX, dropMembershipKind,
   canvasSnapshot, pruneSnapshotAnchors, renameAnchorIn,
   DEFAULT_STEP_NAME, normalizeHistoryEntry, cleanHistoryStack, historyJump, historyKey,
   cleanView, restoreSnapshot, canvasRecordPatch,
   pushHistoryStep, rewriteHistoryStack, dropAnchorFromGroups, fitView,
-  centreView, snapDelta, canvasHealth, layoutSelection, normalizeRouting, elbowPoints, cleanAnnotations,
+  centreView, snapDelta, canvasHealth, layoutSelection, normalizeRouting, elbowPoints, connectorCurve, sampleConnectorCurve, CONNECTOR_CUT_SPAN, cleanAnnotations,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
+  nodeImageMetaNames, nodeImageMetaNamesFromSnapshot, referencedNodeImageMetaNames, orphanedNodeImageMetaNames,
   NODE_IMAGE_MAX_SIDE, NODE_IMAGE_QUALITY, nodeImageSize,
   lockedContentAnchors, sourceSectionRanges, enforceLockedSource, lockedRangeAt,
   connectedAnchors, lineageAnchors, anchorsInRect, relationshipDepths, canvasSearch,
-  connectorList, connectorKey, pathAnchors, effectiveRouting, cleanCardModes, cleanCollapsedGroups,
+  connectorList, connectorKey, pathAnchors, effectiveRouting, cleanCardModes, cleanCollapsedGroups, proseLinkBetween,
   arrangeCandidateOrigins, findArrangeOrigin,
   progressionColumns, layoutProgressionColumns,
 } from '../../src/lib/worldbuild.js';
@@ -319,6 +320,20 @@ test('connectorList names every drawn connector and keys them stably', () => {
   assert.equal(connectorKey({ kind: 'bond', from: 'a', to: 'group:g1' }), 'bond:a->group:g1');
 });
 
+test('proseLinkBetween reports the markdown link a bond removal leaves behind', () => {
+  const model = parseNotes('# A\n\nSee [[#B]].\n\n## B\n\nEnd.\n');
+  assert.equal(proseLinkBetween(model, 'a', 'b')?.kind, 'section');
+  assert.equal(proseLinkBetween(model, 'b', 'a')?.kind, 'section', 'either direction counts');
+  // A mention, [[Elsewhere]], is prose too — it draws the same kind of wire.
+  const mention = parseNotes('# A\n\nSee [[Elsewhere]].\n\n## Elsewhere\n\nEnd.\n');
+  assert.equal(proseLinkBetween(mention, 'a', 'elsewhere')?.kind, 'mention');
+  // No link in the prose, an unknown end, or the same note twice: nothing.
+  const bare = parseNotes('# A\n\nBody.\n\n## B\n\nBody.\n');
+  assert.equal(proseLinkBetween(bare, 'a', 'b'), null);
+  assert.equal(proseLinkBetween(mention, 'a', 'missing'), null);
+  assert.equal(proseLinkBetween(mention, 'a', 'a'), null);
+});
+
 test('pathAnchors traces downstream and upstream along directed bonds', () => {
   const model = parseNotes('# A\n\nBody.\n\n## B\n\nBody.\n\n## C\n\nBody.\n');
   const relations = setRelation(setRelation({}, 'a', 'b', 'contains'), 'b', 'c', 'controls');
@@ -328,11 +343,11 @@ test('pathAnchors traces downstream and upstream along directed bonds', () => {
 });
 
 test('routing overrides sit beside the vein default', () => {
-  const routing = normalizeRouting({ elbow: true, arrows: false, edges: { 'bond:a->b': { arrows: true }, junk: 'x', 'bond:c->d': {} } });
-  assert.deepEqual(routing, { elbow: true, arrows: false, edges: { 'bond:a->b': { arrows: true } } });
-  assert.deepEqual(effectiveRouting(routing, 'bond:a->b'), { elbow: true, arrows: true });
-  assert.deepEqual(effectiveRouting(routing, 'bond:x->y'), { elbow: true, arrows: false });
-  assert.deepEqual(normalizeRouting(null), { elbow: false, arrows: false, edges: {} });
+  const routing = normalizeRouting({ elbow: true, arrows: false, cut: true, edges: { 'bond:a->b': { arrows: true, cut: false }, junk: 'x', 'bond:c->d': {} } });
+  assert.deepEqual(routing, { elbow: true, arrows: false, cut: true, edges: { 'bond:a->b': { arrows: true, cut: false } } });
+  assert.deepEqual(effectiveRouting(routing, 'bond:a->b'), { elbow: true, arrows: true, cut: false });
+  assert.deepEqual(effectiveRouting(routing, 'bond:x->y'), { elbow: true, arrows: false, cut: true });
+  assert.deepEqual(normalizeRouting(null), { elbow: false, arrows: false, cut: false, edges: {} });
 });
 
 test('cleanCardModes keeps only compact and thumbnail', () => {
@@ -439,6 +454,19 @@ test('addNoteTags writes the tokens into the prose and reads them back', () => {
   assert.ok(serializeNotes(more).endsWith('#glass #petrology #methods\n'));
 });
 
+test('tagTarget finds the node a tag names, and nothing else', () => {
+  const model = parseNotes('# Field checklist\n\nBody.\n\n## Field notes\n\nText.\n');
+  assert.equal(tagTarget('field-checklist', model.notes)?.anchor, 'field-checklist');
+  assert.equal(tagTarget('#field-checklist', model.notes)?.title, 'Field checklist');
+  assert.equal(tagTarget('FIELD-CHECKLIST', model.notes)?.anchor, 'field-checklist');
+  // Only an exact anchor match counts — a prefix or a space is no node.
+  assert.equal(tagTarget('field', model.notes), null);
+  assert.equal(tagTarget('field checklist', model.notes), null);
+  assert.equal(tagTarget('missing', model.notes), null);
+  assert.equal(tagTarget('', model.notes), null);
+  assert.equal(tagTarget('glass', null), null);
+});
+
 test('removeNoteTag strips the token, keeps the prose, and respects fences', () => {
   const vein = '## Sieve\n\nCoarse #glass to fine.\n\n```bash\n#glass in a fence\n```\n\n#glass #petrology\n';
   const model = parseNotes(vein);
@@ -451,6 +479,21 @@ test('removeNoteTag strips the token, keeps the prose, and respects fences', () 
   assert.equal(serializeNotes(parseNotes(serializeNotes(next))), serializeNotes(next));
   // Untagging a tag the note does not have returns the same model.
   assert.equal(removeNoteTag(next, 0, 'absent'), next);
+});
+
+test('a content-locked node\'s tags cannot change; linking is not a tag', () => {
+  const model = parseNotes('## Sieve\n\nCoarse to fine.\n\n#glass\n');
+  // Locked: add and remove both hand the same model back, prose untouched.
+  assert.equal(addNoteTags(model, 0, ['petrology'], { locked: true }), model);
+  assert.equal(removeNoteTag(model, 0, 'glass', { locked: true }), model);
+  assert.equal(serializeNotes(model), '## Sieve\n\nCoarse to fine.\n\n#glass\n');
+  // Unlocked: the same calls still work, as the tests above pin down.
+  assert.deepEqual(addNoteTags(model, 0, ['petrology']).notes[0].tags, ['glass', 'petrology']);
+  assert.deepEqual(removeNoteTag(model, 0, 'glass').notes[0].tags, []);
+  // The lock combination the panel gates on: a node lock and a locked group
+  // both count as content-locked, exactly as for title/body/type/fields.
+  assert.deepEqual([...lockedContentAnchors({ g: { members: ['sieve'], locked: true } }, { sieve: false })], ['sieve']);
+  assert.deepEqual([...lockedContentAnchors({}, { sieve: true })], ['sieve']);
 });
 
 test('tagRecord counts every tag across the vault index, most-used first', () => {
@@ -512,7 +555,7 @@ test('non-note types take structured fields; notes take none', () => {
     { min: nodeFields('skill')[0].min, max: nodeFields('skill')[0].max, step: nodeFields('skill')[0].step },
     { min: 0, max: 10, step: 1 },
   );
-  assert.deepEqual(nodeFields('attribute').map((f) => f.id), ['key', 'value']);
+  assert.deepEqual(nodeFields('attribute').map((f) => f.id), ['key', 'value', 'unit']);
   assert.deepEqual(nodeFields('property').map((f) => f.id), ['key', 'value']);
   let fields = setNodeField({}, 'stat', 'a', 'value', '42');
   assert.equal(nodeFieldOf(fields, 'a', 'value'), '42');
@@ -522,6 +565,27 @@ test('non-note types take structured fields; notes take none', () => {
   // A note's schema is empty, so it can never grow structured data.
   assert.equal(setNodeField(fields, 'note', 'a', 'value', 'x'), fields);
   assert.equal(setNodeField(fields, 'stat', 'a', 'nope', 'x'), fields);
+});
+
+test('an attribute is a value and unit pair; units normalise and join the autocomplete', () => {
+  let fields = setNodeField({}, 'attribute', 'a', 'value', '1200');
+  fields = setNodeField(fields, 'attribute', 'a', 'unit', '  °C  ');
+  assert.equal(nodeFieldOf(fields, 'a', 'value'), '1200');
+  assert.equal(nodeFieldOf(fields, 'a', 'unit'), '°C');
+  // Inner whitespace collapses; property (the other key/value type) has no unit.
+  fields = setNodeField(fields, 'attribute', 'a', 'unit', 'tokens  per  day');
+  assert.equal(nodeFieldOf(fields, 'a', 'unit'), 'tokens per day');
+  assert.equal(setNodeField(fields, 'property', 'a', 'unit', '°C'), fields);
+  assert.deepEqual(nodeFields('attribute').find((f) => f.id === 'unit'), { id: 'unit', label: 'Unit', kind: 'unit' });
+  // The predetermined list leads; hand-entered units join it, de-duplicated
+  // case-insensitively, across every record handed in.
+  const suggestions = unitSuggestions([fields, { b: { unit: 'furlongs' } }, { c: { unit: 'TOKENS PER DAY' } }]);
+  assert.deepEqual(suggestions.slice(0, UNIT_SUGGESTIONS.length), UNIT_SUGGESTIONS);
+  assert.ok(suggestions.includes('tokens per day'));
+  assert.ok(suggestions.includes('furlongs'));
+  assert.equal(suggestions.filter((u) => u.toLowerCase() === 'tokens per day').length, 1);
+  assert.equal(normalizeUnit('  kg  '), 'kg');
+  assert.equal(normalizeUnit(''), '');
 });
 
 test('fieldRangeHint renders the declared range for the editor', () => {
@@ -752,6 +816,36 @@ test('node image references are file paths, with legacy data URLs still recognis
   assert.equal(isInlineImage('data:image/png;base64,AAA'), true);
   assert.equal(nodeImageMetaName('data:image/png;base64,AAA'), null);
   assert.equal(isInlineImage('.macusanite/node-images/lens.png'), false);
+});
+
+test('replaced or removed node images are orphaned only once nothing references them', () => {
+  const snap = (images) => JSON.stringify({ images });
+  const referenced = referencedNodeImageMetaNames({
+    images: { b: '.macusanite/node-images/b.png', inline: 'data:image/png;base64,AAA' },
+    history: { past: [{ name: 'Set image', snap: snap({ a: '.macusanite/node-images/a.png' }) }], future: [] },
+    worlds: {
+      'Other.md': {
+        images: { c: '.macusanite/node-images/c.png' },
+        history: { past: [], future: [{ name: 'redo', snap: snap({ d: '.macusanite/node-images/d.png' }) }] },
+      },
+    },
+  });
+  assert.deepEqual([...referenced].sort(), [
+    'node-images/a.png', 'node-images/b.png', 'node-images/c.png', 'node-images/d.png',
+  ]);
+  // a.png is gone from the nodes but an undo snapshot still names it: kept.
+  assert.deepEqual(
+    orphanedNodeImageMetaNames(['.macusanite/node-images/a.png', '.macusanite/node-images/gone.png', 'data:image/png;base64,AAA'], referenced),
+    ['node-images/gone.png'],
+  );
+  // Once the snapshot is dropped, a.png is an orphan too.
+  assert.deepEqual(
+    orphanedNodeImageMetaNames(['node-images/a.png'], new Set()),
+    ['node-images/a.png'],
+  );
+  // A file shared by two nodes is never orphaned while one still names it.
+  assert.deepEqual(nodeImageMetaNames({ x: '.macusanite/node-images/s.png', y: '.macusanite/node-images/s.png' }), ['node-images/s.png']);
+  assert.deepEqual(nodeImageMetaNamesFromSnapshot('not json'), []);
 });
 
 test('node images are capped at 320px on the longest side and never upscaled', () => {
@@ -1160,10 +1254,11 @@ test('cleanAnnotations keeps usable margin notes only', () => {
   });
 });
 
-test('normalizeRouting keeps only the two connector switches', () => {
-  assert.deepEqual(normalizeRouting(null), { elbow: false, arrows: false, edges: {} });
-  assert.deepEqual(normalizeRouting({ elbow: 'yes', arrows: 1, junk: true }), { elbow: true, arrows: true, edges: {} });
-  assert.deepEqual(normalizeRouting({ elbow: false }), { elbow: false, arrows: false, edges: {} });
+test('normalizeRouting keeps only the three connector switches', () => {
+  assert.deepEqual(normalizeRouting(null), { elbow: false, arrows: false, cut: false, edges: {} });
+  assert.deepEqual(normalizeRouting({ elbow: 'yes', arrows: 1, cut: 0, junk: true }), { elbow: true, arrows: true, cut: false, edges: {} });
+  assert.deepEqual(normalizeRouting({ elbow: false }), { elbow: false, arrows: false, cut: false, edges: {} });
+  assert.deepEqual(normalizeRouting({ elbow: false, cut: true }), { elbow: false, arrows: false, cut: true, edges: {} });
 });
 
 test('elbowPoints turns once on each side of the wire', () => {
@@ -1188,6 +1283,112 @@ test('elbowPoints turns once on each side of the wire', () => {
     { x: 150, y: 75 },
     { x: 150, y: 100 },
   ]);
+});
+
+test('the occlusion sampler is the drawn curve: sampled points lie on the SVG path', () => {
+  // Parse the drawn path the way the browser would, then Bernstein-sample
+  // that parsed cubic: the scorer's points must land on it exactly.
+  const parseCubic = (path) => {
+    const nums = path.match(/-?\d+(\.\d+)?/g).map(Number);
+    assert.equal(nums.length, 8, `cubic path carries 4 points: ${path}`);
+    return [[nums[0], nums[1]], [nums[2], nums[3]], [nums[4], nums[5]], [nums[6], nums[7]]];
+  };
+  const bernstein = (pts, t) => {
+    const m = 1 - t;
+    const w = [m ** 3, 3 * m * m * t, 3 * m * t * t, t ** 3];
+    return {
+      x: w.reduce((sum, weight, i) => sum + weight * pts[i][0], 0),
+      y: w.reduce((sum, weight, i) => sum + weight * pts[i][1], 0),
+    };
+  };
+  const pairs = [
+    [{ x: 0, y: 0, width: 100, height: 50 }, { x: 300, y: 100, width: 100, height: 50 }, {}],
+    [{ x: 300, y: 100, width: 100, height: 50 }, { x: 0, y: 0, width: 100, height: 50 }, {}],
+    [{ x: 0, y: 0, width: 100, height: 50 }, { x: 120, y: 200, width: 100, height: 50 }, { vertical: true }],
+    [{ x: 0, y: 0, width: 100, height: 50 }, { x: 300, y: 100, width: 100, height: 50 }, { elbow: true }],
+  ];
+  for (const [from, to, opts] of pairs) {
+    const curve = connectorCurve(from, to, opts);
+    const scored = sampleConnectorCurve(from, to, { ...opts, steps: 16 });
+    // The scorer samples the very function the drawing exposes.
+    assert.deepEqual(scored, Array.from({ length: 17 }, (_, i) => curve.at(i / 16)));
+    assert.deepEqual(scored[0], curve.at(0));
+    assert.deepEqual(scored.at(-1), curve.at(1));
+    if (!opts.elbow) {
+      const drawn = parseCubic(curve.path);
+      for (let i = 0; i <= 16; i += 1) {
+        const onTheWire = bernstein(drawn, i / 16);
+        assert.ok(Math.abs(onTheWire.x - scored[i].x) < 1e-9 && Math.abs(onTheWire.y - scored[i].y) < 1e-9,
+          `scored point ${i} lies on the drawn path`);
+      }
+    } else {
+      // Elbow: sampled points walk the polyline end to end, never leaving it.
+      const pts = elbowPoints(from, to, opts.vertical ?? false);
+      assert.deepEqual(scored[0], pts[0]);
+      assert.deepEqual(scored.at(-1), pts.at(-1));
+      for (const point of scored) {
+        const onSegment = pts.some((seg, i) => i === 0 ||
+          (point.y === seg.y && point.x >= Math.min(pts[i - 1].x, seg.x) && point.x <= Math.max(pts[i - 1].x, seg.x)) ||
+          (point.x === seg.x && point.y >= Math.min(pts[i - 1].y, seg.y) && point.y <= Math.max(pts[i - 1].y, seg.y)));
+        assert.ok(onSegment, `elbow sample on a segment: ${JSON.stringify(point)}`);
+      }
+    }
+  }
+  // The bend itself: 45% of the side gap, floored at 36px — one definition,
+  // pinned here so a change is a deliberate, visible edit.
+  const wide = connectorCurve({ x: 0, y: 0, width: 100, height: 50 }, { x: 300, y: 100, width: 100, height: 50 });
+  assert.match(wide.path, /^M 100 25 C 190 25 210 125 300 125$/);
+  const narrow = connectorCurve({ x: 0, y: 0, width: 100, height: 50 }, { x: 130, y: 0, width: 100, height: 50 });
+  assert.match(narrow.path, /^M 100 25 C 136 25 94 25 130 25$/);
+});
+
+test('a long wire is cut off at the limit, facing the card beyond it', () => {
+  const from = { x: 0, y: 0, width: 300, height: 260 };
+  const to = { x: 4000, y: 1200, width: 300, height: 260 };
+  const full = connectorCurve(from, to);
+  assert.equal(full.cut, undefined);
+  const cut = connectorCurve(from, to, { limit: 500 });
+  assert.ok(cut.cut);
+  assert.equal(cut.cut.length, 500);
+  assert.ok(cut.cut.total > 1000, `the whole wire is longer than the cut: ${cut.cut.total}`);
+  // The drawn wire stops 500px along the whole curve and ends exactly there.
+  let walked = 0;
+  let previous = full.at(0);
+  let reached = null;
+  for (let i = 1; i <= 4000 && !reached; i += 1) {
+    const next = full.at(i / 4000);
+    walked += Math.hypot(next.x - previous.x, next.y - previous.y);
+    if (walked >= 500) reached = next;
+    previous = next;
+  }
+  assert.ok(reached);
+  assert.ok(Math.hypot(cut.cut.x - reached.x, cut.cut.y - reached.y) < 2);
+  assert.ok(Math.hypot(cut.at(1).x - cut.cut.x, cut.at(1).y - cut.cut.y) < 1e-9);
+  // The marker faces the destination, along the curve's own tangent.
+  assert.ok(Math.abs(Math.hypot(cut.cut.dir.x, cut.cut.dir.y) - 1) < 1e-9);
+  assert.ok(cut.cut.dir.x > 0.8 && cut.cut.dir.y >= 0);
+  // A wire that fits its limit is drawn whole, with no marker.
+  const short = connectorCurve(from, { x: 600, y: 0, width: 300, height: 260 }, { limit: 500 });
+  assert.equal(short.cut, undefined);
+  assert.match(short.path, /^M /);
+  assert.ok(CONNECTOR_CUT_SPAN > 500);
+});
+
+test('an elbow wire cuts on its first segment, pointing along it', () => {
+  const from = { x: 0, y: 0, width: 300, height: 260 };
+  const to = { x: 3000, y: 900, width: 300, height: 260 };
+  const points = elbowPoints(from, to, false);
+  const cut = connectorCurve(from, to, { elbow: true, limit: 400 });
+  assert.ok(cut.cut);
+  assert.deepEqual(cut.at(0), points[0]);
+  // The first segment runs 1350px here, so the cut lands 400px along it.
+  assert.ok(Math.abs(cut.cut.x - (points[0].x + 400)) < 1e-9);
+  assert.equal(cut.cut.y, points[0].y);
+  assert.deepEqual(cut.cut.dir, { x: 1, y: 0 });
+  // Two points only: where it starts, and where it stops.
+  assert.equal(cut.path.split(' ').filter((part) => part !== 'M' && part !== 'L').length, 4);
+  const short = connectorCurve(from, { x: 600, y: 0, width: 300, height: 260 }, { elbow: true, limit: 400 });
+  assert.equal(short.cut, undefined);
 });
 
 test('centreView centres a rect at the current scale', () => {
