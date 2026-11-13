@@ -13,7 +13,7 @@ import {
   canvasSnapshot, pruneSnapshotAnchors, renameAnchorIn,
   DEFAULT_STEP_NAME, normalizeHistoryEntry, cleanHistoryStack, historyJump, historyKey,
   cleanView, restoreSnapshot, canvasRecordPatch,
-  pushHistoryStep, rewriteHistoryStack, dropAnchorFromGroups, fitView,
+  pushHistoryStep, rewriteHistoryStack, renameHistoryAnchor, pruneHistoryStack, dropAnchorFromGroups, fitView,
   centreView, snapDelta, canvasHealth, layoutSelection, normalizeRouting, elbowPoints, connectorCurve, sampleConnectorCurve, CONNECTOR_CUT_SPAN, cleanAnnotations,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
   nodeImageMetaNames, nodeImageMetaNamesFromSnapshot, referencedNodeImageMetaNames, orphanedNodeImageMetaNames,
@@ -361,8 +361,12 @@ test('cleanCollapsedGroups keeps only true entries', () => {
 });
 
 test('canvas snapshots carry card modes and group collapse through an undo', () => {
-  const snap = canvasSnapshot({ positions: { a: { x: 1, y: 2 } }, cardModes: { a: 'compact' }, collapsedGroups: { g1: true } });
-  const restored = restoreSnapshot(snap, new Set(['a']), {});
+  const snap = canvasSnapshot({
+    positions: { a: { x: 1, y: 2 }, b: { x: 3, y: 4 } },
+    groups: { g1: { members: ['a', 'b'] } },
+    cardModes: { a: 'compact' }, collapsedGroups: { g1: true },
+  });
+  const restored = restoreSnapshot(snap, new Set(['a', 'b']), {});
   assert.deepEqual(restored.cardModes, { a: 'compact' });
   assert.deepEqual(restored.collapsedGroups, { g1: true });
   // Legacy snapshots without the slices restore clean.
@@ -746,14 +750,18 @@ test('canvasSnapshot carries every canvas slice, node types, fields and colours 
   });
 });
 
-test('pruneSnapshotAnchors drops dead anchors everywhere, types and fields too', () => {
+test('pruneSnapshotAnchors drops dead anchors, thin groups and their bonds', () => {
   const snap = JSON.parse(canvasSnapshot({
     positions: { a: { x: 1, y: 2 }, gone: { x: 3, y: 4 }, b: { x: 5, y: 6 } },
     groups: {
       main: { members: ['a', 'b', 'gone'] },
-      thin: { members: ['gone', 'also-gone'] },
+      thin: { members: ['a', 'gone'] },
     },
-    relations: { 'a->b': 'ally', 'a->gone': 'foe' },
+    relations: {
+      'a->b': 'ally', 'a->gone': 'foe',
+      'a->group:main': 'affects', 'a->group:thin': 'foe',
+    },
+    collapsedGroups: { main: true, thin: true },
     folded: { gone: { card: true }, a: { links: true } },
     types: { gone: 'stat', a: 'perk' },
     fields: { gone: { min: '1' }, a: { max: '9' } },
@@ -777,7 +785,8 @@ test('pruneSnapshotAnchors drops dead anchors everywhere, types and fields too',
   // sheds only the dead members.
   assert.deepEqual(Object.keys(pruned.groups), ['main']);
   assert.deepEqual(pruned.groups.main.members, ['a', 'b']);
-  assert.deepEqual(pruned.relations, { 'a->b': 'ally' });
+  assert.deepEqual(pruned.relations, { 'a->b': 'ally', 'a->group:main': 'affects' });
+  assert.deepEqual(pruned.collapsedGroups, { main: true });
   // Snapshots written before types, fields and colours existed gain none here.
   const old = JSON.parse(JSON.stringify(snap));
   delete old.types;
@@ -1032,11 +1041,15 @@ test('cleanView keeps the camera, clamped, or keeps the fallback', () => {
   assert.equal(cleanView({ y: 1 }), null);
 });
 
-test('restoreSnapshot restores every slice, pruning what has no card', () => {
+test('restoreSnapshot restores only references to anchors and groups that are live', () => {
   const snap = canvasSnapshot({
     positions: { a: { x: 1, y: 2 }, gone: { x: 3, y: 4 } },
     groups: { main: { members: ['a', 'b', 'gone'] } },
-    relations: { 'a->b': 'ally', 'a->gone': 'foe' },
+    relations: {
+      'a->b': 'ally', 'a->gone': 'foe',
+      'a->group:main': 'affects', 'group:main->gone': 'foe',
+    },
+    collapsedGroups: { main: true, stale: true },
     folded: { gone: { card: true } },
     types: { a: 'stat', gone: 'perk' },
     fields: { a: { min: '5' }, gone: { min: '1' } },
@@ -1051,7 +1064,8 @@ test('restoreSnapshot restores every slice, pruning what has no card', () => {
   });
   assert.deepEqual(restored.positions, { a: { x: 1, y: 2 } });
   assert.deepEqual(restored.groups, { main: { members: ['a', 'b'], children: [] } });
-  assert.deepEqual(restored.relations, { 'a->b': 'ally' });
+  assert.deepEqual(restored.relations, { 'a->b': 'ally', 'a->group:main': 'affects' });
+  assert.deepEqual(restored.collapsedGroups, { main: true });
   assert.deepEqual(restored.folded, {});
   assert.deepEqual(restored.types, { a: 'stat' });
   assert.deepEqual(restored.fields, { a: { min: '5' } });
@@ -1131,15 +1145,45 @@ test('pushHistoryStep records a change once, caps the past and clears redo', () 
   assert.deepEqual(stack.past, [step('Move card', S(2)), step('Arrange', S(3))]);
 });
 
-test('rewriteHistoryStack renames inside both stacks, names intact', () => {
+test('renameHistoryAnchor follows a rename in both stacks, names intact', () => {
   const stack = {
     past: [step('A', canvasSnapshot({ positions: { old: { x: 1, y: 1 } } }))],
     future: [step('B', canvasSnapshot({ positions: { old: { x: 2, y: 2 }, a: { x: 0, y: 0 } } }))],
   };
-  rewriteHistoryStack(stack, (snap) => renameAnchorIn(snap, 'old', 'new'));
+  renameHistoryAnchor(stack, 'old', 'new');
   assert.equal(stack.past[0].name, 'A');
   assert.deepEqual(JSON.parse(stack.past[0].snap).positions, { new: { x: 1, y: 1 } });
   assert.deepEqual(JSON.parse(stack.future[0].snap).positions, { new: { x: 2, y: 2 }, a: { x: 0, y: 0 } });
+});
+
+test('pruneHistoryStack removes deleted anchors from past and future, dissolving thin groups', () => {
+  const snapshot = canvasSnapshot({
+    positions: { a: { x: 1, y: 1 }, b: { x: 2, y: 2 }, gone: { x: 3, y: 3 } },
+    groups: {
+      surviving: { members: ['a', 'b', 'gone'] },
+      thin: { members: ['a', 'gone'] },
+    },
+    relations: {
+      'a->b': 'ally', 'a->group:surviving': 'affects',
+      'a->group:thin': 'foe', 'b->gone': 'foe',
+    },
+    collapsedGroups: { surviving: true, thin: true },
+  });
+  const stack = {
+    past: [step('Delete', snapshot)],
+    future: [step('Redo delete', snapshot)],
+  };
+
+  pruneHistoryStack(stack, new Set(['a', 'b']));
+  for (const entry of [...stack.past, ...stack.future]) {
+    const pruned = JSON.parse(entry.snap);
+    assert.deepEqual(pruned.positions, { a: { x: 1, y: 1 }, b: { x: 2, y: 2 } });
+    assert.deepEqual(pruned.groups, { surviving: { members: ['a', 'b'], children: [] } });
+    assert.deepEqual(pruned.relations, { 'a->b': 'ally', 'a->group:surviving': 'affects' });
+    assert.deepEqual(pruned.collapsedGroups, { surviving: true });
+  }
+  assert.equal(stack.past[0].name, 'Delete');
+  assert.equal(stack.future[0].name, 'Redo delete');
 });
 
 test('historyJump takes single steps the way undoCanvas and redoCanvas do', () => {
@@ -1153,6 +1197,50 @@ test('historyJump takes single steps the way undoCanvas and redoCanvas do', () =
   assert.equal(redone.restore, S(2));
   assert.deepEqual(redone.past, [step('Fold', S(0)), step('Arrange', S(1))]);
   assert.deepEqual(redone.future, []);
+});
+
+test('canvas history restores node type and structured field edits on undo and redo', () => {
+  const live = new Set(['a']);
+  let current = {
+    types: {},
+    fields: {},
+  };
+  const stack = { past: [], future: [] };
+
+  const beforeType = canvasSnapshot(current);
+  current = { ...current, types: setNodeType(current.types, 'a', 'stat') };
+  const typed = canvasSnapshot(current);
+  assert.equal(pushHistoryStep(stack, typed, beforeType, 'Set type to Stat'), true);
+
+  const beforeField = typed;
+  current = { ...current, fields: setNodeField(current.fields, 'stat', 'a', 'value', '7') };
+  const valued = canvasSnapshot(current);
+  assert.equal(pushHistoryStep(stack, valued, beforeField, 'Set value on “A”'), true);
+
+  let jumped = historyJump(stack, 'undo', 1, valued);
+  stack.past = jumped.past;
+  stack.future = jumped.future;
+  current = restoreSnapshot(jumped.restore, live, current);
+  assert.equal(current.types.a, 'stat');
+  assert.deepEqual(current.fields, {});
+
+  jumped = historyJump(stack, 'undo', 1, canvasSnapshot(current));
+  stack.past = jumped.past;
+  stack.future = jumped.future;
+  current = restoreSnapshot(jumped.restore, live, current);
+  assert.equal(current.types.a, undefined);
+  assert.deepEqual(current.fields, {});
+
+  jumped = historyJump(stack, 'redo', 1, canvasSnapshot(current));
+  stack.past = jumped.past;
+  stack.future = jumped.future;
+  current = restoreSnapshot(jumped.restore, live, current);
+  assert.equal(current.types.a, 'stat');
+
+  jumped = historyJump(stack, 'redo', 1, canvasSnapshot(current));
+  current = restoreSnapshot(jumped.restore, live, current);
+  assert.equal(current.types.a, 'stat');
+  assert.equal(nodeFieldOf(current.fields, 'a', 'value'), '7');
 });
 
 test('dropAnchorFromGroups drops one card and dissolves thin groups', () => {

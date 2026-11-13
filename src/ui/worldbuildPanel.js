@@ -23,12 +23,12 @@ import {
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
   nodeImageMetaNames, referencedNodeImageMetaNames, orphanedNodeImageMetaNames,
   NODE_IMAGE_MAX_SIDE, NODE_IMAGE_QUALITY, nodeImageSize,
-  canvasSnapshot as snapshotCanvas, renameAnchorIn,
+  canvasSnapshot as snapshotCanvas, renameHistoryAnchor, pruneHistoryStack,
   connectedAnchors, lineageAnchors, anchorsInRect, relationshipDepths, canvasSearch,
   connectorList, connectorKey, pathAnchors, effectiveRouting, cleanCardModes, cleanCollapsedGroups, proseLinkBetween,
   progressionColumns,
   DEFAULT_STEP_NAME, cleanHistoryStack, historyJump, historyKey,
-  restoreSnapshot, rewriteHistoryStack, pushHistoryStep,
+  restoreSnapshot, pushHistoryStep,
 } from '../lib/worldbuild.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -808,13 +808,15 @@ export function createWorldbuildPanel({ app, root }) {
     });
   }
 
-  /**
-   * Rewrite every stored snapshot the way the vein record was just rewritten:
-   * a rename moves entries onto the new name. Undo then restores only what
-   * the vein still has.
-   */
-  function pruneSnapshots(edit) {
-    rewriteHistoryStack(historyFor(currentPath), edit);
+  /** Rewrite a card rename through every undo and redo snapshot. */
+  function renameHistorySnapshots(before, after) {
+    renameHistoryAnchor(historyFor(currentPath), before, after);
+    saveHistory(currentPath);
+  }
+
+  /** Keep deleted cards and dissolved groups out of all stored snapshots. */
+  function pruneHistorySnapshots(liveAnchors) {
+    pruneHistoryStack(historyFor(currentPath), liveAnchors);
     saveHistory(currentPath);
   }
 
@@ -998,10 +1000,10 @@ export function createWorldbuildPanel({ app, root }) {
     undoBtn.disabled = !stack.past.length;
     redoBtn.disabled = !stack.future.length;
     undoBtn.title = stack.past.length
-      ? `Undo “${stack.past[stack.past.length - 1].name}” (Ctrl+Z) — ${stack.past.length} back`
+      ? `Undo: ${stack.past[stack.past.length - 1].name} (Ctrl+Z) — ${stack.past.length} steps back`
       : 'Nothing to undo on this canvas';
     redoBtn.title = stack.future.length
-      ? `Redo “${stack.future[stack.future.length - 1].name}” (Ctrl+Shift+Z) — ${stack.future.length} forward`
+      ? `Redo: ${stack.future[stack.future.length - 1].name} (Ctrl+Shift+Z) — ${stack.future.length} steps forward`
       : 'Nothing to redo on this canvas';
   }
 
@@ -1227,11 +1229,26 @@ export function createWorldbuildPanel({ app, root }) {
         refreshUnitList();
       };
       const fieldName = `Set ${field.label.toLowerCase()} on “${note.title}”`;
+      let fieldBefore = null;
+      const finishFieldEdit = () => {
+        if (fieldBefore === null) return;
+        const before = fieldBefore;
+        fieldBefore = null;
+        pushStep(before, fieldName);
+      };
+      input.addEventListener('focus', () => {
+        refreshUnitList();
+        fieldBefore = canvasSnapshot();
+      });
+      input.addEventListener('blur', finishFieldEdit);
       if (field.kind === 'number') {
-        input.addEventListener('change', () => step(commit, fieldName));
+        input.addEventListener('change', () => {
+          const before = fieldBefore ?? canvasSnapshot();
+          fieldBefore = null;
+          commit();
+          pushStep(before, fieldName);
+        });
       } else {
-        input.addEventListener('focus', () => { refreshUnitList(); beginStep(fieldName); });
-        input.addEventListener('blur', () => commitStep());
         input.addEventListener('input', commit);
       }
       row.append(el('label', { class: 'wb-field' }, [
@@ -1291,7 +1308,7 @@ export function createWorldbuildPanel({ app, root }) {
     typeSelect.addEventListener('change', () => {
       const label = NODE_TYPES.find((t) => t.id === typeSelect.value)?.label ?? typeSelect.value;
       // A type change is a canvas change like any other: one undo puts the
-      // old type (and the fields it carried) back.
+      // old type (and its field values) back.
       step(() => {
         nodeTypes = app.setWorldNodeType(currentPath, note.anchor, typeSelect.value) ?? nodeTypes;
         const chosen = NODE_TYPES.find((t) => t.id === typeSelect.value);
@@ -1302,7 +1319,7 @@ export function createWorldbuildPanel({ app, root }) {
         if (fresh) prior ? prior.replaceWith(fresh) : card.insertBefore(fresh, head.nextSibling);
         else prior?.remove();
         renderStats();
-      }, `Set type to ${label}`);
+      }, `Set type on “${note.title || 'note'}” to ${label}`);
       app.toast(`“${note.title || 'note'}” is a ${label.toLowerCase()}`, 'ok', 1500);
     });
     // The node's embedded image, when it has one: a medium-sized icon in
@@ -1489,7 +1506,7 @@ export function createWorldbuildPanel({ app, root }) {
           groups = moved.groups ?? groups;
         }
         savePositions();
-        pruneSnapshots((snap) => renameAnchorIn(snap, before, after));
+        renameHistorySnapshots(before, after);
       }
       commit();
       refreshWords();
@@ -1534,6 +1551,7 @@ export function createWorldbuildPanel({ app, root }) {
         nodeColors = app.setWorldNodeColor(currentPath, gone, null) ?? nodeColors;
         nodeImages = app.setWorldNodeImage(currentPath, gone, null) ?? nodeImages;
         groups = app.dropWorldGroups(currentPath, gone) ?? groups;
+        pruneHistorySnapshots(new Set(model.notes.map((liveNote) => liveNote.anchor)));
         savePositions();
       }
       commit();
@@ -1848,7 +1866,7 @@ export function createWorldbuildPanel({ app, root }) {
       }
       build();
       zoomToFit();
-    }, 'Overview');
+    }, 'Fold all cards — Overview');
   }
 
   /**
@@ -2934,7 +2952,7 @@ export function createWorldbuildPanel({ app, root }) {
           savePositions();
           persistView();
           build();
-        }, 'Arrange');
+        }, 'Arrange whole vein — Grid');
       },
     }));
     arrangeMenuShell(button, items);
@@ -3019,7 +3037,7 @@ export function createWorldbuildPanel({ app, root }) {
   function groupSelected() {
     const picked = (model?.notes ?? []).filter((note) => selected.has(note.anchor));
     if (picked.length < 2) return;
-    step(() => groupPicked(picked), 'Group nodes');
+    step(() => groupPicked(picked), `Group ${picked.length} cards`);
   }
 
   function groupPicked(picked) {
@@ -3373,7 +3391,7 @@ export function createWorldbuildPanel({ app, root }) {
       groups = { ...groups, [id]: { ...groups[id], icon } };
       app.saveWorldGroups(currentPath, groups);
       drawEdges();
-    }, `Set icon on “${groups[id]?.name || 'group'}”`);
+    }, `Set group icon for “${groups[id]?.name || 'group'}”`);
     closeMenu();
   }
 

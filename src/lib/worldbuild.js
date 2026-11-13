@@ -861,15 +861,21 @@ export function dropAnchorFromGroups(groups = {}, anchor) {
 }
 
 export function pruneSnapshotAnchors(snap, live) {
-  const { groups } = pruneGroups(snap.groups ?? {}, (anchor) => live.has(anchor));
+  const prunedGroups = pruneGroups(snap.groups ?? {}, (anchor) => live.has(anchor));
+  const { groups } = prunedGroups;
+  const surviving = new Set(Object.keys(groups));
   const relations = {};
   for (const [key, kind] of Object.entries(snap.relations ?? {})) {
-    const [from, to] = key.split('->');
+    const ends = splitRelationKey(key);
+    if (!ends) continue;
     const known = (end) => live.has(end) || (end.startsWith('group:') && surviving.has(end.slice(6)));
-    if (from && to && known(from) && known(to)) relations[key] = kind;
+    if (known(ends.from) && known(ends.to)) relations[key] = kind;
   }
   const anchors = (obj) => Object.fromEntries(
     Object.entries(obj ?? {}).filter(([anchor]) => live.has(anchor)),
+  );
+  const collapsedGroups = Object.fromEntries(
+    Object.entries(cleanCollapsedGroups(snap.collapsedGroups)).filter(([id]) => surviving.has(id)),
   );
   return {
     ...snap,
@@ -884,6 +890,7 @@ export function pruneSnapshotAnchors(snap, live) {
     ...(snap.pinned ? { pinned: anchors(snap.pinned) } : {}),
     ...(snap.locked ? { locked: anchors(snap.locked) } : {}),
     ...(snap.cardModes ? { cardModes: anchors(snap.cardModes) } : {}),
+    ...(snap.collapsedGroups ? { collapsedGroups } : {}),
     ...(snap.annotations ? { annotations: cleanAnnotations(snap.annotations) } : {}),
   };
 }
@@ -1013,6 +1020,29 @@ export function rewriteHistoryStack(stack, edit) {
   const map = (entry) => ({ name: entry.name, snap: JSON.stringify(edit(JSON.parse(entry.snap))) });
   stack.past = stack.past.map(map);
   stack.future = stack.future.map(map);
+  return stack;
+}
+
+/** Rename one card through every undo and redo snapshot, keeping step names. */
+export function renameHistoryAnchor(stack, before, after) {
+  return rewriteHistoryStack(stack, (snap) => renameAnchorIn(snap, before, after));
+}
+
+/**
+ * Prune deleted-card references from every stored snapshot, on both sides of
+ * the history stack. Malformed legacy entries are retained unchanged; valid
+ * snapshots are always anchor-safe before a future restore.
+ */
+export function pruneHistoryStack(stack, live) {
+  const prune = (entries) => entries.map((entry) => {
+    try {
+      return { ...entry, snap: JSON.stringify(pruneSnapshotAnchors(JSON.parse(entry.snap), live)) };
+    } catch {
+      return entry;
+    }
+  });
+  stack.past = prune(stack.past ?? []);
+  stack.future = prune(stack.future ?? []);
   return stack;
 }
 
