@@ -12,6 +12,14 @@
  *   release/Macusanite_0.1.0_x64-setup.exe    the NSIS installer
  *   release/Macusanite_0.1.0_amd64.AppImage   Linux bundles, flat, as built
  *   release/Macusanite.app                    macOS, kept as a bundle
+ *   release/latest.json                       the signed updater manifest
+ *
+ * When the build was signed (`TAURI_SIGNING_PRIVATE_KEY` set, see
+ * docs/Updates.md), every installer also has a `.sig` beside it and this
+ * script writes `release/latest.json` from those signatures — the static
+ * file the updater fetches from the GitHub release. Publish that file and
+ * the installers as release assets and already-installed copies will offer
+ * the update. An unsigned build still collects, but writes no manifest.
  *
  * It runs automatically as `posttauri:build`; `node scripts/collect-release.mjs`
  * also does it on its own, after a bare `cargo build --release --features
@@ -21,9 +29,10 @@
  * artefacts built on another platform — a Linux deb copied in from WSL, say —
  * survive a Windows build, and vice versa.
  */
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildUpdateManifest } from '../src/lib/updater.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -101,3 +110,50 @@ function bytes(path) {
 const megabytes = (size) => `${(size / 1024 / 1024).toFixed(1)} MB`;
 for (const name of copied) console.log(`release/${name}  ${megabytes(bytes(join(to, name)))}`);
 console.log(`\n${copied.length} artefact${copied.length === 1 ? '' : 's'} in release/`);
+
+/* ── signed update manifest ────────────────────────────────────────────
+ * Tauri writes a `.sig` next to each updater artifact when the private key
+ * is in the environment. The manifest needs the signature *contents*, a URL
+ * per platform, and the version — see `buildUpdateManifest`.
+ */
+function platformFor(name) {
+  const lower = name.toLowerCase();
+  const arch = lower.includes('aarch64') || lower.includes('arm64') ? 'aarch64' : 'x86_64';
+  if (lower.endsWith('-setup.exe') || lower.endsWith('.msi')) return `windows-${arch}`;
+  if (lower.endsWith('.app.tar.gz')) return `darwin-${arch}`;
+  if (lower.endsWith('.appimage')) return `linux-${arch}`;
+  return null;
+}
+
+// Prefer the NSIS installer over the MSI when a Windows build made both.
+const PLATFORM_PREFERENCE = [/setup\.exe$/i, /\.app\.tar\.gz$/i, /\.appimage$/i, /\.msi$/i];
+const candidates = {};
+for (const name of copied) {
+  const platform = platformFor(name);
+  if (!platform) continue;
+  const sigPath = join(to, `${name}.sig`);
+  if (!existsSync(sigPath)) continue;
+  const rank = PLATFORM_PREFERENCE.findIndex((re) => re.test(name));
+  if (!candidates[platform] || rank < candidates[platform].rank) {
+    candidates[platform] = { name, rank, signature: readFileSync(sigPath, 'utf8').trim() };
+  }
+}
+
+const signedPlatforms = Object.keys(candidates);
+if (signedPlatforms.length) {
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const base = process.env.MACUSANITE_UPDATE_BASE_URL ?? 'https://github.com/h3rb/Macusanite/releases/latest/download/';
+  const manifest = buildUpdateManifest({
+    version: pkg.version,
+    notes: process.env.MACUSANITE_UPDATE_NOTES ?? `Macusanite ${pkg.version}`,
+    pubDate: new Date().toISOString(),
+    platforms: Object.fromEntries(signedPlatforms.map((platform) => [
+      platform,
+      { url: `${base.replace(/\/$/, '')}/${candidates[platform].name}`, signature: candidates[platform].signature },
+    ])),
+  });
+  writeFileSync(join(to, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  console.log(`release/latest.json  ${signedPlatforms.join(', ')}`);
+} else {
+  console.log('\nno signed updater artefacts — set TAURI_SIGNING_PRIVATE_KEY and rebuild to generate release/latest.json (see docs/Updates.md)');
+}

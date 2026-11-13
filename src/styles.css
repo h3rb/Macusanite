@@ -1657,6 +1657,19 @@ dialog::backdrop {
   overflow: auto;
 }
 
+.update-dialog { width: min(560px, 94vw); }
+.update-notes {
+  white-space: pre-wrap;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+.update-progress-label { margin-top: 10px; }
+.update-progress { width: 100%; margin-top: 6px; }
+
 /* ── the merge offer ──────────────────────────────────────────────────── */
 
 .merge-dialog {

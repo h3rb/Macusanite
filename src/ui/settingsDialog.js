@@ -147,6 +147,14 @@ export function createSettingsDialog({ app }) {
           ]),
         ]),
 
+        el('section', { class: 'settings-section' }, [
+          el('h3', { text: 'Updates' }),
+          el('div', { class: 'settings-grid' }, [
+            field('Check for updates automatically', checkbox(settings.updates?.autoCheck !== false, (v) => app.updateSettings({ updates: { autoCheck: v } })), 'Checks shortly after a vault opens. Updates are signed and only install when you ask.'),
+            field('Check now', el('button', { class: 'btn', type: 'button', text: 'Check for updates', onclick: () => app.checkForUpdates({ manual: true }) }), 'Manual checks always run, even when automatic checks are off.'),
+          ]),
+        ]),
+
         el('footer', { class: 'settings-actions' }, [
           el('button', { class: 'btn btn-ghost', type: 'button', text: 'Open .macusanite folder', onclick: () => app.revealMetaFolder() }),
           el('div', { class: 'spacer' }),

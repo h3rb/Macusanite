@@ -30,6 +30,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "category": "Productivity",
     "shortDescription": "Vault viewer for markdown chambers, veins and concept graphs",
@@ -53,6 +54,17 @@
     "linux": {
       "deb": {
         "depends": []
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc5OTJENEI0OTdDNjc2M0EKUldRNmRzYVh0TlNTZWU2bDdweEZtOGNYSFV4UmFWWStLSUdpS09NMUh3aEd5b0tuSmF0SkM2aVkK",
+      "endpoints": [
+        "https://github.com/h3rb/Macusanite/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

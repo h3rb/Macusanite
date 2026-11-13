@@ -38,6 +38,8 @@ import { createHistoryLog } from './ui/historyLog.js';
 import { askMerge } from './ui/mergeDialog.js';
 import { createSearchPanel } from './ui/searchPanel.js';
 import { createResizers } from './ui/resizer.js';
+import { isAutoCheckEnabled, checkForUpdates, downloadInstallAndRestart, summarizeUpdate } from './lib/updater.js';
+import { createUpdateDialog } from './ui/updateDialog.js';
 
 const LAST_VAULT_KEY = 'macusanite.lastVault';
 const SYNTAX_GUIDE_PATH = 'Macusanite Wiki.md';
@@ -117,6 +119,7 @@ let viewer;
 let graphPanel;
 let colorPicker;
 let settingsDialog;
+let updateDialog;
 let backupDialog;
 let historyLog;
 let resizers;
@@ -140,6 +143,9 @@ let graphTimer = null;
 let stateTimer = null;
 let unwatchVault = null;
 let searchPanel;
+let updateCheckTimer = null;
+let updateCheckRunning = false;
+let pendingUpdate = null;
 // The corpus (every vein, reduced to plain text) is expensive to rebuild and
 // only changes when the index does.
 let searchCorpus = null;
@@ -216,6 +222,7 @@ const app = {
     searchPanel = createSearchPanel({ app, root: qs('#search-pane') });
     colorPicker = createColorPicker({ app, root });
     settingsDialog = createSettingsDialog({ app });
+    updateDialog = createUpdateDialog({ app });
     backupDialog = createBackupDialog({ app });
     historyLog = createHistoryLog({ app });
     resizers = createResizers({ app, root });
@@ -273,6 +280,53 @@ const app = {
   async quit() {
     await backend.log('info', 'viewer exit requested');
     await backend.quit();
+  },
+
+  /* ----------------------------------------------------------- updates --
+   * Signed self-updates (see src/lib/updater.js). Automatic checks run
+   * shortly after a vault opens unless the user turned them off; a manual
+   * check from Settings always runs. An announced update waits in
+   * `pendingUpdate` until the user asks for it — nothing installs itself.
+   */
+
+  scheduleUpdateCheck(delayMs = 4000) {
+    clearTimeout(updateCheckTimer);
+    if (!isAutoCheckEnabled(state.settings)) return;
+    updateCheckTimer = setTimeout(() => {
+      app.checkForUpdates({ manual: false }).catch(() => {});
+    }, delayMs);
+  },
+
+  async checkForUpdates({ manual = true } = {}) {
+    if (updateCheckRunning) return null;
+    updateCheckRunning = true;
+    try {
+      const result = await checkForUpdates();
+      if (result.status === 'available') {
+        pendingUpdate = result.update;
+        const summary = summarizeUpdate(result.update);
+        await backend.log('info', `update available: ${summary.version}`);
+        updateDialog?.show(summary);
+        return summary;
+      }
+      pendingUpdate = null;
+      if (manual) {
+        if (result.status === 'none') app.toast('Macusanite is up to date', 'ok');
+        else app.toast(result.reason, 'warn');
+      } else if (result.status === 'unavailable') {
+        await backend.log('warn', `update check skipped: ${result.reason}`);
+      }
+      return null;
+    } finally {
+      updateCheckRunning = false;
+    }
+  },
+
+  async installUpdate(summary, onProgress) {
+    if (!pendingUpdate) throw new Error('no update is waiting to install');
+    const update = pendingUpdate;
+    await backend.log('info', `installing update ${summary?.version ?? update.version}`);
+    await downloadInstallAndRestart(update, onProgress);
   },
 
   /* ------------------------------------------------------------ vault -- */
@@ -351,6 +405,7 @@ const app = {
 
     // Whatever the cache could not describe is read in the background.
     app.startIndexPass(plan);
+    app.scheduleUpdateCheck();
   },
 
   /**
@@ -1527,12 +1582,18 @@ const app = {
   /* ----------------------------------------------------------- settings */
 
   async updateSettings(patch) {
+    const autoCheckBefore = isAutoCheckEnabled(state.settings);
     state.settings = mergeSettings(state.settings, patch);
     applyTheme();
     applyLayout();
     app.configureMermaid();
     await app.persistSettings();
     await rerenderCurrent();
+    // Turning automatic checks on asks right away; turning them off cancels
+    // a check that is still waiting to run.
+    const autoCheckAfter = isAutoCheckEnabled(state.settings);
+    if (autoCheckAfter && !autoCheckBefore) app.scheduleUpdateCheck(800);
+    if (!autoCheckAfter) clearTimeout(updateCheckTimer);
   },
 
   /**

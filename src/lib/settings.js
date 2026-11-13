@@ -53,6 +53,11 @@ export const DEFAULT_SETTINGS = {
     enabled: true,
     livePreview: true,
   },
+  updates: {
+    // Checked automatically shortly after the vault opens; the user can turn
+    // this off in Settings and still check manually. Manual checks always run.
+    autoCheck: true,
+  },
 };
 
 export const DEFAULT_VAULT_META = {
@@ -126,6 +131,8 @@ export function validateSettings(settings) {
   s.layout.sidebarWidth = clamp(Number(s.layout.sidebarWidth), 160, 640, DEFAULT_SETTINGS.layout.sidebarWidth);
   s.layout.graphWidth = clamp(Number(s.layout.graphWidth), 200, 900, DEFAULT_SETTINGS.layout.graphWidth);
   s.editor = { ...DEFAULT_SETTINGS.editor, ...(isPlainObject(s.editor) ? s.editor : {}) };
+  s.updates = { ...DEFAULT_SETTINGS.updates, ...(isPlainObject(s.updates) ? s.updates : {}) };
+  s.updates.autoCheck = s.updates.autoCheck !== false;
   return s;
 }
 

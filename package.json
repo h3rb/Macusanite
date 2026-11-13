@@ -23,6 +23,8 @@
     "setup": "bash scripts/setup-toolchain.sh"
   },
   "dependencies": {
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "marked": "^18.1.0",
     "mermaid": "^12.1.0"
   },
