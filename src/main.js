@@ -22,6 +22,7 @@ import {
   setRelation, dropRelations, relationKey, setNodeType, setNodeField,
   cleanHistoryStack, canvasRecordPatch, cleanView, cleanPositions, dropAnchorFromGroups, renameAnchorIn, cleanAnnotations, normalizeRouting, cleanCardModes, cleanCollapsedGroups,
   lockedContentAnchors as lockedAnchorsOf, enforceLockedSource,
+  referencedNodeImageMetaNames,
 } from './lib/worldbuild.js';
 import { resolveTarget } from './lib/wikilinks.js';
 import { dirname, join, basename, titleFromPath, slugify, isMarkdown } from './lib/path.js';
@@ -1151,6 +1152,20 @@ const app = {
   /** Read a node image file back as a data URL for the canvas to draw. */
   async readNodeImageFile(metaName) {
     return backend.readMeta(metaName);
+  },
+
+  /**
+   * Delete a node image file that nothing references any more, unrecorded:
+   * the reference in `state.json` (and its history snapshots) is what undo
+   * steps, so the canvas only calls this for files no snapshot names.
+   */
+  async deleteNodeImageFile(metaName) {
+    return backend.deleteMeta(metaName);
+  },
+
+  /** Every node-image file any vein's record or history still references. */
+  referencedNodeImageMetaNames() {
+    return referencedNodeImageMetaNames({ worlds: state.world });
   },
 
   /**
