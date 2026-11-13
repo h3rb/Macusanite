@@ -305,12 +305,63 @@ const KEY_VALUE = [
   { id: 'value', label: 'Value', kind: 'text' },
 ];
 
+/**
+ * The predetermined units an attribute's unit input autocompletes from.
+ * A unit the user types by hand joins this list for the rest of the vault:
+ * `unitSuggestions` reads the units already stored in the fields records,
+ * so a hand-entered unit is offered on every later attribute.
+ */
+export const UNIT_SUGGESTIONS = [
+  '%', 'px', 'mm', 'cm', 'm', 'km', 'in', 'ft', 'mi', 'yd',
+  'g', 'kg', 'lb', 'oz', 't', 's', 'ms', 'min', 'h', 'day', 'week', 'month', 'year',
+  '°C', '°F', 'K', 'Hz', 'kHz', 'MHz', 'GHz', 'B', 'KB', 'MB', 'GB', 'TB',
+  '/10', '/100', 'count', 'level',
+];
+
+/** Longest unit anyone would type; longer input is cut, not refused. */
+export const UNIT_MAX_LENGTH = 32;
+
+/** A unit as stored: trimmed, inner whitespace collapsed, capped in length. */
+export function normalizeUnit(unit) {
+  return String(unit ?? '').trim().replace(/\s+/g, ' ').slice(0, UNIT_MAX_LENGTH);
+}
+
+/**
+ * The autocomplete list for a unit input: the predetermined units first,
+ * then every unit already stored in the given fields records (one record,
+ * or an array of them, e.g. every vein's record), in first-seen order.
+ * De-duplicated case-insensitively, so "Tokens" and "tokens" are one entry.
+ */
+export function unitSuggestions(fields = {}) {
+  const records = Array.isArray(fields) ? fields : [fields];
+  const seen = new Set();
+  const out = [];
+  const offer = (raw) => {
+    const unit = normalizeUnit(raw);
+    if (!unit) return;
+    const key = unit.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(unit);
+  };
+  for (const unit of UNIT_SUGGESTIONS) offer(unit);
+  for (const record of records) {
+    for (const stored of Object.values(record ?? {})) {
+      if (stored && typeof stored === 'object') offer(stored.unit);
+    }
+  }
+  return out;
+}
+
+// An attribute is a key/value pair with a unit: "temper — 1200 °C".
+const ATTRIBUTE = [...KEY_VALUE, { id: 'unit', label: 'Unit', kind: 'unit' }];
+
 export const NODE_FIELDS = {
   note: [],
   stat: [{ id: 'value', label: 'Value', kind: 'text' }],
   skill: LEVEL,
   ability: MIN_MAX,
-  attribute: KEY_VALUE,
+  attribute: ATTRIBUTE,
   property: KEY_VALUE,
   rating: RATING,
   // Place-like types are prose cards like notes: their content is markdown.
@@ -370,9 +421,11 @@ function clampToRange(value, field) {
 export function setNodeField(fields = {}, type, anchor, field, value) {
   const spec = nodeFields(type).find((f) => f.id === field);
   if (!anchor || !spec) return fields;
-  const stored = spec.kind === 'number' && String(value).trim() !== ''
-    ? clampToRange(value, spec)
-    : String(value);
+  const stored = spec.kind === 'unit'
+    ? normalizeUnit(value)
+    : spec.kind === 'number' && String(value).trim() !== ''
+      ? clampToRange(value, spec)
+      : String(value);
   const pair = { ...(fields[anchor] ?? {}), [field]: stored };
   if (spec.kind === 'number' && (field === 'min' || field === 'max') && stored.trim() !== '') {
     const other = field === 'min' ? 'max' : 'min';
@@ -461,6 +514,68 @@ export function nodeImageMetaName(ref) {
   if (clean.startsWith(`${NODE_IMAGES_DIR}/`)) return clean.slice('.macusanite/'.length);
   if (clean.startsWith('.macusanite/')) return clean.slice('.macusanite/'.length);
   return null;
+}
+
+/**
+ * The node-image files one images map points at: unique meta names, with
+ * legacy inline data URLs and foreign references skipped.
+ */
+export function nodeImageMetaNames(images) {
+  const names = new Set();
+  for (const ref of Object.values(images ?? {})) {
+    const metaName = nodeImageMetaName(ref);
+    if (metaName) names.add(metaName);
+  }
+  return [...names];
+}
+
+/** The node-image files one canvas snapshot (string or object) points at. */
+export function nodeImageMetaNamesFromSnapshot(snap) {
+  let saved = snap;
+  if (typeof saved?.snap === 'string') saved = saved.snap;
+  if (typeof saved === 'string') {
+    try {
+      saved = JSON.parse(saved);
+    } catch {
+      return [];
+    }
+  }
+  return nodeImageMetaNames(saved?.images);
+}
+
+/**
+ * Every node-image file still referenced anywhere: the current images, the
+ * undo/redo snapshots of this vein (`history: { past, future }`), and every
+ * other vein's record in `worlds` (its images and its persisted history).
+ * A file a snapshot still names is not an orphan — undo must find it there.
+ */
+export function referencedNodeImageMetaNames({ images = {}, history = null, worlds = {} } = {}) {
+  const names = new Set(nodeImageMetaNames(images));
+  const fromHistory = (stack) => {
+    for (const entry of [...(stack?.past ?? []), ...(stack?.future ?? [])]) {
+      for (const name of nodeImageMetaNamesFromSnapshot(entry)) names.add(name);
+    }
+  };
+  fromHistory(history);
+  for (const record of Object.values(worlds ?? {})) {
+    for (const name of nodeImageMetaNames(record?.images)) names.add(name);
+    fromHistory(record?.history);
+  }
+  return names;
+}
+
+/**
+ * The candidate files (refs or meta names) that nothing references any more,
+ * as meta names ready to delete. Inline data URLs have no file to delete.
+ */
+export function orphanedNodeImageMetaNames(candidates, referenced) {
+  const keep = referenced instanceof Set ? referenced : new Set(referenced ?? []);
+  const orphans = new Set();
+  for (const candidate of candidates ?? []) {
+    const metaName = nodeImageMetaName(candidate) ?? (String(candidate ?? '').startsWith('node-images/') ? String(candidate) : null);
+    if (metaName && !keep.has(metaName)) orphans.add(metaName);
+  }
+  return [...orphans];
 }
 
 /**
@@ -1128,6 +1243,26 @@ export function noteEdges(model = {}, relations = {}) {
 }
 
 /**
+ * The prose link that still joins two notes, when one does: a `[[#Heading]]`
+ * section link or a `[[Note]]` mention, in either direction. A stated bond
+ * removed from the canvas leaves this link — and the wire drawn from it — in
+ * place, which is worth saying out loud. Returns `{ from, to, kind }` with
+ * anchors, or null.
+ */
+export function proseLinkBetween(model = {}, from, to) {
+  if (!from || !to || from === to) return null;
+  const notes = model.notes ?? [];
+  const anchorOf = (index) => notes[index]?.anchor ?? null;
+  const edge = noteEdges(model, {}).find((candidate) => {
+    if (candidate.kind !== 'section' && candidate.kind !== 'mention') return false;
+    const source = anchorOf(candidate.from);
+    const target = anchorOf(candidate.to);
+    return (source === from && target === to) || (source === to && target === from);
+  });
+  return edge ? { from: anchorOf(edge.from), to: anchorOf(edge.to), kind: edge.kind } : null;
+}
+
+/**
  * Progression columns for a set of anchors: where each card sits on a
  * Kanban-style board of its group, by the heading tree. The top items —
  * cards with no shallower ancestor inside the set — form the leftmost
@@ -1518,6 +1653,17 @@ export function normalizeTag(value) {
   return TAG_RE.test(tag) ? tag : null;
 }
 
+/**
+ * The note a tag names, when one does. A tag and a heading's anchor are both
+ * lowercase slugs, so `#field-checklist` reaches the “Field checklist” card —
+ * the tag is a door to it. Returns null when no node wears that name.
+ */
+export function tagTarget(tag, notes) {
+  const wanted = normalizeTag(tag);
+  if (!wanted) return null;
+  return (notes ?? []).find((note) => note.anchor === wanted) ?? null;
+}
+
 /** True for a line made of nothing but `#tag` tokens — where addNoteTags writes. */
 function isTagLine(line) {
   const words = String(line ?? '').trim().split(/\s+/).filter(Boolean);
@@ -1529,9 +1675,12 @@ function isTagLine(line) {
  * tags line when one is already there, a fresh line otherwise), so the tag is
  * plain markdown the vault index can read back.
  *
+ * @param {object} [options] `{ locked }` — a content-locked note's tags are
+ *   its markdown, so a locked note takes no tags: the same model comes back.
  * @returns {object} a new model — the same model when nothing is new
  */
-export function addNoteTags(model, index, tags = []) {
+export function addNoteTags(model, index, tags = [], { locked = false } = {}) {
+  if (locked) return model;
   const wanted = [...new Set((tags ?? []).map((tag) => normalizeTag(tag)).filter(Boolean))];
   const note = (model?.notes ?? [])[index];
   if (!wanted.length || !note) return model;
@@ -1561,9 +1710,12 @@ export function addNoteTags(model, index, tags = []) {
  * fences alone (the reader's tag reader ignores them too). Lines that were
  * only the token disappear with it.
  *
+ * @param {object} [options] `{ locked }` — as `addNoteTags`: a content-locked
+ *   note keeps its tags, so the same model comes back.
  * @returns {object} a new model — the same model when the note has no such tag
  */
-export function removeNoteTag(model, index, tag) {
+export function removeNoteTag(model, index, tag, { locked = false } = {}) {
+  if (locked) return model;
   const norm = normalizeTag(tag);
   const note = (model?.notes ?? [])[index];
   if (!norm || !note) return model;
@@ -1640,9 +1792,10 @@ export const ZOOM_MAX = 3;
 
 /**
  * Connector display preferences for a vein: whether wires run as bezier
- * curves or right-angle elbows, and whether they carry arrowheads. Stored
- * as a view preference, so junk values can neither break the canvas nor
- * turn an unexpected saved shape into a feature.
+ * curves or right-angle elbows, whether they carry arrowheads, and whether
+ * long wires are cut off at a marker. Stored as a view preference, so junk
+ * values can neither break the canvas nor turn an unexpected saved shape
+ * into a feature.
  */
 export function normalizeRouting(routing) {
   const edges = {};
@@ -1651,11 +1804,13 @@ export function normalizeRouting(routing) {
     const entry = {};
     if (typeof value.elbow === 'boolean') entry.elbow = value.elbow;
     if (typeof value.arrows === 'boolean') entry.arrows = value.arrows;
+    if (typeof value.cut === 'boolean') entry.cut = value.cut;
     if (Object.keys(entry).length) edges[key] = entry;
   }
   return {
     elbow: Boolean(routing?.elbow),
     arrows: Boolean(routing?.arrows),
+    cut: Boolean(routing?.cut),
     edges,
   };
 }
@@ -1667,6 +1822,7 @@ export function effectiveRouting(routing, key) {
   return {
     elbow: override.elbow ?? normalized.elbow,
     arrows: override.arrows ?? normalized.arrows,
+    cut: override.cut ?? normalized.cut,
   };
 }
 
@@ -1704,6 +1860,222 @@ export function elbowPoints(from, to, vertical = false) {
     { x: midX, y: y2 },
     { x: x2, y: y2 },
   ];
+}
+
+/** A point along an orthogonal (elbow) wire, by distance rather than by segment. */
+export function polylineAt(points) {
+  const lengths = [];
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    const length = Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    lengths.push(length);
+    total += length;
+  }
+  return (t) => {
+    let remaining = Math.min(1, Math.max(0, t)) * total;
+    for (let i = 1; i < points.length; i += 1) {
+      const length = lengths[i - 1];
+      if (remaining <= length || i === points.length - 1) {
+        const u = length === 0 ? 0 : remaining / length;
+        return {
+          x: points[i - 1].x + (points[i].x - points[i - 1].x) * u,
+          y: points[i - 1].y + (points[i].y - points[i - 1].y) * u,
+        };
+      }
+      remaining -= length;
+    }
+    return points[points.length - 1];
+  };
+}
+
+/**
+ * How far a wire runs before it is cut off, in canvas pixels: a card dragged
+ * far from its neighbours still reads as connected, without a wire crossing
+ * every card in between. The cut end carries a marker that flies the camera
+ * to the far card when clicked.
+ */
+export const CONNECTOR_CUT_SPAN = 1100;
+
+/** A point on the cubic through four control points, at t. */
+function cubicPoint([p0, p1, p2, p3], t) {
+  const m = 1 - t;
+  const w = [m ** 3, 3 * m * m * t, 3 * m * t * t, t ** 3];
+  return {
+    x: w[0] * p0.x + w[1] * p1.x + w[2] * p2.x + w[3] * p3.x,
+    y: w[0] * p0.y + w[1] * p1.y + w[2] * p2.y + w[3] * p3.y,
+  };
+}
+
+/** Split a cubic at t into its two halves, de Casteljau: [before, after]. */
+function splitCubic([p0, p1, p2, p3], t) {
+  const lerp = (a, b) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  const [a1, b1, c1] = [lerp(p0, p1), lerp(p1, p2), lerp(p2, p3)];
+  const [a2, b2] = [lerp(a1, b1), lerp(b1, c1)];
+  const a3 = lerp(a2, b2);
+  return [[p0, a1, a2, a3], [a3, b2, c1, p3]];
+}
+
+/** Cut a right-angle wire at `limit` px from its start; null when it is short. */
+function cutPolyline(points, limit) {
+  if (!Number.isFinite(limit) || limit <= 0) return null;
+  const lengths = [];
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    lengths.push(Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y));
+    total += lengths[lengths.length - 1];
+  }
+  if (total <= limit) return null;
+  let remaining = limit;
+  for (let i = 1; i < points.length; i += 1) {
+    const length = lengths[i - 1];
+    if (remaining <= length) {
+      const previous = points[i - 1];
+      const next = points[i];
+      const u = length ? remaining / length : 0;
+      const end = {
+        x: previous.x + (next.x - previous.x) * u,
+        y: previous.y + (next.y - previous.y) * u,
+      };
+      const dir = length
+        ? { x: (next.x - previous.x) / length, y: (next.y - previous.y) / length }
+        : { x: 1, y: 0 };
+      return { points: [...points.slice(0, i), end], cut: { x: end.x, y: end.y, dir, length: limit, total } };
+    }
+    remaining -= length;
+  }
+  return null;
+}
+
+/** Cut a bezier at `limit` px along it; null when it is short enough. */
+function cutCubic(points, limit, steps = 64) {
+  if (!Number.isFinite(limit) || limit <= 0) return null;
+  let total = 0;
+  let previous = points[0];
+  let before = null;
+  for (let i = 1; i <= steps; i += 1) {
+    const next = cubicPoint(points, i / steps);
+    const length = Math.hypot(next.x - previous.x, next.y - previous.y);
+    if (!before && total + length >= limit) {
+      const u = length ? (limit - total) / length : 0;
+      before = {
+        t: (i - 1 + u) / steps,
+        x: previous.x + (next.x - previous.x) * u,
+        y: previous.y + (next.y - previous.y) * u,
+      };
+    }
+    total += length;
+    previous = next;
+  }
+  if (!before) return null;
+  const [drawn, rest] = splitCubic(points, before.t);
+  const dx = rest[3].x - rest[2].x;
+  const dy = rest[3].y - rest[2].y;
+  const length = Math.hypot(dx, dy);
+  const dir = length ? { x: dx / length, y: dy / length } : { x: 1, y: 0 };
+  // The split's own end is the exact point on the curve at that t — the
+  // marker sits on the wire, not on the chord the length walk measured.
+  const end = drawn[3];
+  return { points: drawn, cut: { x: end.x, y: end.y, dir, length: limit, total } };
+}
+
+/**
+ * Where a connector leaves one box's side and meets the other's: a cubic
+ * that only ever curves sideways, so it reads as a wire between cards. Both
+ * control points share their endpoint's height, which makes it symmetric
+ * about t = 0.5 — its halfway point is also its visual centre. A stacked
+ * pair (`vertical`) instead leaves the top card's bottom and enters the
+ * next card's top, curving the same way vertically. In elbow mode the same
+ * endpoints become a right-angle wire. `path` is the wire's SVG
+ * description, `at(t)` a point along it, t from its start at 0 to its
+ * end at 1. `head` is the destination end, for an arrowhead.
+ *
+ * With `limit`, a wire longer than that many pixels is drawn only that far:
+ * `path` and `at` cover the drawn stretch, and `cut` names where it stops
+ * ({ x, y, dir, length, total }) so the panel can end it in a marker pointing
+ * at the far card. A wire that fits is unchanged.
+ *
+ * This is the one place the bend math lives: the panel draws `path` and the
+ * occlusion scorer samples `at` (via `sampleConnectorCurve`), so the curve
+ * scored is always the curve drawn.
+ */
+export function connectorCurve(from, to, { vertical = false, elbow = false, limit = Infinity } = {}) {
+  const unit = (x, y) => {
+    const length = Math.hypot(x, y);
+    return length ? { x: x / length, y: y / length } : { x: 0, y: 0 };
+  };
+  const headAtStart = vertical && to.y + to.height / 2 <= from.y + from.height / 2;
+  if (elbow) {
+    const full = elbowPoints(from, to, vertical);
+    const [a, b, c, d] = full;
+    const head = headAtStart ? a : d;
+    const headDir = headAtStart ? unit(a.x - b.x, a.y - b.y) : unit(d.x - c.x, d.y - c.y);
+    const trimmed = cutPolyline(full, limit);
+    const points = trimmed?.points ?? full;
+    return {
+      path: points.map((point, i) => `${i === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' '),
+      at: polylineAt(points),
+      head,
+      headDir,
+      headAtStart,
+      ...(trimmed ? { cut: trimmed.cut } : {}),
+    };
+  }
+  let full;
+  if (vertical) {
+    const [top, bottom] = to.y + to.height / 2 >= from.y + from.height / 2 ? [from, to] : [to, from];
+    const x1 = top.x + top.width / 2;
+    const y1 = top.y + top.height;
+    const x2 = bottom.x + bottom.width / 2;
+    const y2 = bottom.y;
+    const bend = Math.max(36, Math.abs(y2 - y1) * 0.45);
+    full = [
+      { x: x1, y: y1 },
+      { x: x1, y: y1 + bend },
+      { x: x2, y: y2 - bend },
+      { x: x2, y: y2 },
+    ];
+  } else {
+    const y1 = from.y + from.height / 2;
+    const y2 = to.y + to.height / 2;
+    const rightward = to.x + to.width / 2 >= from.x + from.width / 2;
+    const x1 = rightward ? from.x + from.width : from.x;
+    const x2 = rightward ? to.x : to.x + to.width;
+    const bend = Math.max(36, Math.abs(x2 - x1) * 0.45);
+    full = [
+      { x: x1, y: y1 },
+      { x: rightward ? x1 + bend : x1 - bend, y: y1 },
+      { x: rightward ? x2 - bend : x2 + bend, y: y2 },
+      { x: x2, y: y2 },
+    ];
+  }
+  const [a, b, c, d] = full;
+  const head = headAtStart ? a : d;
+  const headDir = headAtStart ? unit(a.x - b.x, a.y - b.y) : unit(d.x - c.x, d.y - c.y);
+  const trimmed = cutCubic(full, limit);
+  const [p0, p1, p2, p3] = trimmed?.points ?? full;
+  return {
+    path: `M ${p0.x} ${p0.y} C ${p1.x} ${p1.y} ${p2.x} ${p2.y} ${p3.x} ${p3.y}`,
+    at(t) {
+      return cubicPoint([p0, p1, p2, p3], t);
+    },
+    head,
+    headDir,
+    headAtStart,
+    ...(trimmed ? { cut: trimmed.cut } : {}),
+  };
+}
+
+/**
+ * Sampled points along `connectorCurve(from, to, …)` — the sampler the
+ * arrangement's occlusion scorer uses, so it scores the curve the reader
+ * sees. With `cardSize`, plain card boxes are substituted (the grid the
+ * arrangement packs on), exactly as the scorer wants them.
+ */
+export function sampleConnectorCurve(from, to, { vertical = false, elbow = false, steps = 16, cardSize = null } = {}) {
+  const a = cardSize ? { ...from, width: cardSize.width, height: cardSize.height } : from;
+  const b = cardSize ? { ...to, width: cardSize.width, height: cardSize.height } : to;
+  const { at } = connectorCurve(a, b, { vertical, elbow });
+  return Array.from({ length: steps + 1 }, (_, i) => at(i / steps));
 }
 
 /**
