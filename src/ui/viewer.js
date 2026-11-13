@@ -7,6 +7,7 @@
  */
 import { el, clear, qs, htmlNode } from './dom.js';
 import { renderMarkdown, renderMermaidIn, colorSwatch } from './markdown.js';
+import { parseFrontmatter } from '../lib/frontmatter.js';
 import { createWorldbuildPanel } from './worldbuildPanel.js';
 import { findMatches } from '../lib/search.js';
 
@@ -24,17 +25,45 @@ export function createViewer({ app, root }) {
   const head = el('div', { class: 'viewer-head' });
   const body = el('article', { class: 'markdown-body', id: 'document-body' });
   const foot = el('div', { class: 'viewer-foot' });
-  const editor = el('div', { class: 'editor-pane hidden' }, [
-    el('div', { class: 'editor-toolbar' }, [
-      el('span', { class: 'editor-hint', text: 'Markdown source — Ctrl+S saves, Esc returns to the rendered view' }),
-      el('div', { class: 'spacer' }),
-      el('button', { class: 'btn btn-ghost', type: 'button', text: 'Revert', onclick: () => app.revertDraft() }),
-      el('button', { class: 'btn btn-primary', type: 'button', text: 'Save', onclick: () => app.saveCurrent() }),
-    ]),
+  // The editor's two faces: the source alone ("Code Editing"), or the source
+  // with its rendered document beside it ("Visual Editing") — source on the
+  // left, preview on the right. The Visual/Code switch in the toolbar is the
+  // preview toggle: Code Editing hides the preview entirely. The textarea is
+  // the only editing surface either way — the preview is the reader's
+  // rendering of the current draft, so the draft, autosave and undo work
+  // exactly as before.
+  const preview = el('article', {
+    class: 'markdown-body visual-preview hidden',
+    'aria-label': 'Rendered preview',
+    tabindex: '0',
+  });
+  // Preview links and swatches must not navigate or pop pickers mid-edit:
+  // the preview is for looking at, not for following.
+  preview.addEventListener('click', (event) => {
+    const interactive = event.target.closest('a, button, input, select, textarea, [data-color-target]');
+    if (interactive) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+  const visualBtn = el('button', {
+    class: 'btn btn-ghost editor-mode-btn', type: 'button', text: 'Visual Editing',
+    title: 'Edit with the rendered document beside the source',
+    onclick: () => switchEditorMode('visual'),
+  });
+  const codeBtn = el('button', {
+    class: 'btn btn-ghost editor-mode-btn', type: 'button', text: 'Code Editing',
+    title: 'Edit the markdown source directly',
+    onclick: () => switchEditorMode('code'),
+  });
+  const editorSplit = el('div', { class: 'editor-split' }, [
     el('textarea', {
       class: 'editor-textarea',
       spellcheck: 'false',
-      oninput: (event) => app.setDraft(event.target.value),
+      oninput: (event) => {
+        app.setDraft(event.target.value);
+        scheduleVisualPreview();
+      },
       onkeydown: (event) => {
         if (event.key === 'Tab') {
           event.preventDefault();
@@ -45,6 +74,17 @@ export function createViewer({ app, root }) {
         }
       },
     }),
+    preview,
+  ]);
+  const editor = el('div', { class: 'editor-pane hidden' }, [
+    el('div', { class: 'editor-toolbar' }, [
+      el('div', { class: 'editor-mode-switch', role: 'group', 'aria-label': 'Editor mode' }, [visualBtn, codeBtn]),
+      el('span', { class: 'editor-hint', text: 'Markdown source — Ctrl+S saves, Esc returns to the rendered view' }),
+      el('div', { class: 'spacer' }),
+      el('button', { class: 'btn btn-ghost', type: 'button', text: 'Revert', onclick: () => app.revertDraft() }),
+      el('button', { class: 'btn btn-primary', type: 'button', text: 'Save', onclick: () => app.saveCurrent() }),
+    ]),
+    editorSplit,
   ]);
 
   const world = el('div', { class: 'world-view hidden' });
@@ -162,6 +202,50 @@ export function createViewer({ app, root }) {
     return { index: hitIndex, count: hitNodes.length };
   }
 
+  /* -------------------------------------------------------- editor mode -- */
+
+  /** Which editor the markdown pane opens in — visual by default. */
+  function editorMode() {
+    return app.state.settings.editor?.livePreview === false ? 'code' : 'visual';
+  }
+
+  /** Show the preview or the source alone, and say which is active. */
+  function applyEditorMode() {
+    const visual = editorMode() === 'visual';
+    preview.classList.toggle('hidden', !visual);
+    visualBtn.classList.toggle('is-active', visual);
+    codeBtn.classList.toggle('is-active', !visual);
+    visualBtn.setAttribute('aria-pressed', String(visual));
+    codeBtn.setAttribute('aria-pressed', String(!visual));
+    if (visual) renderVisualPreview();
+  }
+
+  async function switchEditorMode(mode) {
+    await app.setEditorMode(mode);
+    applyEditorMode();
+  }
+
+  /** Render the current draft the way the reader would (front matter aside). */
+  function renderVisualPreview() {
+    if (editorMode() !== 'visual' || editor.classList.contains('hidden')) return;
+    const doc = app.state.current;
+    if (!doc || doc.readOnly) return;
+    const { body } = parseFrontmatter(app.state.draft ?? '');
+    const rendered = renderMarkdown(body, {
+      currentPath: doc.path,
+      resolveLink: (link) => app.resolveLink(link, doc.path),
+      colorFor: (kind, parts) => app.colorFor(kind, parts),
+    });
+    clear(preview).innerHTML = rendered.html;
+    renderMermaidIn(preview, rendered.mermaid, app.mermaid);
+  }
+
+  let visualTimer = 0;
+  function scheduleVisualPreview() {
+    clearTimeout(visualTimer);
+    visualTimer = setTimeout(renderVisualPreview, 150);
+  }
+
   /**
    * @param {object} doc { path, text, frontmatter, meta, headings }
    */
@@ -177,6 +261,7 @@ export function createViewer({ app, root }) {
     editor.classList.toggle('hidden', mode !== 'edit' || readOnly);
     body.classList.toggle('hidden', (mode === 'edit' && !readOnly) || inWorld);
     world.classList.toggle('hidden', !inWorld);
+    applyEditorMode();
     clear(head);
     clear(foot);
 
@@ -258,6 +343,7 @@ export function createViewer({ app, root }) {
   /** Called by the app after an edit is saved/reverted. */
   function syncEditor(text) {
     if (textarea.value !== text) textarea.value = text;
+    scheduleVisualPreview();
   }
 
   /** Scroll a section anchor into view after a wiki-link navigation. */
