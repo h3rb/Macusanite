@@ -1010,9 +1010,11 @@ export function createWorldbuildPanel({ app, root }) {
 
   /**
    * Where a connector leaves one box's side and meets the other's: a cubic
-   * that only ever curves sideways, so it reads as a wire between cards.
-   * Both control points share their endpoint's height, which makes the curve
-   * symmetric about t = 0.5 — its halfway point is also its visual centre.
+   * that only ever curves sideways, so it reads as a wire between cards. Both
+   * control points share their endpoint's height, which makes it symmetric
+   * about t = 0.5 — its halfway point is also its visual centre. `path` is the
+   * wire's SVG description, `at(t)` a point along it, t from its start at 0 to
+   * its end at 1.
    */
   function curveOf(from, to) {
     const y1 = from.y + from.height / 2;
@@ -1021,27 +1023,23 @@ export function createWorldbuildPanel({ app, root }) {
     const x1 = rightward ? from.x + from.width : from.x;
     const x2 = rightward ? to.x : to.x + to.width;
     const bend = Math.max(36, Math.abs(x2 - x1) * 0.45);
-    return [
+    const [a, b, c, d] = [
       { x: x1, y: y1 },
       { x: rightward ? x1 + bend : x1 - bend, y: y1 },
       { x: rightward ? x2 - bend : x2 + bend, y: y2 },
       { x: x2, y: y2 },
     ];
-  }
-
-  /** One point along a curve, at t from 0 (its start) to 1 (its end). */
-  function pointOnCurve([a, b, c, d], t) {
-    const m = 1 - t;
-    const w = [m ** 3, 3 * m * m * t, 3 * m * t * t, t ** 3];
     return {
-      x: w[0] * a.x + w[1] * b.x + w[2] * c.x + w[3] * d.x,
-      y: w[0] * a.y + w[1] * b.y + w[2] * c.y + w[3] * d.y,
+      path: `M ${a.x} ${a.y} C ${b.x} ${b.y} ${c.x} ${c.y} ${d.x} ${d.y}`,
+      at(t) {
+        const m = 1 - t;
+        const w = [m ** 3, 3 * m * m * t, 3 * m * t * t, t ** 3];
+        return {
+          x: w[0] * a.x + w[1] * b.x + w[2] * c.x + w[3] * d.x,
+          y: w[0] * a.y + w[1] * b.y + w[2] * c.y + w[3] * d.y,
+        };
+      },
     };
-  }
-
-  /** The SVG path for a curve. */
-  function pathOf([a, b, c, d]) {
-    return `M ${a.x} ${a.y} C ${b.x} ${b.y} ${c.x} ${c.y} ${d.x} ${d.y}`;
   }
 
   /**
@@ -1050,11 +1048,11 @@ export function createWorldbuildPanel({ app, root }) {
    * included, because that is the grid the arrangement is packed on.
    */
   function curvePoints(from, to, steps = 16) {
-    const curve = curveOf(
+    const { at } = curveOf(
       { ...from, width: CARD_W, height: CARD_H },
       { ...to, width: CARD_W, height: CARD_H },
     );
-    return Array.from({ length: steps + 1 }, (_, i) => pointOnCurve(curve, i / steps));
+    return Array.from({ length: steps + 1 }, (_, i) => at(i / steps));
   }
 
   /**
@@ -1620,9 +1618,19 @@ export function createWorldbuildPanel({ app, root }) {
     return items;
   }
 
-  /** The right-click menu: a selection groups, a grouped node recolors. */
+  /**
+   * The right-click menu: a selection groups, a grouped node recolors, and
+   * every node relates itself. A field being edited keeps its browser menu —
+   * cut, copy, paste and the spellchecker's menu belong to the edit — and a
+   * dropdown keeps its own. Everywhere else the card's menu is the gesture's
+   * meaning, which matters because a card's head is mostly its title field:
+   * without this, a plain right-click on the node's name opened nothing at
+   * all, while a group's has an always-openable tab.
+   */
   function openMenu(event) {
-    if (event.target.closest?.('input, textarea, select')) return;
+    if (event.target.closest?.('select')) return;
+    const field = event.target.closest?.('input, textarea');
+    if (field === document.activeElement) return;
     closeMenu();
     if (!model) return;
     const cardEl = event.target.closest?.('.wb-card');
@@ -1827,12 +1835,14 @@ export function createWorldbuildPanel({ app, root }) {
       const total = bonds.get(endpoint) ?? 1;
       const taken = lanes.get(endpoint) ?? 0;
       lanes.set(endpoint, taken + 1);
-      const shift = (taken - (total - 1) / 2) * 12;
+      // A lane's pitch is wider than a label is tall (10px mono plus its halo),
+      // so two words on neighbouring wires are never stacked on each other.
+      const shift = (taken - (total - 1) / 2) * LANE_PITCH;
       return shift ? { ...rect, y: rect.y + shift } : rect;
     };
 
     // Words are placed once every wire is drawn: each sits on its own lane's
-    // curve, and neighbours that would collide slide apart along it.
+    // wire, and neighbours that would collide slide apart along it.
     const labels = [];
     for (const edge of connectors) {
       const from = endpointRect(edge.from);
@@ -1840,10 +1850,10 @@ export function createWorldbuildPanel({ app, root }) {
       if (!from || !to) continue;
       const isGroup = edge.from.startsWith('group:') || edge.to.startsWith('group:');
       const relation = edge.relation ? relationKind(edge.relation) : null;
-      const curve = curveOf(laneRect(from, edge.from), laneRect(to, edge.to));
+      const { path, at } = curveOf(laneRect(from, edge.from), laneRect(to, edge.to));
       const line = svgNode('path', {
         class: `wb-edge wb-edge-${isGroup ? 'group' : edge.kind}${relation ? ` wb-rel-${relation.id}` : ''}`,
-        d: pathOf(curve),
+        d: path,
         fill: 'none',
         'data-from': edge.from,
         'data-to': edge.to,
@@ -1873,46 +1883,46 @@ export function createWorldbuildPanel({ app, root }) {
         cycleRelation(edge);
       });
       edgeSvg.append(text);
-      labels.push({ text, curve });
+      labels.push({ text, at });
     }
     placeLabels(labels);
   }
 
-  // Where along the wire a word may sit, nearest to the middle first. Labels
-  // first try the halfway point; a crowded one slides outwards to the closest
-  // free place, then the next, so its neighbours stay readable.
-  const LABEL_SLOTS = [0.5, 0.41, 0.59, 0.32, 0.68, 0.24, 0.76];
+  // Where along the wire a word may sit, nearest to the middle first: a crowded
+  // word walks outwards in small steps instead of settling on a neighbour,
+  // which is what keeps a hub's fan of kinds readable. The far ends are left
+  // alone — a word nearer than a fifth of the way sits on the card it leaves.
+  const LABEL_SLOTS = [0.5, 0.44, 0.56, 0.38, 0.62, 0.32, 0.68, 0.26, 0.74, 0.2, 0.8];
+  // The least daylight between two words: enough for the halo each one's stroke
+  // paints around its glyphs. Neighbouring wires run a LABEL_PITCH apart —
+  // wider than a word is tall — so two words on one end stagger along their
+  // wires rather than stack on each other.
+  const LABEL_GAP = 14;
+  const LANE_PITCH = 16;
 
   /**
-   * Lay each label on its own lane's curve, and keep the words from colliding:
-   * a label takes the nearest free slot along its curve, so a shared end fans
-   * its words out over its wires instead of stacking them at one point.
+   * Lay each label on its own wire: the nearest slot to its middle whose word
+   * is at least LABEL_GAP clear of every word already laid, or the middle
+   * when no slot is. Words never leave their own wire.
    */
   function placeLabels(labels) {
-    const taken = [];
-    const overlaps = (a, b) => a.left < b.left + b.width && a.left + a.width > b.left
-      && a.top < b.top + b.height && a.top + a.height > b.top;
-    for (const { text, curve } of labels) {
-      const box = text.getBBox();
-      // A little air around the word, so two labels never touch.
-      const areaAt = (point) => ({
-        left: point.x - (box.width + 8) / 2,
-        top: point.y - (box.height + 4) / 2,
-        width: box.width + 8,
-        height: box.height + 4,
-      });
-      let spot = null;
+    const placed = [];
+    for (const { text, at } of labels) {
+      const { width, height } = text.getBBox();
+      let spot = at(0.5);
       for (const t of LABEL_SLOTS) {
-        const at = pointOnCurve(curve, t);
-        if (taken.every((other) => !overlaps(areaAt(at), other))) {
-          spot = at;
+        const candidate = at(t);
+        const clear = placed.every((other) => {
+          const apartX = Math.abs(candidate.x - other.x) - (width + other.width) / 2;
+          const apartY = Math.abs(candidate.y - other.y) - (height + other.height) / 2;
+          return apartX >= LABEL_GAP || apartY >= LABEL_GAP;
+        });
+        if (clear) {
+          spot = candidate;
           break;
         }
       }
-      // Every wire is crowded by its full set of slots: keep the middle, and
-      // still claim the space so nothing later lands on top of it.
-      spot ??= pointOnCurve(curve, 0.5);
-      taken.push(areaAt(spot));
+      placed.push({ x: spot.x, y: spot.y, width, height });
       text.setAttribute('x', spot.x);
       text.setAttribute('y', spot.y);
     }
