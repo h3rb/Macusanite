@@ -206,10 +206,12 @@ export const RELATION_KINDS = [
   { id: 'contained-by', label: 'Contained By', inverse: 'contains', rank: 3 },
   { id: 'controls', label: 'Controls', inverse: 'controlled-by', rank: 4 },
   { id: 'controlled-by', label: 'Controlled By', inverse: 'controls', rank: 4 },
+  { id: 'affects', label: 'Affects', inverse: 'affected-by', rank: 5 },
+  { id: 'affected-by', label: 'Affected By', inverse: 'affects', rank: 5 },
   // Polarity bonds: an ally stands with you, a foe against you — both are
   // definitive, and a foe is the strongest bond of all.
-  { id: 'ally', label: 'Ally', rank: 5 },
-  { id: 'foe', label: 'Foe', rank: 6 },
+  { id: 'ally', label: 'Ally', rank: 6 },
+  { id: 'foe', label: 'Foe', rank: 7 },
 ];
 
 /** The kind a connection asserts when nothing stronger was chosen. */
@@ -237,6 +239,10 @@ export const NODE_TYPES = [
   { id: 'scene', label: 'Scene', color: '#e3b341', icon: '▶' },
   { id: 'locale', label: 'Locale', color: '#a9d15e', icon: '⚐' },
   { id: 'biome', label: 'Biome', color: '#3fb68b', icon: '✿' },
+  // Powers and their consequences: what a note does, and what it does to you.
+  { id: 'perk', label: 'Perk', color: '#ffd700', icon: '✺' },
+  { id: 'effect', label: 'Effect', color: '#56d4dd', icon: '⇒' },
+  { id: 'condition', label: 'Condition', color: '#e8604c', icon: '◍' },
 ];
 
 /** The type a node has when nothing was ever chosen for it. */
@@ -315,6 +321,9 @@ export const NODE_FIELDS = {
   scene: [],
   locale: [],
   biome: [],
+  perk: [],
+  effect: [],
+  condition: [],
 };
 
 /** The field schema for a type; empty for notes and unknown types. */
@@ -523,6 +532,32 @@ export function noteEdges(model = {}, relations = {}) {
 }
 
 /**
+ * How far a card must move, in canvas pixels, before a drop changes its
+ * membership — a nudge is not a placement.
+ */
+export const DROP_MIN_PX = 12;
+
+/**
+ * What a solo card's drop does to its membership:
+ *
+ * - `'join'` — dragged across a group's border from outside it, by more
+ *   than a nudge: it joins that group. (That also leaves its previous one.)
+ * - `'leave'` — dragged out of the group it started the drag in, by more
+ *   than a nudge: it leaves that group.
+ * - `null` — anywhere else: it stayed in the group it started in, or it
+ *   never really moved.
+ *
+ * `startGroupId` is the group (or null) the card started the drag inside;
+ * `targetId` the group (or null) under its centre now.
+ */
+export function dropMembershipKind({ distance, startGroupId, targetId }) {
+  if (!Number.isFinite(distance) || distance < DROP_MIN_PX) return null;
+  if (targetId != null && targetId !== startGroupId) return 'join';
+  if (startGroupId != null && targetId !== startGroupId) return 'leave';
+  return null;
+}
+
+/**
  * Bonds asserted between two notes that neither one's prose links: the canvas
  * can state a relationship without a `[[link]]` being written into either
  * note. A pair the prose already links is `noteEdges`' business, and a bond
@@ -712,14 +747,22 @@ export const ZOOM_MIN = 0.25;
 export const ZOOM_MAX = 3;
 
 /**
- * Clamp a canvas view ({x, y} translate in px, s scale) so the canvas
- * always covers the viewport: no void on any side, no runaway pan.
+ * How far a pan may go past the canvas's own edges, in screen pixels: wires
+ * reach a little beyond the cards that bound the canvas rect, and past the
+ * edge is the only way to see their ends at the extremes.
+ */
+export const PAN_OVERHANG = 120;
+
+/**
+ * Clamp a canvas view ({x, y} translate in px, s scale) so the canvas always
+ * covers the viewport — except that it may overshoot each edge by
+ * PAN_OVERHANG, so edges past the rect stay reachable. No runaway pan.
  */
 export function clampView(view, canvasW, canvasH, vpW, vpH) {
   const s = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.s));
   const clamp = (t, scaled, vp) => {
-    const lo = Math.min(0, vp - scaled);
-    const hi = Math.max(0, vp - scaled);
+    const lo = Math.min(0, vp - scaled) - PAN_OVERHANG;
+    const hi = Math.max(0, vp - scaled) + PAN_OVERHANG;
     return Math.min(hi, Math.max(lo, t));
   };
   return {

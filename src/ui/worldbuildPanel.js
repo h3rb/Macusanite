@@ -16,6 +16,7 @@ import {
   RELATION_KINDS, DEFAULT_RELATION, relationOf, relationKind, groupEndpoint,
   groupRelationEdges, bondEdges,
   NODE_TYPES, nodeType, nodeTypeOf, nodeFields, nodeFieldOf, fieldRangeHint,
+  dropMembershipKind,
   clampView, zoomViewAt, anchorOfView, viewOfAnchor,
 } from '../lib/worldbuild.js';
 
@@ -28,6 +29,11 @@ const GAP_X = 96;
 const GAP_Y = 76;
 const PAD = 26;
 const INTRO_H = 150;
+// A stacked pair leaves a short wire between them; a gap that still holds a
+// relationship word on the line.
+const STACK_GAP = 24;
+// How unaligned a folded-above-a-link pair may be and still read as a stack.
+const STACK_TOLERANCE = 2;
 
 function svgNode(tag, attrs = {}) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -84,6 +90,9 @@ export function createWorldbuildPanel({ app, root }) {
   let dragSnapshot = null;
   let nodeTypes = {};
   let fieldValues = {};
+  // A node's explicit colour, overriding its type's: set from the context
+  // menu like a group's, and forgettable back to the type's colour.
+  let nodeColors = {};
   let groups = {};
   let marked = false;
   // The relationship the next link from each card asserts, by note index.
@@ -115,6 +124,8 @@ export function createWorldbuildPanel({ app, root }) {
 
   function render(doc) {
     if (!doc) {
+      // Leaving the mode must not leave a floating menu behind over it.
+      closeMenu();
       mounted = false;
       model = null;
       currentPath = null;
@@ -136,8 +147,9 @@ export function createWorldbuildPanel({ app, root }) {
     positions = new Map(Object.entries(record?.positions ?? {}));
     relations = record?.relations ?? {};
     folded = record?.folded ?? {};
-    nodeTypes = record?.types ?? {};
+        nodeTypes = record?.types ?? {};
     fieldValues = record?.fields ?? {};
+    nodeColors = record?.colors ?? {};
     groups = record?.groups ?? {};
     // The saved view: the canvas point in the viewport's top-left corner at
     // the zoom it was left at, so the graph reopens exactly as it was left.
@@ -216,6 +228,14 @@ export function createWorldbuildPanel({ app, root }) {
         }),
       }),
       el('button', {
+        class: 'btn btn-ghost btn-mini', type: 'button', text: 'Legend ▾',
+        'data-legend-toggle': '',
+        title: 'What the lines, colours and icons mean',
+        'aria-haspopup': 'dialog',
+        'aria-expanded': 'false',
+        onclick: (event) => toggleLegend(event.currentTarget),
+      }),
+      el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: 'Markdown',
         title: 'Edit this vein as markdown source', onclick: () => app.setMode('edit'),
       }),
@@ -264,6 +284,8 @@ export function createWorldbuildPanel({ app, root }) {
         paint();
         // A fold changes a card's height, and with it every edge that meets it.
         applyFolds();
+        // A card folded above a node it links to now stacks with it.
+        restackAll();
       });
     });
     return button;
@@ -287,12 +309,72 @@ export function createWorldbuildPanel({ app, root }) {
     drawEdges();
   }
 
+  /**
+   * A folded card above a node it has a direct link with stacks with it:
+   * every linked partner already below it — roughly in its column, in the
+   * same group — is pulled directly under it, in order. Their wire then
+   * runs bottom-to-top and the pair (or chain) takes up less room than two
+   * free cards. Returns whether anything moved; nothing is saved here, so
+   * the caller decides when the whole pass persists.
+   */
+  function restackAround(anchor) {
+    if (!anchor || !isFolded(anchor, 'card')) return false;
+    const notes = model?.notes ?? [];
+    const index = notes.findIndex((note) => note.anchor === anchor);
+    if (index < 0) return false;
+    const foldedBox = rectOf(index);
+    const foldedCx = foldedBox.x + foldedBox.width / 2;
+    const foldedMiddle = foldedBox.y + foldedBox.height / 2;
+    const sameGroup = (otherAnchor) => (groupOf(anchor)?.id ?? null) === (groupOf(otherAnchor)?.id ?? null);
+    const partnerIdx = new Set();
+    for (const edge of [...noteEdges(model, relations), ...bondEdges(model, relations)]) {
+      if (edge.fromIndex === index && edge.toIndex !== index) partnerIdx.add(edge.toIndex);
+      if (edge.toIndex === index && edge.fromIndex !== index) partnerIdx.add(edge.fromIndex);
+    }
+    const below = [...partnerIdx]
+      .map((other) => ({ other, box: rectOf(other) }))
+      .filter(({ other, box }) => {
+        // “Appears above”: the partner’s middle sits below the folded
+        // card’s, and its centre is within the folded card’s own span.
+        const cx = box.x + box.width / 2;
+        return box.y + box.height / 2 > foldedMiddle && Math.abs(cx - foldedCx) <= CARD_W / 2 && sameGroup(notes[other]?.anchor);
+      })
+      .sort((a, b) => a.box.y - b.box.y || a.other - b.other);
+    if (!below.length) return false;
+    let cursor = foldedBox.y + foldedBox.height + STACK_GAP;
+    let moved = false;
+    for (const { other, box } of below) {
+      const target = { x: foldedBox.x, y: cursor };
+      const current = positionOf(other);
+      if (current.x !== target.x || current.y !== target.y) {
+        positions.set(notes[other].anchor, target);
+        moved = true;
+      }
+      cursor += box.height + STACK_GAP;
+    }
+    return moved;
+  }
+
+  /** Stack every folded card that qualifies; one save and rebuild if any moved. */
+  function restackAll() {
+    let moved = false;
+    (model?.notes ?? []).forEach((note) => {
+      if (restackAround(note.anchor)) moved = true;
+    });
+    if (moved) {
+      savePositions();
+      build();
+    }
+  }
+
   /* -------------------------------------------------------------- history -- */
 
   /**
-   * The canvas state an undo step puts back, as a comparable string: the four
-   * slices of the vein record the canvas itself owns. The markdown — titles,
-   * prose, links — is edited by the vein's own undo, so it never appears here.
+   * The canvas state an undo step puts back, as a comparable string: the five
+   * slices of the vein record the canvas itself owns, camera included — an
+   * Arrange that resets the view is also an undo that must bring the view
+   * back. The markdown — titles, prose, links — is edited by the vein's own
+   * undo, so it never appears here.
    */
   function canvasSnapshot() {
     return JSON.stringify({
@@ -300,14 +382,117 @@ export function createWorldbuildPanel({ app, root }) {
       groups,
       relations,
       folded,
+      view: { ...view },
     });
   }
 
-  /** This vein's steps; kept per path, so switching veins keeps each one's. */
+  /**
+   * A snapshot cleaned of every reference to an anchor the vein has no card
+   * for: its position and fold, bonds touching it, and group memberships — a
+   * group then holding fewer than two cards (its nested groups counted)
+   * dissolves with its bonds, the same cleanup a delete gives the vein
+   * record. This keeps an undo from bringing back bonds or folds for a card
+   * that is gone.
+   */
+  function pruneSnapshotAnchors(snap, live) {
+    const all = snap.groups ?? {};
+    const effectiveSize = (id, seen) => {
+      const group = all[id];
+      if (!group || seen.has(id)) return 0;
+      seen.add(id);
+      let size = (group.members ?? []).filter((anchor) => live.has(anchor)).length;
+      for (const child of group.children ?? []) size += effectiveSize(child, seen);
+      return size;
+    };
+    const surviving = new Set(Object.keys(all).filter((id) => effectiveSize(id, new Set()) >= 2));
+    const groups = {};
+    for (const [id, group] of Object.entries(all)) {
+      if (!surviving.has(id)) continue;
+      groups[id] = {
+        ...group,
+        members: (group.members ?? []).filter((anchor) => live.has(anchor)),
+        children: (group.children ?? []).filter((child) => surviving.has(child)),
+      };
+    }
+    const relations = {};
+    for (const [key, kind] of Object.entries(snap.relations ?? {})) {
+      const [from, to] = key.split('->');
+      const known = (end) => live.has(end) || (end.startsWith('group:') && surviving.has(end.slice(6)));
+      if (from && to && known(from) && known(to)) relations[key] = kind;
+    }
+    return {
+      ...snap,
+      positions: Object.fromEntries(Object.entries(snap.positions ?? {}).filter(([anchor]) => live.has(anchor))),
+      groups,
+      relations,
+      folded: Object.fromEntries(Object.entries(snap.folded ?? {}).filter(([anchor]) => live.has(anchor))),
+    };
+  }
+
+  /**
+   * A rename inside a stored snapshot: positions, folds and group members
+   * follow the new name, as they do in the vein record, while bonds naming
+   * the old name drop, as the record's do.
+   */
+  function renameAnchorIn(snap, before, after) {
+    const positions = { ...(snap.positions ?? {}) };
+    if (before in positions) {
+      positions[after] = positions[before];
+      delete positions[before];
+    }
+    const folded = { ...(snap.folded ?? {}) };
+    if (before in folded) {
+      folded[after] = folded[before];
+      delete folded[before];
+    }
+    const relations = {};
+    for (const [key, kind] of Object.entries(snap.relations ?? {})) {
+      const [from, to] = key.split('->');
+      if (from === before || to === before) continue;
+      relations[key] = kind;
+    }
+    const groups = {};
+    for (const [id, group] of Object.entries(snap.groups ?? {})) {
+      groups[id] = { ...group, members: (group.members ?? []).map((anchor) => (anchor === before ? after : anchor)) };
+    }
+    return { ...snap, positions, folded, relations, groups };
+  }
+
+  /**
+   * Rewrite every stored snapshot the way the vein record was just rewritten:
+   * a rename moves entries onto the new name. Undo then restores only what
+   * the vein still has.
+   */
+  function pruneSnapshots(edit) {
+    const stack = historyFor(currentPath);
+    const map = (snap) => JSON.stringify(edit(JSON.parse(snap)));
+    stack.past = stack.past.map(map);
+    stack.future = stack.future.map(map);
+    saveHistory(currentPath);
+  }
+
+  /**
+   * This vein's steps; kept per path, so switching veins keeps each one's,
+   * and seeded from the vein's saved record, so the stacks survive a reload
+   * and reopening the vein.
+   */
   function historyFor(path) {
     if (!path) return { past: [], future: [] };
-    if (!historyByPath.has(path)) historyByPath.set(path, { past: [], future: [] });
-    return historyByPath.get(path);
+    let stack = historyByPath.get(path);
+    if (!stack) {
+      const saved = app.worldRecord?.(path)?.history;
+      const clean = (snaps) => (Array.isArray(snaps) ? snaps.filter((snap) => typeof snap === 'string').slice(-HISTORY_LIMIT) : []);
+      stack = { past: clean(saved?.past), future: clean(saved?.future) };
+      historyByPath.set(path, stack);
+    }
+    return stack;
+  }
+
+  /** Write one vein's canvas stacks into its saved record, so they survive. */
+  function saveHistory(path) {
+    if (!path) return;
+    const stack = historyFor(path);
+    app.saveWorldHistory?.(path, { past: stack.past, future: stack.future });
   }
 
   /** Record one canvas change, unless it left the canvas exactly as it was. */
@@ -318,6 +503,7 @@ export function createWorldbuildPanel({ app, root }) {
     if (stack.past.length > HISTORY_LIMIT) stack.past.shift();
     // A new change is a new branch: whatever could have been redone is gone.
     stack.future.length = 0;
+    saveHistory(currentPath);
     syncHistoryButtons();
     return true;
   }
@@ -341,13 +527,22 @@ export function createWorldbuildPanel({ app, root }) {
     if (before) pushStep(before);
   }
 
-  /** Put a snapshot back on screen and in the record. */
+  /** Put a snapshot back on screen and in the record, and never write it back
+   * with an anchor the vein has no card for: the stored snapshots are pruned
+   * at each rename in this panel, and this checks the cards actually on
+   * screen as well, for edits made outside it (deletions in edit mode, a
+   * revert). */
   function restoreCanvas(snap) {
-    const saved = JSON.parse(snap);
+    const saved = pruneSnapshotAnchors(JSON.parse(snap), new Set((model?.notes ?? []).map((note) => note.anchor)));
     positions = new Map(Object.entries(saved.positions ?? {}));
     groups = saved.groups ?? {};
     relations = saved.relations ?? {};
     folded = saved.folded ?? {};
+    // The camera comes back with the rest: a step that moved it (Arrange
+    // resets it) returns with the view the user was looking through.
+    if (saved.view && Number.isFinite(saved.view.x) && Number.isFinite(saved.view.y)) {
+      view = { x: saved.view.x, y: saved.view.y, s: Number.isFinite(saved.view.s) ? saved.view.s : 1 };
+    }
     // Anchors come and go with the steps; a selection would outlive them.
     selected = new Set();
     app.restoreWorldCanvas(currentPath, {
@@ -355,6 +550,7 @@ export function createWorldbuildPanel({ app, root }) {
       groups,
       relations,
       folded,
+      view: anchorOfView(view),
     });
     build();
   }
@@ -365,6 +561,7 @@ export function createWorldbuildPanel({ app, root }) {
     if (!before) return;
     stack.future.push(canvasSnapshot());
     restoreCanvas(before);
+    saveHistory(currentPath);
     syncHistoryButtons();
   }
 
@@ -374,6 +571,7 @@ export function createWorldbuildPanel({ app, root }) {
     if (!after) return;
     stack.past.push(canvasSnapshot());
     restoreCanvas(after);
+    saveHistory(currentPath);
     syncHistoryButtons();
   }
 
@@ -516,19 +714,20 @@ export function createWorldbuildPanel({ app, root }) {
       'data-note': String(index),
     });
 
-    // The chip is the type's icon in its colour; the heading level survives
-    // only as a tooltip now that the icon stands in for it.
+    // The chip is the type's icon in its colour — the node's explicit
+    // colour, when it has one, in its type's — and the heading level
+    // survives only as a tooltip now that the icon stands in for it.
     const typeChip = el('span', { class: 'wb-level' });
     const paintTypeChip = (typeId) => {
       const record0 = NODE_TYPES.find((t) => t.id === typeId) ?? NODE_TYPES[0];
       typeChip.textContent = record0.icon ?? '';
-      typeChip.style.color = record0.color ?? '';
+      typeChip.style.color = nodeColors[note.anchor] ?? record0.color ?? '';
       typeChip.title = `${record0.label} · heading level ${note.level}`;
     };
     paintTypeChip(type.id);
     const typeSelect = el('select', {
       class: 'wb-type',
-      style: type.color ? `color:${type.color}` : undefined,
+      style: (nodeColors[note.anchor] ?? type.color) ? `color:${nodeColors[note.anchor] ?? type.color}` : undefined,
       'aria-label': `Type of ${note.title || 'this note'}`,
       title: 'What this node is (a note holds markdown, diagrams included)',
     });
@@ -539,7 +738,7 @@ export function createWorldbuildPanel({ app, root }) {
     typeSelect.addEventListener('change', () => {
       nodeTypes = app.setWorldNodeType(currentPath, note.anchor, typeSelect.value) ?? nodeTypes;
       const chosen = NODE_TYPES.find((t) => t.id === typeSelect.value);
-      typeSelect.style.color = chosen?.color ?? '';
+      typeSelect.style.color = nodeColors[note.anchor] ?? chosen?.color ?? '';
       paintTypeChip(typeSelect.value);
       const prior = card.querySelector('.wb-fields');
       const fresh = buildFieldsRow(note, typeSelect.value);
@@ -620,9 +819,11 @@ export function createWorldbuildPanel({ app, root }) {
           nodeTypes = moved.types;
           fieldValues = moved.fields;
           folded = moved.folded ?? folded;
+          nodeColors = moved.colors ?? nodeColors;
           groups = moved.groups ?? groups;
         }
         savePositions();
+        pruneSnapshots((snap) => renameAnchorIn(snap, before, after));
       }
       commit();
       refreshLinks();
@@ -704,6 +905,7 @@ export function createWorldbuildPanel({ app, root }) {
         positions.delete(gone);
         relations = app.dropWorldRelations(currentPath, gone) ?? relations;
         fieldValues = app.dropWorldFields(currentPath, gone) ?? fieldValues;
+        nodeColors = app.setWorldNodeColor(currentPath, gone, null) ?? nodeColors;
         groups = app.dropWorldGroups(currentPath, gone) ?? groups;
         savePositions();
       }
@@ -720,8 +922,9 @@ export function createWorldbuildPanel({ app, root }) {
         event.preventDefault();
         return;
       }
-      const outer = outermostOf(note.anchor);
-      dragMembers(outer ? [...effectiveMembers(outer)] : [note.anchor], event, card, { joinable: !outer });
+      // The card moves on its own: dropping it inside or outside a group's
+      // box decides its membership. The tab is the handle that moves a nest.
+      dragMembers([note.anchor], event, card, { joinable: true });
     });
 
     function refreshLinks() {
@@ -937,7 +1140,8 @@ export function createWorldbuildPanel({ app, root }) {
     applyView();
   }
 
-  /** Put the current view on the canvas, clamped so it never shows void. */
+  /** Put the current view on the canvas, clamped to the viewport with a
+   * slight overpan past the canvas edges so wires there stay reachable. */
   function applyView() {
     view = clampView(view, canvas.clientWidth, canvas.clientHeight, stage.clientWidth, stage.clientHeight);
     canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.s})`;
@@ -1012,23 +1216,41 @@ export function createWorldbuildPanel({ app, root }) {
    * Where a connector leaves one box's side and meets the other's: a cubic
    * that only ever curves sideways, so it reads as a wire between cards. Both
    * control points share their endpoint's height, which makes it symmetric
-   * about t = 0.5 — its halfway point is also its visual centre. `path` is the
-   * wire's SVG description, `at(t)` a point along it, t from its start at 0 to
-   * its end at 1.
+   * about t = 0.5 — its halfway point is also its visual centre. A stacked
+   * pair (`vertical`) instead leaves the top card's bottom and enters the
+   * next card's top, curving the same way vertically. `path` is the wire's
+   * SVG description, `at(t)` a point along it, t from its start at 0 to its
+   * end at 1.
    */
-  function curveOf(from, to) {
-    const y1 = from.y + from.height / 2;
-    const y2 = to.y + to.height / 2;
-    const rightward = to.x + to.width / 2 >= from.x + from.width / 2;
-    const x1 = rightward ? from.x + from.width : from.x;
-    const x2 = rightward ? to.x : to.x + to.width;
-    const bend = Math.max(36, Math.abs(x2 - x1) * 0.45);
-    const [a, b, c, d] = [
-      { x: x1, y: y1 },
-      { x: rightward ? x1 + bend : x1 - bend, y: y1 },
-      { x: rightward ? x2 - bend : x2 + bend, y: y2 },
-      { x: x2, y: y2 },
-    ];
+  function curveOf(from, to, vertical = false) {
+    let a, b, c, d;
+    if (vertical) {
+      const [top, bottom] = to.y + to.height / 2 >= from.y + from.height / 2 ? [from, to] : [to, from];
+      const x1 = top.x + top.width / 2;
+      const y1 = top.y + top.height;
+      const x2 = bottom.x + bottom.width / 2;
+      const y2 = bottom.y;
+      const bend = Math.max(36, Math.abs(y2 - y1) * 0.45);
+      [a, b, c, d] = [
+        { x: x1, y: y1 },
+        { x: x1, y: y1 + bend },
+        { x: x2, y: y2 - bend },
+        { x: x2, y: y2 },
+      ];
+    } else {
+      const y1 = from.y + from.height / 2;
+      const y2 = to.y + to.height / 2;
+      const rightward = to.x + to.width / 2 >= from.x + from.width / 2;
+      const x1 = rightward ? from.x + from.width : from.x;
+      const x2 = rightward ? to.x : to.x + to.width;
+      const bend = Math.max(36, Math.abs(x2 - x1) * 0.45);
+      [a, b, c, d] = [
+        { x: x1, y: y1 },
+        { x: rightward ? x1 + bend : x1 - bend, y: y1 },
+        { x: rightward ? x2 - bend : x2 + bend, y: y2 },
+        { x: x2, y: y2 },
+      ];
+    }
     return {
       path: `M ${a.x} ${a.y} C ${b.x} ${b.y} ${c.x} ${c.y} ${d.x} ${d.y}`,
       at(t) {
@@ -1056,6 +1278,25 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
+   * Whether two ends form a stack: a folded card directly above the card it
+   * links to, in the same column. Only prose/bond links count — the outline
+   * spine stays sideways. Holds only as long as the pair stays stacked.
+   */
+  function isStackedPair(from, to) {
+    if (from.startsWith('group:') || to.startsWith('group:')) return false;
+    const notes = model?.notes ?? [];
+    const fromIndex = notes.findIndex((note) => note.anchor === from);
+    const toIndex = notes.findIndex((note) => note.anchor === to);
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return false;
+    const a = rectOf(fromIndex);
+    const b = rectOf(toIndex);
+    const upper = a.y <= b.y ? { index: fromIndex, box: a } : { index: toIndex, box: b };
+    const lower = upper.index === fromIndex ? { index: toIndex, box: b } : { index: fromIndex, box: a };
+    if (!isFolded(notes[upper.index]?.anchor, 'card')) return false;
+    return Math.abs(upper.box.x - lower.box.x) <= STACK_TOLERANCE;
+  }
+
+  /**
    * Hill-climb the units' grid slots so relationships stop passing behind
    * cards. The score counts, for every drawn relationship, how many sampled
    * points of its curve lie inside some other card; a swap is only kept when
@@ -1080,11 +1321,16 @@ export function createWorldbuildPanel({ app, root }) {
       }
     };
     shapes.forEach((_, unitIndex) => place(unitIndex));
-    // Every drawn connector scores: the relationships and the dotted outline
-    // spine alike, since both pass visibly behind cards.
+    // Every drawn connector scores: the relationships, the canvas-stated
+    // bonds and the dotted outline spine alike, since all of them pass
+    // visibly behind cards.
     const edges = [
       ...noteEdges(model, relations),
       ...hierarchyEdges(model),
+      ...bondEdges(model, relations).map((edge) => ({
+        from: edge.fromIndex,
+        to: edge.toIndex,
+      })),
       ...groupRelationEdges(model, groups, relations).map((edge) => ({
         from: edge.fromIndex,
         to: edge.toIndex,
@@ -1151,18 +1397,26 @@ export function createWorldbuildPanel({ app, root }) {
 
   /* ------------------------------------------------- selection & grouping -- */
 
-  /** Begin dragging a set of notes (one card, or a whole group) from a grab. */
-  function dragMembers(anchors, event, el, { joinable = false } = {}) {
+    /** Begin dragging a set of notes (one card, or a whole group) from a grab.
+   * A solo card's drag can change membership; a whole-nest drag from a tab
+   * can, too — its group can nest into another or out of its parent. */
+  function dragMembers(anchors, event, el, { joinable = false, groupId = null } = {}) {
     // One drag is one step, however many frames it takes: the snapshot is
     // taken here and pushed when the pointer comes up.
     beginStep();
     const rect = canvas.getBoundingClientRect();
     dragging = {
       el,
-      // Only a single ungrouped card can be dropped onto a group's box; a
-      // group drag moves a nest, which is not a membership change.
+      // Only a single card's drag can join a box — a nest drag takes its
+      // group, not a card, along, so its membership needs its own gate.
       joinable,
-      moved: false,
+      groupId,
+      // How far the drag has carried the card so far, in canvas pixels.
+      distance: 0,
+      // The group the card (or nested group) started the drag sitting
+      // inside, if any — an arrival only joins a box entered during the
+      // drag, and a departure only leaves the one it started in.
+      startGroupId: null,
       grab: {
         x: (event.clientX - rect.left) / view.s,
         y: (event.clientY - rect.top) / view.s,
@@ -1172,12 +1426,24 @@ export function createWorldbuildPanel({ app, root }) {
         return { anchor, el: cardEls[i], start: i >= 0 ? positionOf(i) : { x: 0, y: 0 } };
       }).filter((member) => member.el),
     };
+    if (groupId) {
+      dragging.startGroupId = parentOf().get(groupId) ?? null;
+    } else if (joinable) {
+      const index = model.notes.findIndex((note) => note.anchor === anchors[0]?.anchor);
+      if (index >= 0) {
+        const box = rectOf(index);
+        dragging.startGroupId = groupAtPoint({ x: box.x + box.width / 2, y: box.y + box.height / 2 })?.id ?? null;
+      }
+    }
     el?.classList.add('is-dragging');
     event.preventDefault();
   }
 
   const GROUP_COLORS = ['#58a6ff', '#57d364', '#da70d6', '#d29922', '#f97066', '#45c4b0', '#f778ba', '#8b949e'];
   const GROUP_DEFAULT_COLOR = '#58a6ff';
+  // What a group's tab may wear: a generic mark of a set, and every note type.
+  const GROUP_GENERIC_ICON = '⁂';
+  const GROUP_ICONS = [GROUP_GENERIC_ICON, ...NODE_TYPES.map((type) => type.icon)];
 
   /** The innermost group a note belongs to, if any. */
   function groupOf(anchor) {
@@ -1206,16 +1472,6 @@ export function createWorldbuildPanel({ app, root }) {
     };
     visit(group.id);
     return out;
-  }
-
-  /** The outermost group containing a note — drags act on the whole nest. */
-  function outermostOf(anchor) {
-    let group = groupOf(anchor);
-    if (!group) return null;
-    const parents = parentOf();
-    let id = group.id;
-    while (parents.has(id)) id = parents.get(id);
-    return groups[id] ?? group;
   }
 
   /** Each group's nesting depth, id → 0 at the top: inner boxes draw on top. */
@@ -1365,6 +1621,9 @@ export function createWorldbuildPanel({ app, root }) {
     if (!menuEl) return;
     menuEl.remove();
     menuEl = null;
+    // Its toggle may have been rebuilt since, and is the only button that
+    // carries this state.
+    document.querySelector('[data-legend-toggle]')?.setAttribute('aria-expanded', 'false');
     document.removeEventListener('pointerdown', dismissMenu, true);
     document.removeEventListener('keydown', escapeMenu);
   }
@@ -1373,11 +1632,70 @@ export function createWorldbuildPanel({ app, root }) {
   // Clicks *inside* the menu must reach their buttons, so the closer
   // ignores them rather than closing on the first press.
   function dismissMenu(event) {
-    if (!event.target.closest?.('.wb-menu')) closeMenu();
+    if (event.target.closest?.('.wb-menu')) return;
+    // The Legend button, though: it toggles, so it must be allowed through to
+    // its own handler, or its press would close and reopen the legend at once.
+    if (event.target.closest?.('[data-legend-toggle]')) return;
+    closeMenu();
   }
 
   function escapeMenu(event) {
     if (event.key === 'Escape') closeMenu();
+  }
+
+  /** A small drawn sample of one line style, so the legend shows the wire. */
+  function legendSample(cls) {
+    const svg = svgNode('svg', { width: 44, height: 12, viewBox: '0 0 44 12', 'aria-hidden': 'true' });
+    svg.append(svgNode('path', { class: cls, d: 'M1 6 H43', fill: 'none' }));
+    return svg;
+  }
+
+  /** One legend entry: a wire or a glyph, then what it means. */
+  function legendRow(mark, title, blurb) {
+    const sample = typeof mark === 'string'
+      ? el('span', { class: 'wb-legend-glyph', text: mark })
+      : legendSample(mark);
+    return el('div', { class: 'wb-legend-row' }, [
+      sample,
+      el('span', { class: 'wb-legend-text' }, [el('strong', { text: title }), ` — ${blurb}`]),
+    ]);
+  }
+
+  /** What each wire, its colour and the cards' icons stand for. */
+  function legendRows() {
+    return [
+      el('div', { class: 'wb-menu-label', text: 'Lines' }),
+      legendRow('wb-edge wb-edge-contains', 'Dotted', 'the vein’s outline: each card nested under its nearest shallower heading.'),
+      legendRow('wb-edge wb-edge-section', 'Solid', 'a link in the prose — [[#Heading]] — between two notes.'),
+      legendRow('wb-edge wb-edge-mention', 'Green and faint', 'a mention, [[Another note]], reaching across the vault.'),
+      legendRow('wb-edge wb-edge-section wb-rel-affects', 'A word on the line', 'is its relationship: associate, member of, template, parent, child, contains, controls, affects, and on to ally and foe — thickening as it strengthens. Click the word to step it.'),
+      legendRow('wb-edge wb-edge-bond wb-rel-ally', 'No prose link', 'a bond stated on the canvas itself, and drawn like any other bond of its kind.'),
+      legendRow('wb-edge wb-edge-group wb-rel-ally', 'To a group', 'drawn at twice the weight of a note bond of the same kind, and coloured as it is.'),
+      el('div', { class: 'wb-menu-label', text: 'Colour' }),
+      legendRow('wb-edge wb-rel-ally', 'Green', 'ally, and mentions; red is a foe. Every other kind rides on the accent.'),
+      el('div', { class: 'wb-menu-label', text: 'Icons' }),
+      legendRow('⠿', 'The grip', 'drag it to move the card, or a group’s tab to move the whole group.'),
+      legendRow('▾', 'Fold', 'collapse a card to its header, or just its Link to section.'),
+      legendRow('✕', 'Delete', 'click once to arm, again to delete the note.'),
+      legendRow('⌂', 'A type', 'a coloured icon — Place, Person, Thing, Scene, Stat, Skill, and more — chosen from the drop-down on the card.'),
+      legendRow('⁂', 'A group icon', '⁂ until one is picked; then whatever the group’s menu set, in the group’s colour.'),
+    ];
+  }
+
+  /** The legend as a drop-down below the toolbar, on the menu's own terms:
+   * dismissed by an outside press or Escape, and it toggles from its button. */
+  function toggleLegend(button) {
+    const open = menuEl?.classList.contains('wb-legend') ?? false;
+    closeMenu();
+    if (open) return;
+    button.setAttribute('aria-expanded', 'true');
+    menuEl = el('div', { class: 'wb-menu wb-legend', role: 'dialog', 'aria-label': 'Worldbuilding legend' }, legendRows());
+    document.body.append(menuEl);
+    const rect = button.getBoundingClientRect();
+    menuEl.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuEl.offsetWidth - 8))}px`;
+    menuEl.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - menuEl.offsetHeight - 8)}px`;
+    document.addEventListener('pointerdown', dismissMenu, true);
+    document.addEventListener('keydown', escapeMenu);
   }
 
   function setGroupColor(id, color) {
@@ -1386,6 +1704,38 @@ export function createWorldbuildPanel({ app, root }) {
       app.saveWorldGroups(currentPath, groups);
       drawEdges();
     });
+    closeMenu();
+  }
+
+  function setGroupIcon(id, icon) {
+    step(() => {
+      groups = { ...groups, [id]: { ...groups[id], icon } };
+      app.saveWorldGroups(currentPath, groups);
+      drawEdges();
+    });
+    closeMenu();
+  }
+
+  /**
+   * Repaint a card's chip and type text now that its explicit colour
+   * changed — the rest of the card (type, fields) stands as it was set.
+   */
+  function repaintNodeColor(anchor) {
+    const index = model?.notes.findIndex((note) => note.anchor === anchor) ?? -1;
+    const card = cardEls[index];
+    if (!card) return;
+    const color = nodeColors[anchor] ?? nodeTypeOf(nodeTypes, anchor).color ?? '';
+    card.querySelector('.wb-level')?.style.setProperty('color', color);
+    const select = card.querySelector('.wb-type');
+    if (select) select.style.color = color;
+  }
+
+  /** Set (or, with null, forget) one node's explicit colour. Like a type
+   * change — not an undo step: the canvas record keeps them outside its
+   * snapshots, as it does for types and fields. */
+  function setNodeColor(anchor, color) {
+    nodeColors = app.setWorldNodeColor(currentPath, anchor, color) ?? nodeColors;
+    repaintNodeColor(anchor);
     closeMenu();
   }
 
@@ -1438,48 +1788,165 @@ export function createWorldbuildPanel({ app, root }) {
     return hit;
   }
 
-  /** The group a dragging card would join if released here, or null. */
-  function joinTargetId() {
-    if (!dragging?.joinable || !dragging.moved) return null;
-    const index = model.notes.findIndex((note) => note.anchor === dragging.members[0]?.anchor);
-    if (index < 0) return null;
-    const box = rectOf(index);
-    return groupAtPoint({ x: box.x + box.width / 2, y: box.y + box.height / 2 })?.id ?? null;
+  /**
+   * Where a dragged group's drop would land: the innermost group whose box
+   * covers the point, never the dragged group itself nor anything nested
+   * inside it — a group cannot be nested into itself.
+   */
+  function groupJoinTarget(point, selfId) {
+    const excluded = new Set([selfId]);
+    const visit = (id) => {
+      for (const child of groups[id]?.children ?? []) {
+        if (!excluded.has(child)) {
+          excluded.add(child);
+          visit(child);
+        }
+      }
+    };
+    visit(selfId);
+    const depths = groupDepths();
+    let hit = null;
+    for (const group of Object.values(groups ?? {})) {
+      if (excluded.has(group.id)) continue;
+      const box = groupBox(group);
+      if (!box) continue;
+      if (point.x < box.x - BOX_PAD || point.x > box.x + box.width + BOX_PAD) continue;
+      if (point.y < box.y - BOX_PAD || point.y > box.y + box.height + BOX_PAD) continue;
+      if (!hit || (depths.get(group.id) ?? 0) > (depths.get(hit.id) ?? 0)) hit = group;
+    }
+    return hit;
   }
 
   /**
-   * A drag that ends with its card's middle inside a group's box makes the
-   * card a member of that group. Nothing is restacked: the card keeps the
-   * place it was dropped in and every card already in the group stays put.
+   * Nest one group inside another (or, with null, out of its parent, making
+   * it top-level): the group's own cards and nested groups stay with it, and
+   * nothing dissolves — a drag never dissolves a group.
    */
-  function joinOnDrop(drop) {
-    if (!drop.joinable || !drop.moved) return;
-    const anchor = drop.members[0]?.anchor;
+  function nestGroup(groupId, targetId) {
+    const group = groups[groupId];
+    if (!group || groupId === targetId) return null;
+    const oldParentId = parentOf().get(groupId) ?? null;
+    if (oldParentId === targetId) return null;
+    if (targetId && !groups[targetId]) return null;
+    const next = { ...groups };
+    if (oldParentId && groups[oldParentId]) {
+      const parent = groups[oldParentId];
+      next[oldParentId] = { ...parent, children: (parent.children ?? []).filter((child) => child !== groupId) };
+    }
+    if (targetId) {
+      const target = groups[targetId];
+      next[targetId] = { ...target, children: [...(target.children ?? []), groupId] };
+    }
+    groups = app.saveWorldGroups(currentPath, next) ?? next;
+    return groups[groupId] ?? group;
+  }
+
+  /** The group whose box a card's middle sits inside right now, if any. */
+  function groupUnder(anchor) {
     const index = model.notes.findIndex((note) => note.anchor === anchor);
-    if (index < 0) return;
+    if (index < 0) return null;
     const box = rectOf(index);
-    const target = groupAtPoint({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
-    if (!target) return;
-    const joined = joinGroup(anchor, target.id);
-    if (!joined) return;
-    savePositions();
-    build();
-    app.toast(`Added “${noteTitle(anchor)}” to ${joined.name || 'the group'}`, 'ok', 1600);
+    return groupAtPoint({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
+  }
+
+  /** The group a dragging card or group would join/nest into if released here. */
+  function joinTargetId() {
+    if (dragging?.groupId) {
+      const group = groups[dragging.groupId];
+      const box = group ? groupBox(group) : null;
+      if (!box) return null;
+      const target = groupJoinTarget({ x: box.x + box.width / 2, y: box.y + box.height / 2 }, dragging.groupId);
+      return dropMembershipKind({ distance: dragging.distance, startGroupId: dragging.startGroupId, targetId: target?.id ?? null }) === 'join'
+        ? target.id
+        : null;
+    }
+    if (!dragging?.joinable) return null;
+    const anchor = dragging.members[0]?.anchor;
+    if (!anchor) return null;
+    const target = groupUnder(anchor);
+    return dropMembershipKind({ distance: dragging.distance, startGroupId: dragging.startGroupId, targetId: target?.id ?? null }) === 'join'
+      ? target.id
+      : null;
+  }
+
+  /**
+   * What a solo card's drop does to its membership: dropped inside a box it
+   * entered during this drag, it joins that group (leaving its old one
+   * without dissolving it); dropped outside the group it started the drag
+   * in, it leaves that group. Either way nothing is restacked — the card
+   * keeps the place it was dropped in and every card already in either
+   * group stays put.
+   */
+  function dropMembership(drop) {
+    if (drop.groupId) {
+      dropGroup(drop);
+      return;
+    }
+    if (!drop.joinable) return;
+    const anchor = drop.members[0]?.anchor;
+    if (!anchor) return;
+    const target = groupUnder(anchor);
+    const kind = dropMembershipKind({ distance: drop.distance, startGroupId: drop.startGroupId, targetId: target?.id ?? null });
+    if (kind === 'join' && target) {
+      const joined = joinGroup(anchor, target.id, { keepThin: true });
+      if (!joined) return;
+      savePositions();
+      build();
+      app.toast(`Added “${noteTitle(anchor)}” to ${joined.name || 'the group'}`, 'ok', 1600);
+    } else if (kind === 'leave') {
+      const left = leaveGroup(anchor);
+      if (!left) return;
+      savePositions();
+      build();
+      app.toast(`“${noteTitle(anchor)}” left ${left.name || 'the group'}`, 'ok', 1600);
+    }
+  }
+
+  /**
+   * What a dragged group's drop does to its nesting, gated the same way as
+   * a card's: carried at least a deliberate move, the group's box inside a
+   * box it did not start inside nests it there; outside the parent it
+   * started the drag in, it un-nests and becomes top-level. It never nests
+   * into itself or anything inside it, and nothing dissolves.
+   */
+  function dropGroup(drop) {
+    const group = groups[drop.groupId];
+    if (!group) return;
+    const box = groupBox(group);
+    if (!box) return;
+    const target = groupJoinTarget({ x: box.x + box.width / 2, y: box.y + box.height / 2 }, drop.groupId);
+    const kind = dropMembershipKind({ distance: drop.distance, startGroupId: drop.startGroupId, targetId: target?.id ?? null });
+    if (kind === 'join' && target) {
+      const nested = nestGroup(drop.groupId, target.id);
+      if (!nested) return;
+      savePositions();
+      build();
+      app.toast(`Nested “${nested.name || 'the group'}” into ${target.name || 'the group'}`, 'ok', 1600);
+    } else if (kind === 'leave') {
+      const unnested = nestGroup(drop.groupId, null);
+      if (!unnested) return;
+      savePositions();
+      build();
+      app.toast(`“${unnested.name || 'the group'}” left its group`, 'ok', 1600);
+    }
   }
 
   /**
    * Put one note into a group where it sits. A note belongs to one group at a
    * time, so this also takes it out of the one it had, dropping that group
-   * when it no longer has the two cards a box needs. No card is moved — the
-   * box simply grows around the arrangement it finds.
+   * when it no longer has the two cards a box needs — except when keepThin,
+   * which lets the group it left survive however few cards it keeps (a
+   * drag never dissolves a group). No card is moved — the box simply grows
+   * around the arrangement it finds.
    */
-  function joinGroup(anchor, id) {
+  function joinGroup(anchor, id, { keepThin = false } = {}) {
     const target = groups[id];
     if (!target || effectiveMembers(target).has(anchor)) return null;
+    const prevId = groupOf(anchor)?.id ?? null;
     const next = {};
     for (const [otherId, group] of Object.entries(groups)) {
       const rest = group.members.filter((member) => member !== anchor);
-      if (rest.length === group.members.length || rest.length >= 2 || (group.children ?? []).length) {
+      if (rest.length === group.members.length || rest.length >= 2 || (group.children ?? []).length || (keepThin && otherId === prevId)) {
         next[otherId] = rest.length === group.members.length ? group : { ...group, members: rest };
       }
       // Below two cards and with no children a group has no box left to draw,
@@ -1488,6 +1955,18 @@ export function createWorldbuildPanel({ app, root }) {
     next[id] = { ...target, members: [...target.members, anchor] };
     groups = app.saveWorldGroups(currentPath, next) ?? next;
     return groups[id] ?? target;
+  }
+
+  /**
+   * Take one note out of its group without dissolving the group — even when
+   * that leaves underneath two cards: a drag-out never dissolves anything.
+   */
+  function leaveGroup(anchor) {
+    const group = groupOf(anchor);
+    if (!group) return null;
+    const next = { ...groups, [group.id]: { ...group, members: group.members.filter((member) => member !== anchor) } };
+    groups = app.saveWorldGroups(currentPath, next) ?? next;
+    return group;
   }
 
   /** Take one note out of its group, leaving every other card where it is. */
@@ -1519,6 +1998,7 @@ export function createWorldbuildPanel({ app, root }) {
         text: group.name || 'Group',
         title: `Add “${noteTitle(anchor)}” to ${group.name || 'this group'} where it sits`,
         onclick: () => {
+          const oldGroup = groupOf(anchor);
           let joined = null;
           step(() => {
             joined = joinGroup(anchor, group.id);
@@ -1527,7 +2007,14 @@ export function createWorldbuildPanel({ app, root }) {
             build();
           });
           closeMenu();
-          if (joined) app.toast(`Added “${noteTitle(anchor)}” to ${joined.name || 'the group'}`, 'ok', 1600);
+          if (!joined) return;
+          // The move emptied the card's old group, so that group dissolved:
+          // it is gone from the record, and the toast says so.
+          const dissolvedOld = Boolean(oldGroup) && !groups[oldGroup.id];
+          app.toast(dissolvedOld
+            ? `Added “${noteTitle(anchor)}” to ${joined.name || 'the group'} — ${oldGroup.name || 'the group'} is gone`
+            : `Added “${noteTitle(anchor)}” to ${joined.name || 'the group'}`,
+            'ok', 1600);
         },
       })),
     ];
@@ -1563,14 +2050,24 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
-   * The relationship block for one endpoint — a note or a group. Its bonds come
-   * first, every stored one whichever way it points and each removable by
-   * clicking it, then the pickers for asserting another; the ends on offer are
-   * every other card and every group.
+   * The relationship block for an endpoint — a note or a group — or for
+   * both at once (a note's own bonds listed beside its group's, so a grouped
+   * card reads as one control instead of two): every stored bond whichever
+   * way it points, weakest first, deduped between endpoints, and each
+   * removable by clicking it; then one set of pickers for asserting another
+   * — for the first endpoint, the thing the menu opened on. The ends on
+   * offer are every other card and every group.
    */
-  function relationshipItems(own, label) {
+  function relationshipItems(owns, label) {
+    const endpoints = [].concat(owns ?? []).filter(Boolean);
+    const own = endpoints[0];
     const items = [];
-    for (const bond of bondRows(own)) {
+    const bonds = new Map();
+    for (const endpoint of endpoints) {
+      for (const bond of bondRows(endpoint)) bonds.set(`${bond.from}->${bond.to}`, bond);
+    }
+    const rows = [...bonds.values()].sort((a, b) => a.rank - b.rank);
+    for (const bond of rows) {
       items.push(el('button', {
         class: 'wb-menu-item',
         type: 'button',
@@ -1642,9 +2139,45 @@ export function createWorldbuildPanel({ app, root }) {
     if (!selected.size && !group && !anchor) return;
     event.preventDefault();
     const items = [];
-    // The card you clicked gets its own bonds, whether or not it is grouped:
-    // a bond is stated here, no prose link needed.
-    if (anchor) items.push(...relationshipItems(anchor, 'Relate this note'));
+    // One relationship block: a card's own bonds beside its group's when it
+    // has one, so a grouped card's menu is one control, not two blocks with
+    // identical pickers. The pickers assert for the thing it opened on.
+    if (anchor && group) {
+      items.push(...relationshipItems([anchor, groupEndpoint(group.id)], 'Relate this note'));
+    } else if (anchor) {
+      items.push(...relationshipItems(anchor, 'Relate this note'));
+    } else if (group) {
+      items.push(...relationshipItems(groupEndpoint(group.id), 'Relate this group'));
+    }
+    if (anchor) {
+      items.push(el('span', { class: 'wb-menu-label', text: 'Node colour' }));
+      items.push(el('div', { class: 'wb-menu-swatches' }, GROUP_COLORS.map((color) => el('button', {
+        class: `wb-menu-swatch${nodeColors[anchor] === color ? ' is-current' : ''}`,
+        type: 'button',
+        style: `background:${color}`,
+        'aria-label': `Node colour ${color}`,
+        onclick: () => setNodeColor(anchor, color),
+      }))));
+      if (nodeColors[anchor]) {
+        items.push(el('button', {
+          class: 'wb-menu-item', type: 'button', text: 'Use the type colour',
+          title: 'Drop this node’s custom colour, back to its type’s',
+          onclick: () => setNodeColor(anchor, null),
+        }));
+      }
+      items.push(el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Rename node',
+        title: 'Edit this note’s title in place',
+        onclick: () => {
+          closeMenu();
+          const index = model.notes.findIndex((note) => note.anchor === anchor);
+          const input = cardEls[index]?.querySelector('.wb-card-title');
+          if (!input) return;
+          input.focus();
+          input.select();
+        },
+      }));
+    }
     if (group) {
       items.push(el('span', { class: 'wb-menu-label', text: 'Group colour' }));
       items.push(el('div', { class: 'wb-menu-swatches' }, GROUP_COLORS.map((color) => el('button', {
@@ -1653,6 +2186,15 @@ export function createWorldbuildPanel({ app, root }) {
         style: `background:${color}`,
         'aria-label': `Group colour ${color}`,
         onclick: () => setGroupColor(group.id, color),
+      }))));
+      items.push(el('span', { class: 'wb-menu-label', text: 'Group icon' }));
+      const currentIcon = group.icon || GROUP_GENERIC_ICON;
+      items.push(el('div', { class: 'wb-menu-icons' }, GROUP_ICONS.map((icon) => el('button', {
+        class: `wb-menu-icon${icon === currentIcon ? ' is-current' : ''}`,
+        type: 'button',
+        text: icon,
+        'aria-label': `Group icon ${icon}`,
+        onclick: () => setGroupIcon(group.id, icon),
       }))));
       items.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Rename group',
@@ -1678,12 +2220,17 @@ export function createWorldbuildPanel({ app, root }) {
               build();
             });
             closeMenu();
-            if (left) app.toast(`“${noteTitle(anchor)}” left ${left.name || 'the group'}`, 'ok', 1600);
+            if (!left) return;
+            // Removing the last-but-one card dissolved the group: it is gone
+            // from the record, and the toast says so.
+            const dissolved = !groups[left.id];
+            app.toast(dissolved
+              ? `“${noteTitle(anchor)}” left ${left.name || 'the group'} — the group is gone`
+              : `“${noteTitle(anchor)}” left ${left.name || 'the group'}`,
+              'ok', 1600);
           },
         }));
       }
-
-      items.push(...relationshipItems(groupEndpoint(group.id), 'Relate this group'));
     } else {
       const groupButton = el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Group',
@@ -1786,6 +2333,12 @@ export function createWorldbuildPanel({ app, root }) {
         title: `${name} — drag to move the group`,
       }, [
         el('span', { class: 'wb-grip', text: '⠿' }),
+        el('span', {
+          class: 'wb-group-icon',
+          text: group.icon || GROUP_GENERIC_ICON,
+          style: `color:${color}`,
+          title: group.icon ? `Icon: ${group.icon}` : 'No icon set',
+        }),
         el('span', { class: 'wb-card-title static', text: name }),
       ]);
       tab.style.left = `${boxX}px`;
@@ -1793,7 +2346,7 @@ export function createWorldbuildPanel({ app, root }) {
       tab.style.borderLeft = `3px solid ${color}`;
       tab.addEventListener('pointerdown', (event) => {
         event.stopPropagation();
-        dragMembers([...effectiveMembers(group)], event, cardEls[indexes[0]]);
+        dragMembers([...effectiveMembers(group)], event, cardEls[indexes[0]], { groupId: group.id });
       });
       // Double-clicking the name edits it in place, like a card's title.
       const nameEl = tab.querySelector('.wb-card-title');
@@ -1850,7 +2403,11 @@ export function createWorldbuildPanel({ app, root }) {
       if (!from || !to) continue;
       const isGroup = edge.from.startsWith('group:') || edge.to.startsWith('group:');
       const relation = edge.relation ? relationKind(edge.relation) : null;
-      const { path, at } = curveOf(laneRect(from, edge.from), laneRect(to, edge.to));
+      // A stacked pair's wire runs bottom-to-top on its own column; the lane
+      // fan-out (which offsets boxes vertically) would move its endpoints
+      // onto the cards, so stacked pairs skip the lanes.
+      const stacked = edge.kind !== 'contains' && isStackedPair(edge.from, edge.to);
+      const { path, at } = curveOf(stacked ? from : laneRect(from, edge.from), stacked ? to : laneRect(to, edge.to), stacked);
       const line = svgNode('path', {
         class: `wb-edge wb-edge-${isGroup ? 'group' : edge.kind}${relation ? ` wb-rel-${relation.id}` : ''}`,
         d: path,
@@ -1966,7 +2523,7 @@ export function createWorldbuildPanel({ app, root }) {
     const minStartY = Math.min(...dragging.members.map((m) => m.start.y));
     const dx = Math.max(4 - minStartX, point.x - dragging.grab.x);
     const dy = Math.max(4 - minStartY, point.y - dragging.grab.y);
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragging.moved = true;
+    dragging.distance = Math.hypot(dx, dy);
     for (const member of dragging.members) {
       const x = member.start.x + dx;
       const y = member.start.y + dy;
@@ -2006,9 +2563,11 @@ export function createWorldbuildPanel({ app, root }) {
     sizeCanvas();
     drawEdges();
     savePositions();
-    // Joining on drop is part of the drag, so one undo puts the card back
-    // where it came from and out of the group again.
-    joinOnDrop(drop);
+    // A drop's membership change is part of the drag, so one undo puts the
+    // card back where it came from and out of the group again. A folded card
+    // dropped above a node it links to stacks with it, in the same step.
+    dropMembership(drop);
+    if (!drop.groupId && drop.joinable) restackAll();
     commitStep();
   });
 

@@ -9,6 +9,7 @@ import {
   NODE_TYPES, DEFAULT_NODE_TYPE, nodeType, nodeTypeOf, setNodeType,
   NODE_FIELDS, nodeFields, nodeFieldOf, setNodeField, fieldRangeHint,
   ZOOM_MIN, ZOOM_MAX, clampView, zoomViewAt, anchorOfView, viewOfAnchor,
+  DROP_MIN_PX, dropMembershipKind,
 } from '../../src/lib/worldbuild.js';
 
 const VEIN = `---
@@ -144,6 +145,10 @@ test('relationship kinds run weakest-first, in inverse pairs', () => {
   const ids = RELATION_KINDS.map((k) => k.id);
   assert.ok(ids.indexOf('template') > ids.indexOf('member-of'));
   assert.ok(ids.indexOf('template') < ids.indexOf('parent'));
+  // Affects pairs causation: above Controls, below Ally and Foe.
+  assert.equal(relationKind('affects').inverse, 'affected-by');
+  assert.ok(relationKind('affects').rank > relationKind('controls').rank);
+  assert.ok(relationKind('affects').rank < relationKind('ally').rank);
   // Polarity bonds sit at the top of the scale: allies green, foes red.
   const last = RELATION_KINDS[RELATION_KINDS.length - 1];
   const secondLast = RELATION_KINDS[RELATION_KINDS.length - 2];
@@ -291,7 +296,7 @@ test('node types default to note and validate on the way in', () => {
   assert.equal(DEFAULT_NODE_TYPE, 'note');
   assert.deepEqual(
     NODE_TYPES.map((t) => t.id),
-    ['note', 'stat', 'skill', 'ability', 'attribute', 'property', 'rating', 'place', 'person', 'thing', 'location', 'scene', 'locale', 'biome'],
+    ['note', 'stat', 'skill', 'ability', 'attribute', 'property', 'rating', 'place', 'person', 'thing', 'location', 'scene', 'locale', 'biome', 'perk', 'effect', 'condition'],
   );
   // Every typed node reads at a glance in its own colour; notes stay plain.
   const colors = NODE_TYPES.filter((t) => t.id !== 'note').map((t) => t.color);
@@ -305,6 +310,9 @@ test('node types default to note and validate on the way in', () => {
   assert.deepEqual(nodeFields('place'), []);
   assert.deepEqual(nodeFields('person'), []);
   assert.deepEqual(nodeFields('biome'), []);
+  assert.deepEqual(nodeFields('perk'), []);
+  assert.deepEqual(nodeFields('effect'), []);
+  assert.deepEqual(nodeFields('condition'), []);
   assert.equal(nodeType('STAT').id, 'stat');
   assert.equal(nodeType('nope'), null);
   assert.equal(nodeTypeOf({}, 'a').id, 'note');
@@ -415,19 +423,40 @@ test('zoomViewAt keeps the canvas point under the pointer fixed', () => {
   assert.equal(zoomViewAt(view, 200, 150, 0.001).s, ZOOM_MIN);
 });
 
-test('clampView keeps the canvas covering the viewport', () => {
+test('clampView keeps the canvas covering the viewport, with a slight overpan', () => {
   const canvas = { w: 800, h: 600 };
   const vp = { w: 400, h: 300 };
-  // A canvas bigger than the viewport: translate runs 0 to -(scaled - vp).
-  assert.deepEqual(clampView({ x: 50, y: 50, s: 1 }, 800, 600, 400, 300), { x: 0, y: 0, s: 1 });
-  assert.deepEqual(clampView({ x: -9999, y: -9999, s: 1 }, 800, 600, 400, 300), { x: -400, y: -300, s: 1 });
-  // Smaller than the viewport (zoomed out): the canvas may sit anywhere that
-  // keeps it fully inside the viewport.
-  assert.deepEqual(clampView({ x: -99, y: -99, s: 1 }, 200, 150, 400, 300), { x: 0, y: 0, s: 1 });
-  assert.deepEqual(clampView({ x: 9999, y: 9999, s: 1 }, 200, 150, 400, 300), { x: 200, y: 150, s: 1 });
+  // A canvas bigger than the viewport: translate may overshoot each exact
+  // edge by PAN_OVERHANG, so wires past the canvas rect stay reachable.
+  assert.deepEqual(clampView({ x: 50, y: 50, s: 1 }, 800, 600, 400, 300), { x: 50, y: 50, s: 1 });
+  assert.deepEqual(clampView({ x: -9999, y: -9999, s: 1 }, 800, 600, 400, 300), { x: -520, y: -420, s: 1 });
+  // Smaller than the viewport (zoomed out): the flush position may be
+  // overshot by the same margin on each side.
+  assert.deepEqual(clampView({ x: -99, y: -99, s: 1 }, 200, 150, 400, 300), { x: -99, y: -99, s: 1 });
+  assert.deepEqual(clampView({ x: 9999, y: 9999, s: 1 }, 200, 150, 400, 300), { x: 320, y: 270, s: 1 });
   // Scale is clamped too.
   assert.equal(clampView({ x: 0, y: 0, s: 99 }, 800, 600, 400, 300).s, ZOOM_MAX);
   assert.equal(clampView({ x: 0, y: 0, s: 0 }, 800, 600, 400, 300).s, ZOOM_MIN);
+});
+
+test('a drop changes membership only on a deliberate move', () => {
+  // Join: dragged across a group's border from outside it.
+  assert.equal(dropMembershipKind({ distance: 40, startGroupId: null, targetId: 'g1' }), 'join');
+  assert.equal(dropMembershipKind({ distance: DROP_MIN_PX, startGroupId: null, targetId: 'g1' }), 'join');
+  assert.equal(dropMembershipKind({ distance: 120, startGroupId: null, targetId: 'g1' }), 'join');
+  assert.equal(dropMembershipKind({ distance: 5, startGroupId: null, targetId: 'g1' }), null);
+  // Leave: dragged out of the group it started the drag in.
+  assert.equal(dropMembershipKind({ distance: 40, startGroupId: 'g1', targetId: null }), 'leave');
+  assert.equal(dropMembershipKind({ distance: 5, startGroupId: 'g1', targetId: null }), null);
+  // Stay: still inside the group it started in, however far it moved.
+  assert.equal(dropMembershipKind({ distance: 40, startGroupId: 'g1', targetId: 'g1' }), null);
+  assert.equal(dropMembershipKind({ distance: 3, startGroupId: 'g1', targetId: 'g1' }), null);
+  // Moving between two groups counts as a join of the new one.
+  assert.equal(dropMembershipKind({ distance: 60, startGroupId: 'g1', targetId: 'g2' }), 'join');
+  // Ungrouped and dropped on empty canvas, or not moved at all.
+  assert.equal(dropMembershipKind({ distance: 60, startGroupId: null, targetId: null }), null);
+  assert.equal(dropMembershipKind({ distance: NaN, startGroupId: null, targetId: 'g1' }), null);
+  assert.equal(dropMembershipKind({ distance: undefined, startGroupId: null, targetId: 'g1' }), null);
 });
 
 test('anchorOfView and viewOfAnchor round-trip a left view', () => {

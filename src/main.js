@@ -906,7 +906,7 @@ const app = {
   markWorld(path, marked) {
     if (!path) return null;
     const record = { ...state.world[path], marked: Boolean(marked) };
-    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups']
+    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups', 'history']
       .some((part) => record[part]);
     if (record.marked || keepsWork) state.world[path] = record;
     else delete state.world[path];
@@ -945,12 +945,34 @@ const app = {
 
   /**
    * Put the canvas record back as one undo step found it: positions, groups,
-   * relationships and folds together, so a step is never half applied.
+   * relationships, folds and the camera together, so a step is never half
+   * applied. The view is stored in the same anchor form saveWorldView keeps.
    */
-  restoreWorldCanvas(path, { positions = {}, groups = {}, relations = {}, folded = {} }) {
+  restoreWorldCanvas(path, { positions = {}, groups = {}, relations = {}, folded = {}, view = null }) {
     if (!path) return;
-    state.world[path] = { ...state.world[path], positions, groups, relations, folded };
+    const patch = { positions, groups, relations, folded };
+    const x = Number(view?.x);
+    const y = Number(view?.y);
+    const s = Number(view?.s);
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      patch.view = { x, y, s: Number.isFinite(s) ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s)) : 1 };
+    }
+    state.world[path] = { ...state.world[path], ...patch };
     app.scheduleStatePersist();
+  },
+
+  /**
+   * The vein's canvas undo/redo stacks, as persisted JSON snapshots. Canvas
+   * history belongs to the canvas — never the vein's markdown undo — but it
+   * survives a reload, like the layout it rewinds.
+   */
+  saveWorldHistory(path, history) {
+    if (!path) return null;
+    const clean = (snaps) => (Array.isArray(snaps) ? snaps.filter((snap) => typeof snap === 'string') : []);
+    const next = { past: clean(history?.past), future: clean(history?.future) };
+    state.world[path] = { ...state.world[path], history: next };
+    app.scheduleStatePersist();
+    return next;
   },
 
   /** Forget every asserted relationship touching a deleted endpoint. */
@@ -978,6 +1000,20 @@ const app = {
     state.world[path] = { ...state.world[path], fields };
     app.scheduleStatePersist();
     return fields;
+  },
+
+  /**
+   * Set a note's explicit colour, overriding its type's colour on the
+   * canvas. A falsy colour forgets the override, and the type's colour
+   * shows through again. Returns the vein's colours record.
+   */
+  setWorldNodeColor(path, anchor, color) {
+    const colors = { ...(state.world[path]?.colors ?? {}) };
+    if (color) colors[anchor] = color;
+    else delete colors[anchor];
+    state.world[path] = { ...state.world[path], colors };
+    app.scheduleStatePersist();
+    return colors;
   },
 
   /**
@@ -1091,6 +1127,7 @@ const app = {
     const types = move(record.types);
     const fields = move(record.fields);
     const folded = move(record.folded);
+    const colors = move(record.colors);
     const groups = {};
     for (const [id, group] of Object.entries(record.groups ?? {})) {
       groups[id] = {
@@ -1098,9 +1135,9 @@ const app = {
         members: group.members.map((a) => (a === before ? after : a)),
       };
     }
-    state.world[path] = { ...record, types, fields, folded, groups };
+    state.world[path] = { ...record, types, fields, folded, colors, groups };
     app.scheduleStatePersist();
-    return { types, fields, folded, groups };
+    return { types, fields, folded, colors, groups };
   },
 
   revertDraft() {
@@ -1336,6 +1373,17 @@ const app = {
     app.configureMermaid();
     await app.persistSettings();
     await rerenderCurrent();
+  },
+
+  /**
+   * Which editor the markdown pane opens in: the rendered preview beside the
+   * source ("Visual Editing"), or the source alone ("Code Editing"). A
+   * viewer choice, so it stays out of the undo stack like recent colours.
+   */
+  async setEditorMode(mode) {
+    const visual = mode === 'visual';
+    state.settings.editor = { ...(state.settings.editor ?? {}), livePreview: visual };
+    await app.persistSettings({ record: false });
   },
 
   async setGraphOption(key, value) {
