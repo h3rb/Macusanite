@@ -9,8 +9,9 @@
  * Content is deliberately varied: front-matter colours, section links, an
  * unresolved link (which the UI offers to create), tags and mermaid diagrams.
  * Home also carries a Worldbuilding canvas record (in `.macusanite/state.json`)
- * demonstrating locking, pinning, routing, annotations, node types and named
- * canvas history, and Vault Notes tours every recent canvas feature.
+ * demonstrating locking, pinning, progression columns, routing, annotations,
+ * node types and named canvas history, and Vault Notes tours every recent
+ * canvas feature.
  */
 import { DEFAULT_SETTINGS } from './settings.js';
 import { canvasSnapshot } from './worldbuild.js';
@@ -57,6 +58,17 @@ flowchart LR
   Field --> Log[Field log]
 \`\`\`
 
+### Flowchart
+
+A flowchart lays a process out left to right — the same shape the
+progression board on this canvas borrows: earlier steps on the left,
+later ones towards the right.
+
+### Sequence diagram
+
+A sequence diagram names the actors and the order they speak in, top to
+bottom. Both diagram kinds render in place, exactly where they are written.
+
 ## Reference cards and hand-written links
 
 A reference card points at another vein without leaving this one:
@@ -92,6 +104,10 @@ centre pane). Everything new lives here:
 * Connectors run as **elbow** wires with **arrowheads**, and the yellow notes
   are free-floating **annotations**. The health panel (⚠ in the toolbar) lists
   orphans and thin groups.
+* The **Progression board** group is split into Kanban-style columns by
+  heading tier: the top card on the left, its subsections one tier to the
+  right, and their own subsections to the right of those. Right-click a
+  group to split it, or use **Arrange → Progression**.
 * Canvas undo steps are **named** — use the history browser beside the undo
   button to jump between them, and the file-history log to see the vault's
   whole story.
@@ -308,6 +324,7 @@ Open [[Home]] — it is marked as Worldbuilding, so it opens as a canvas.
 | Smart snap guides | drag any card near another card's edge or centreline |
 | Drag a selection as a unit | Ctrl+click several cards, then drag one |
 | Align / distribute a selection | right-click a selected card: **Align**, **Distribute** (three or more cards) |
+| Progression columns | the amber **Progression board** on Home: heading tiers left to right, tier headers over each lane |
 | Locked group | the red group on Home: cards cannot move, edit or be removed, but links still work |
 | Pinned group and node | the blue group and the pinned card: **Arrange** flows around them |
 | Health / orphans panel | the ⚠ chip in the canvas toolbar |
@@ -354,33 +371,44 @@ const DEMO_IMAGE_REF = '.macusanite/node-images/demo.png';
  * named canvas history — every recent canvas feature, ready to poke at.
  */
 function showcaseWorldRecord() {
+  // The progression board occupies the top tiers: tier 0 at x=40, tier 1 at
+  // x=436, tier 2 at x=832 (300px cards, 96px gaps), stacked down 336px.
   const positions = {
     'welcome-to-your-vault': { x: 40, y: 40 },
-    'the-three-panes': { x: 380, y: 40 },
-    'where-to-go-next': { x: 720, y: 40 },
-    diagramming: { x: 40, y: 360 },
-    'reference-cards-and-hand-written-links': { x: 380, y: 360 },
-    'colour-everywhere': { x: 720, y: 360 },
-    'try-the-worldbuilding-canvas': { x: 380, y: 680 },
+    diagramming: { x: 436, y: 40 },
+    'reference-cards-and-hand-written-links': { x: 436, y: 376 },
+    flowchart: { x: 832, y: 40 },
+    'sequence-diagram': { x: 832, y: 376 },
+    'the-three-panes': { x: 40, y: 376 },
+    'where-to-go-next': { x: 40, y: 712 },
+    'colour-everywhere': { x: 40, y: 1048 },
+    'try-the-worldbuilding-canvas': { x: 40, y: 1384 },
   };
   const groups = {
     'g-locked': {
       id: 'g-locked', name: 'Locked demo', color: '#f97066', locked: true,
-      members: ['welcome-to-your-vault', 'the-three-panes'], children: [],
+      members: ['where-to-go-next', 'colour-everywhere'], children: [],
     },
     'g-pinned': {
       id: 'g-pinned', name: 'Pinned demo', color: '#58a6ff', pinned: true,
-      members: ['diagramming', 'try-the-worldbuilding-canvas'], children: [],
+      members: ['try-the-worldbuilding-canvas', 'the-three-panes'], children: [],
+    },
+    'g-progression': {
+      id: 'g-progression', name: 'Progression board', color: '#d29922', layout: 'progression',
+      members: ['welcome-to-your-vault', 'diagramming', 'reference-cards-and-hand-written-links', 'flowchart', 'sequence-diagram'],
+      children: [],
     },
   };
   const relations = {
     'welcome-to-your-vault->the-three-panes': 'contains',
     'try-the-worldbuilding-canvas->welcome-to-your-vault': 'controls',
     'diagramming->reference-cards-and-hand-written-links': 'affects',
+    'diagramming->flowchart': 'contains',
     'group:g-locked->where-to-go-next': 'associate',
   };
   const types = {
     diagramming: 'stat',
+    flowchart: 'stat',
     'colour-everywhere': 'skill',
     'where-to-go-next': 'place',
     'reference-cards-and-hand-written-links': 'thing',
@@ -388,6 +416,7 @@ function showcaseWorldRecord() {
   };
   const fields = {
     diagramming: { value: '3 diagrams' },
+    flowchart: { value: '1 flowchart' },
     'colour-everywhere': { level: 8 },
   };
   const colors = {
@@ -400,8 +429,8 @@ function showcaseWorldRecord() {
   const pinned = { 'colour-everywhere': true };
   const locked = { 'where-to-go-next': true };
   const annotations = {
-    'ann-tour-1': { id: 'ann-tour-1', x: 760, y: 40, text: 'Start here: Overview folds everything, then fits.' },
-    'ann-tour-2': { id: 'ann-tour-2', x: 40, y: 660, text: 'Elbow wires + arrowheads are on for this canvas.' },
+    'ann-tour-1': { id: 'ann-tour-1', x: 832, y: 712, text: 'Start here: Overview folds everything, then fits.' },
+    'ann-tour-2': { id: 'ann-tour-2', x: 40, y: 1720, text: 'Elbow wires + arrowheads are on for this canvas.' },
   };
   const folded = { 'the-three-panes': { links: true } };
   const view = { x: 0, y: 0, s: 1 };

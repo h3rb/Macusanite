@@ -33,6 +33,7 @@ Open [[Home]] — it is marked as Worldbuilding, so it opens as a canvas.
 | Smart snap guides | drag any card near another card's edge or centreline |
 | Drag a selection as a unit | Ctrl+click several cards, then drag one |
 | Align / distribute a selection | right-click a selected card: **Align**, **Distribute** (three or more cards) |
+| Progression columns | the amber **Progression board** on Home: heading tiers left to right, tier headers over each lane |
 | Locked group | the red group on Home: cards cannot move, edit or be removed, but links still work |
 | Pinned group and node | the blue group and the pinned card: **Arrange** flows around them |
 | Health / orphans panel | the ⚠ chip in the canvas toolbar |

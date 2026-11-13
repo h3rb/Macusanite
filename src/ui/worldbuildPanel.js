@@ -291,9 +291,6 @@ export function createWorldbuildPanel({ app, root }) {
     linkKinds = new Map();
     mounted = true;
     build();
-    // Existing stacks reopen at the current stack gap, not the gap they were
-    // last saved with, so tightening STACK_GAP reaches saved canvases too.
-    restackAll();
   }
 
   function build() {
@@ -4664,15 +4661,20 @@ export function createWorldbuildPanel({ app, root }) {
       if (!box) continue;
       const indexes = box.indexes;
       const pad = 12;
+      // A progression board reserves a header strip above its top cards:
+      // the tier words sit there, in the box's own padding, instead of
+      // under the cards that start each lane.
+      const topPad = group.layout === 'progression' ? 30 : pad;
       const color = group.color || GROUP_DEFAULT_COLOR;
       const boxX = box.x - pad;
-      const boxY = box.y - pad;
+      const boxY = box.y - topPad;
+      const boxHeight = box.height + topPad + pad;
       edgeSvg.append(svgNode('rect', {
         class: `wb-box${dropTargetId === group.id ? ' is-drop-target' : ''}${isGroupLocked(group) ? ' is-locked' : ''}${group.pinned ? ' is-pinned' : ''}`,
         x: boxX,
         y: boxY,
         width: box.width + pad * 2,
-        height: box.height + pad * 2,
+        height: boxHeight,
         rx: 10,
         fill: color,
         'fill-opacity': 0.07,
@@ -4680,6 +4682,7 @@ export function createWorldbuildPanel({ app, root }) {
         'stroke-opacity': 0.75,
         'stroke-width': 2,
       }));
+      const tierLabels = [];
       // A group split into progression columns wears its board: one lane per
       // heading-tree tier, labelled at the top, behind the cards.
       if (group.layout === 'progression') {
@@ -4699,7 +4702,7 @@ export function createWorldbuildPanel({ app, root }) {
             x: laneX,
             y: boxY,
             width: laneW,
-            height: box.height + pad * 2,
+            height: boxHeight,
             rx: 8,
             fill: color,
             'fill-opacity': column % 2 ? 0.04 : 0.1,
@@ -4707,10 +4710,11 @@ export function createWorldbuildPanel({ app, root }) {
           const label = svgNode('text', {
             class: 'wb-column-label',
             x: laneX + 10,
-            y: boxY + 18,
+            y: boxY + 21,
           });
           label.textContent = `Tier ${column + 1}`;
           edgeSvg.append(label);
+          tierLabels.push(label);
         }
       }
       // The title: a mini node header straddling the box's top-left corner —
@@ -4754,6 +4758,14 @@ export function createWorldbuildPanel({ app, root }) {
         inlineGroupRename(nameEl, group);
       });
       cards.append(tab);
+      // The tab straddles the box's top-left corner, exactly where Tier 1
+      // would sit: nudge that one word right of the tab (in canvas units)
+      // so the first header is not covered by the group's own title.
+      if (tierLabels.length) {
+        const first = tierLabels[0];
+        const shift = (tab.getBoundingClientRect().right - first.getBoundingClientRect().left + 8) / view.s;
+        if (shift > 0) first.setAttribute('x', String(Number(first.getAttribute('x')) + shift));
+      }
     }
   }
 
@@ -4846,8 +4858,12 @@ export function createWorldbuildPanel({ app, root }) {
       });
       edgeSvg.append(hit);
       // The asserted kind, read right on the line; Associate stays unlabelled
-      // because it is the default every plain link already has.
-      if (!relation || relation.id === DEFAULT_RELATION) continue;
+      // because it is the default every plain link already has. A stacked
+      // pair's wire is only STACK_GAP long — the word would sit on the cards
+      // (and the slots near its ends land inside them), so stacked wires
+      // carry no word; the kind is still on the wire's tooltip and in its
+      // right-click menu.
+      if (!relation || relation.id === DEFAULT_RELATION || stacked) continue;
       const text = svgNode('text', {
         class: `wb-edge-label wb-rel-${relation.id}`,
         'text-anchor': 'middle',

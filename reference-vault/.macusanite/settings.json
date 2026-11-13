@@ -78,5 +78,8 @@
   "editor": {
     "enabled": true,
     "livePreview": true
+  },
+  "updates": {
+    "autoCheck": true
   }
 }

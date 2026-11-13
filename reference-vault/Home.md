@@ -40,6 +40,17 @@ flowchart LR
   Field --> Log[Field log]
 ```
 
+### Flowchart
+
+A flowchart lays a process out left to right — the same shape the
+progression board on this canvas borrows: earlier steps on the left,
+later ones towards the right.
+
+### Sequence diagram
+
+A sequence diagram names the actors and the order they speak in, top to
+bottom. Both diagram kinds render in place, exactly where they are written.
+
 ## Reference cards and hand-written links
 
 A reference card points at another vein without leaving this one:
@@ -75,6 +86,10 @@ centre pane). Everything new lives here:
 * Connectors run as **elbow** wires with **arrowheads**, and the yellow notes
   are free-floating **annotations**. The health panel (⚠ in the toolbar) lists
   orphans and thin groups.
+* The **Progression board** group is split into Kanban-style columns by
+  heading tier: the top card on the left, its subsections one tier to the
+  right, and their own subsections to the right of those. Right-click a
+  group to split it, or use **Arrange → Progression**.
 * Canvas undo steps are **named** — use the history browser beside the undo
   button to jump between them, and the file-history log to see the vault's
   whole story.

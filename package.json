@@ -1,7 +1,7 @@
 {
   "name": "macusanite",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Macusanite — a vault viewer for markdown chambers, veins and concept graphs.",
   "type": "module",
   "scripts": {
