@@ -130,7 +130,9 @@ Artefacts:
 
 `tauri:build` collects both into `release/` at the top of the repository; the
 same files are also left under `src-tauri\target\release\`, which is Cargo's
-build cache.
+build cache. The collector never empties `release/`: it only overwrites what
+this build produced (and tidies older bundles of its own kind), so artefacts
+built on another platform stay put.
 
 `src-tauri\tauri.conf.json` sets `bundle.targets: ["nsis"]`, so `tauri:build` on
 Windows produces exactly that installer. To also produce an MSI you would need
@@ -273,6 +275,16 @@ Artefacts:
 
 As on macOS, pass `--bundles` explicitly: the repository's `bundle.targets` is
 the Windows `nsis` one.
+
+When the Linux build runs somewhere other than the checkout — a WSL copy,
+say — copy the artefacts out by hand after building (safe: a build never
+clears `release/`, see above):
+
+```bash
+cp src-tauri/target/release/macusanite \
+  src-tauri/target/release/bundle/deb/*.deb \
+  src-tauri/target/release/bundle/appimage/*.AppImage release/
+```
 
 ### Notes
 

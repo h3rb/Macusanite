@@ -16,6 +16,10 @@
  * It runs automatically as `posttauri:build`; `node scripts/collect-release.mjs`
  * also does it on its own, after a bare `cargo build --release --features
  * custom-protocol`.
+ *
+ * Only this build's own artefacts are touched: the folder is never emptied, so
+ * artefacts built on another platform — a Linux deb copied in from WSL, say —
+ * survive a Windows build, and vice versa.
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -31,17 +35,13 @@ if (!existsSync(from)) {
   process.exit(1);
 }
 
-// `release/` is generated output, so it is emptied first: an installer from an
-// earlier build must never sit next to the new binary looking current.
-rmSync(to, { recursive: true, force: true });
 mkdirSync(to, { recursive: true });
 
 const copied = [];
 
 function take(source, name) {
-  const target = join(to, name);
-  cpSync(source, target, { recursive: true });
-  copied.push(target);
+  cpSync(source, join(to, name), { recursive: true });
+  copied.push(name);
 }
 
 // The portable binary is named after the Cargo package.
@@ -51,20 +51,43 @@ for (const name of ['macusanite.exe', 'macusanite']) {
 }
 
 // Installers and application bundles, one level under bundle/<kind>/.
-const bundles = join(from, 'bundle');
-if (existsSync(bundles)) {
-  for (const group of readdirSync(bundles, { withFileTypes: true })) {
+const bundles = [];
+const bundleDirs = join(from, 'bundle');
+if (existsSync(bundleDirs)) {
+  for (const group of readdirSync(bundleDirs, { withFileTypes: true })) {
     if (!group.isDirectory()) continue;
-    const groupDir = join(bundles, group.name);
-    for (const entry of readdirSync(groupDir, { withFileTypes: true })) {
-      take(join(groupDir, entry.name), entry.name);
-    }
+    const names = readdirSync(join(bundleDirs, group.name)).map((name) => {
+      take(join(bundleDirs, group.name, name), name);
+      return name;
+    });
+    if (names.length) bundles.push({ kind: group.name, names });
   }
 }
 
 if (!copied.length) {
   console.error('the build left no binary or bundle behind — did `tauri build` finish?');
   process.exit(1);
+}
+
+// A bundle kind this build produced replaces its older selves: a version bump
+// would otherwise leave the previous version's installer sitting beside the
+// new binary looking current. Other kinds are not this build's business.
+const STALE_PATTERNS = {
+  nsis: /^Macusanite_.*-setup\.exe$/,
+  deb: /\.deb$/,
+  appimage: /\.AppImage$/,
+  // Tauri puts both macOS bundles in bundle/macos/: the .app directory and
+  // the .dmg that wraps it.
+  macos: /^Macusanite\.app$|\.dmg$/,
+};
+for (const { kind, names } of bundles) {
+  const pattern = STALE_PATTERNS[kind];
+  if (!pattern) continue;
+  for (const entry of readdirSync(to)) {
+    if (!names.includes(entry) && pattern.test(entry)) {
+      rmSync(join(to, entry), { recursive: true, force: true });
+    }
+  }
 }
 
 function bytes(path) {
@@ -76,5 +99,5 @@ function bytes(path) {
 }
 
 const megabytes = (size) => `${(size / 1024 / 1024).toFixed(1)} MB`;
-for (const path of copied) console.log(`${relative(root, path).replace(/\\/g, '/')}  ${megabytes(bytes(path))}`);
+for (const name of copied) console.log(`release/${name}  ${megabytes(bytes(join(to, name)))}`);
 console.log(`\n${copied.length} artefact${copied.length === 1 ? '' : 's'} in release/`);
