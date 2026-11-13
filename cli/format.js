@@ -83,6 +83,23 @@ const snippetOf = (text, limit = 96) => {
 };
 
 /**
+ * The line a result earns when the vault backed itself up after the write.
+ *
+ * Automatic uploads are part of the command's story, so the CLI prints the same
+ * sentence an MCP client gets in its tool text. `''` means the vault is not
+ * armed, or the command did not write.
+ */
+export function autoBackupNote(result, { color = false } = {}) {
+  const report = result && typeof result === 'object' ? result.autoBackup : null;
+  if (!report) return '';
+  const paint = decorate(color);
+  if (report.ok) {
+    return `${paint.green('auto-backup')} ${plural(report.files ?? 0, 'file')} (${bytes(report.bytes)}) → ${report.url}`;
+  }
+  return `${paint.yellow('auto-backup failed')} — ${report.error}`;
+}
+
+/**
  * Render a command result for a terminal.
  * @param {string} command catalogue command name
  * @param {*} result  whatever `dispatch` returned
@@ -132,6 +149,26 @@ export function formatResult(command, result, { color = false } = {}) {
         ['endpoint', result.endpoint],
         ['credentials', result.transport === 'ssh' ? 'the remote host' : result.credentials],
       ], paint));
+      break;
+    }
+
+    case 'vault.autobackup': {
+      lines.push(result.enabled
+        ? `${paint.green('on')} — ${result.sshHost ? `ssh ${result.sshHost}` : 'direct upload'}`
+        : paint.dim('automatic backups are off'));
+      lines.push(fields([
+        ['setting', result.path],
+        ['bucket', result.bucket],
+        ['prefix', result.prefix || 'macusanite/'],
+        ['region', result.region],
+        ['endpoint', result.endpoint],
+        ['profile', result.profile],
+        ['ssh key', result.sshHost ? result.sshKey : ''],
+        ['ssh port', result.sshHost && result.sshPort ? String(result.sshPort) : ''],
+      ], paint, { align: 10 }));
+      if (result.enabled) {
+        lines.push(paint.dim('uploads after every CLI or MCP write; credentials come from the AWS environment or ~/.aws/credentials'));
+      }
       break;
     }
 

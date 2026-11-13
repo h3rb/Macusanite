@@ -254,6 +254,48 @@ export const COMMANDS = {
     ],
   },
 
+  'vault.autobackup': {
+    group: 'Vault',
+    summary: 'Arm this vault to upload itself after every write — window, CLI and MCP — or change where it uploads.',
+    description:
+      'The setting is written to `.macusanite/backup.json`, inside the vault, so it travels with the '
+      + 'folder and every CLI invocation and MCP server pointed at it picks it up. With no arguments the '
+      + 'current setting is reported; `--on` and `--off` arm and disarm it, and any of the connection '
+      + 'fields (also used by `vault backup`) are saved as given.\n\n'
+      + 'Once armed, writes upload a timestamped archive: a window save after five seconds of quiet, a '
+      + 'CLI command once before it exits (reported in the result as `autoBackup`), and, for a '
+      + 'long-lived MCP server, one archive for a whole burst — the server waits a couple of seconds '
+      + 'after the last write, so an agent writing forty veins makes one object rather than forty, and '
+      + 'records the outcome in the session log; a pending upload is flushed as it stops. Reads never '
+      + 'upload, and neither do the '
+      + 'viewer\'s own bookkeeping commands (logs, state, the index cache) or `vault backup` itself. A '
+      + 'failed upload never fails the write — the edit has landed — it is reported, or logged when it '
+      + 'happened in the background.\n\n'
+      + 'Credentials are never stored: a direct upload reads `AWS_ACCESS_KEY_ID` / '
+      + '`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` or `~/.aws/credentials` (with `--profile`), and '
+      + '`--ssh-host` uploads with the remote host\'s own identity. The window’s **Back up to S3…** '
+      + 'dialog edits this same setting, so a vault armed there covers its saves too.',
+    params: [
+      { name: 'bucket', type: 'string', description: 'Destination bucket.' },
+      { name: 'region', type: 'string', description: 'Bucket region; defaults to the environment or profile; with `--ssh-host`, the remote region.' },
+      { name: 'prefix', type: 'string', description: 'Key prefix, so several vaults can share a bucket; `macusanite/` when unset.' },
+      { name: 'endpoint', type: 'string', description: 'S3-compatible endpoint, e.g. `https://minio.example:9000` (path-style).' },
+      { name: 'profile', type: 'string', description: 'Profile in `~/.aws/credentials` (the remote host’s, with `--ssh-host`).' },
+      { name: 'ssh-host', type: 'string', description: 'Upload over SSH from this host (`user@host`), with its credentials instead of this machine’s.' },
+      { name: 'ssh-key', type: 'string', description: 'Private key for the SSH connection, e.g. a `.pem` file.' },
+      { name: 'ssh-port', type: 'integer', description: 'SSH port; defaults to the client\'s own configuration.' },
+      { name: 'on', type: 'boolean', description: 'Arm automatic uploads.' },
+      { name: 'off', type: 'boolean', description: 'Disarm automatic uploads, keeping the saved settings.' },
+    ],
+    returns: '`{ path, enabled, bucket, region, prefix, endpoint, profile, sshHost, sshKey, sshPort }`',
+    examples: [
+      'macusanite vault autobackup --bucket my-notes-backups --region eu-west-1 --on',
+      'macusanite vault autobackup --bucket my-notes-backups --ssh-host backup@notes.example --ssh-key ~/.ssh/backup.pem --on',
+      'macusanite vault autobackup --off',
+    ],
+    mutates: true,
+  },
+
   'vault.state': {
     group: 'Vault',
     summary: 'Read the viewer state: the last vein read, expanded chambers, panel widths.',

@@ -47,6 +47,7 @@ My Vault/
 │   ├── settings.json              # viewer settings + default colours
 │   ├── colors.json                # every colour you picked
 │   ├── history.json               # the undo and redo stacks
+│   ├── backup.json                # automatic backups for window, CLI and MCP
 │   ├── state.json                 # last vein read, expanded chambers, panel widths
 │   ├── index.json                 # headings, links and tags per vein (a cache)
 │   └── logs/session-YYYYMMDD.log  # one JSON-lines log per day
@@ -244,14 +245,36 @@ host needs an OpenSSH server, a POSIX shell, the AWS CLI and its own working ide
 runs with `BatchMode=yes`, so a passphrase-protected key or a password prompt fails at once instead of
 waiting.
 
-**☰ → Back up to S3…** can also repeat the upload by itself: tick *Upload automatically after each
-save*, and the window waits five seconds after saving stops, then uploads with the same transport
-and settings. One upload runs at a time — a save during an upload queues another — and a failed run
-pauses automatic uploads for five minutes so a misconfiguration does not fill the session log. Only
-the non-secret fields are remembered: a hand-typed AWS secret lasts until the window closes, after
-which the environment or `~/.aws/credentials` supplies it (SSH needs no local secret at all).
-Automatic uploads are a window feature; `vault backup` remains one upload per invocation, which is
-what a cron job or an agent uses.
+**☰ → Back up to S3…** also edits the vault’s automatic-backup setting. Ticking *Upload
+automatically after each save* writes `.macusanite/backup.json` — the same file the CLI and MCP
+server read — and the window then waits five seconds after saving stops and uploads with those
+settings. One upload runs at a time — a save during an upload queues another — and a failed run
+pauses automatic uploads for five minutes so a misconfiguration does not fill the session log.
+
+The file holds every non-secret field, never a credential: a hand-typed AWS secret lasts until the
+window closes, after which the environment or `~/.aws/credentials` supplies it (SSH needs no local
+secret at all). Because the setting belongs to the vault rather than the window, a vault armed here
+is armed in the other direction too, and the headless side needs no window and no repeated
+invocation:
+
+```bash
+macusanite --vault ./notes vault autobackup --bucket my-notes-backups --region eu-west-1 --on
+macusanite --vault ./notes vault autobackup --bucket my-notes-backups --ssh-host backup@notes.example --on
+macusanite --vault ./notes vault autobackup --off
+```
+
+Once armed, every write uploads a timestamped archive: a save in the window after the pause above,
+and from the CLI or MCP server every command that writes — `vein write`, `vein create`, `append`,
+`section`, `rename`, `delete`, a chamber, colours, settings, vault details, `undo` and `redo`.
+A CLI command uploads once, before it exits, and prints the report after its
+normal output (`autoBackup` in `--json`). A long-lived MCP server coalesces instead: it waits a
+couple of seconds after the last write and uploads one archive for the whole burst, so an agent
+writing forty veins makes one object rather than forty. That outcome goes to the session log, because
+no single tool call owns it, and a pending upload is flushed as the server stops, so the final write
+is never lost. Reads never upload, and neither do the viewer's own bookkeeping commands (log lines,
+state, the index cache) or `vault backup` itself. A failed upload does not fail the write — the edit
+has landed — it is reported or logged, and the command still exits 0. `vault autobackup` with no flags
+reports the current setting.
 
 Credentials are resolved the way AWS's own tools resolve them: the access key and secret from the
 command's flags (or the dialog), otherwise `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
@@ -361,6 +384,7 @@ The sections below are the windows into the manual's own structure: `search`, `c
 | [`vault.settings`](#vault-settings) | Read the viewer settings, merged over the defaults. | read |
 | [`vault.settings.set`](#vault-settings-set) | Change viewer settings. | undoable |
 | [`vault.backup`](#vault-backup) | Upload the whole vault to an S3 bucket as one timestamped tar.gz, directly or over SSH. | upload |
+| [`vault.autobackup`](#vault-autobackup) | Arm this vault to upload itself after every write — window, CLI and MCP — or change where it uploads. | write |
 | [`vault.state`](#vault-state) | Read the viewer state: the last vein read, expanded chambers, panel widths. | read |
 | [`vault.state.set`](#vault-state-set) | Write viewer state. | write |
 | [`vault.log`](#vault-log) | Append a line to the session log. | write |
@@ -585,6 +609,40 @@ macusanite vault backup my-notes-backups --region eu-west-1
 macusanite vault backup my-notes-backups --secret-key-file ~/.aws/vault-secret --prefix fieldwork/
 macusanite vault backup my-notes-backups --endpoint https://minio.local:9000 --dry-run
 macusanite vault backup my-notes-backups --ssh-host backup@notes.example --ssh-key ~/.ssh/backup.pem
+```
+
+
+### `vault.autobackup`
+
+Arm this vault to upload itself after every write — window, CLI and MCP — or change where it uploads.
+
+The setting is written to `.macusanite/backup.json`, inside the vault, so it travels with the folder and every CLI invocation and MCP server pointed at it picks it up. With no arguments the current setting is reported; `--on` and `--off` arm and disarm it, and any of the connection fields (also used by `vault backup`) are saved as given.
+
+Once armed, writes upload a timestamped archive: a window save after five seconds of quiet, a CLI command once before it exits (reported in the result as `autoBackup`), and, for a long-lived MCP server, one archive for a whole burst — the server waits a couple of seconds after the last write, so an agent writing forty veins makes one object rather than forty, and records the outcome in the session log; a pending upload is flushed as it stops. Reads never upload, and neither do the viewer's own bookkeeping commands (logs, state, the index cache) or `vault backup` itself. A failed upload never fails the write — the edit has landed — it is reported, or logged when it happened in the background.
+
+Credentials are never stored: a direct upload reads `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` or `~/.aws/credentials` (with `--profile`), and `--ssh-host` uploads with the remote host's own identity. The window’s **Back up to S3…** dialog edits this same setting, so a vault armed there covers its saves too.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bucket` | string | no | Destination bucket. |
+| `region` | string | no | Bucket region; defaults to the environment or profile; with `--ssh-host`, the remote region. |
+| `prefix` | string | no | Key prefix, so several vaults can share a bucket; `macusanite/` when unset. |
+| `endpoint` | string | no | S3-compatible endpoint, e.g. `https://minio.example:9000` (path-style). |
+| `profile` | string | no | Profile in `~/.aws/credentials` (the remote host’s, with `--ssh-host`). |
+| `ssh-host` | string | no | Upload over SSH from this host (`user@host`), with its credentials instead of this machine’s. |
+| `ssh-key` | string | no | Private key for the SSH connection, e.g. a `.pem` file. |
+| `ssh-port` | integer | no | SSH port; defaults to the client's own configuration. |
+| `on` | boolean | no | Arm automatic uploads. |
+| `off` | boolean | no | Disarm automatic uploads, keeping the saved settings. |
+
+**Returns** `{ path, enabled, bucket, region, prefix, endpoint, profile, sshHost, sshKey, sshPort }`
+
+**Kind** writes to the vault · MCP tool `vault_autobackup`
+
+```bash
+macusanite vault autobackup --bucket my-notes-backups --region eu-west-1 --on
+macusanite vault autobackup --bucket my-notes-backups --ssh-host backup@notes.example --ssh-key ~/.ssh/backup.pem --on
+macusanite vault autobackup --off
 ```
 
 
@@ -1296,4 +1354,4 @@ macusanite docs --sections
 
 ---
 
-45 commands · generated 2026-11-05
+46 commands · generated 2026-11-13

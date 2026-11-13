@@ -1,73 +1,36 @@
 /**
  * The window's S3 backup dialog.
  *
- * It collects the bucket and either credentials or an SSH host, calls the Rust
- * command that does the upload (`backup_vault_s3`), and shows where the object
- * landed. The connection fields that are not secrets are remembered per
- * installation, because they are the tedious part; the access key, secret and
- * session token are deliberately not written anywhere — a blank secret falls
- * back to the environment or `~/.aws/credentials`, which is where a key belongs,
- * and an SSH upload reads no AWS key on this machine at all.
+ * The settings — where an upload goes, over which transport, and whether it
+ * repeats after each save — are the vault's own `.macusanite/backup.json`: the
+ * file `macusanite vault autobackup` writes and the CLI and MCP server read. The
+ * dialog is therefore an editor for that setting rather than a second one kept
+ * per installation, so a vault armed here is armed everywhere and one armed from
+ * a shell is armed here.
+ *
+ * The file holds only non-secret fields. The access key, secret and session
+ * token typed here live in memory for this window's lifetime; a blank secret
+ * falls back to the environment or `~/.aws/credentials`, which is where a key
+ * belongs, and an SSH upload reads no AWS key on this machine at all.
  */
 import { el, clear } from './dom.js';
 import { backend } from '../backend.js';
-
-const DRAFT_KEY = 'macusanite.s3-backup.v1';
+import {
+  AUTO_BACKUP_FILE,
+  AUTO_BACKUP_PATH,
+  backupRequestFromConfig,
+  emptyAutoBackup,
+  parseAutoBackup,
+} from '../lib/autoBackup.js';
 
 /** How long after the last save an automatic upload waits for saving to settle. */
 const AUTO_DELAY_MS = 5000;
-
-function readDraft() {
-  try {
-    const parsed = JSON.parse(globalThis.localStorage?.getItem(DRAFT_KEY) ?? 'null');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeDraft(draft) {
-  try {
-    globalThis.localStorage?.setItem(DRAFT_KEY, JSON.stringify(draft));
-  } catch {
-    /* storage disabled: the dialog still works for this session */
-  }
-}
 
 function humanBytes(value) {
   const size = Number(value) || 0;
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/**
- * The upload request a stored draft describes, or null when it is not ready.
- *
- * Automatic uploads run from the remembered draft, never from the dialog's
- * inputs: the window may have been closed and reopened since it was filled in.
- * Credentials are passed separately because they are never stored, and an SSH
- * draft has none at all.
- */
-export function backupRequestFromDraft(draft, credentials = {}) {
-  if (!draft || !String(draft.bucket ?? '').trim()) return null;
-  const ssh = draft.transport === 'ssh';
-  const host = String(draft.sshHost ?? '').trim();
-  if (ssh && !host) return null;
-  const portText = String(draft.sshPort ?? '').trim();
-  const port = portText ? Number(portText) : null;
-  if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) return null;
-  return {
-    bucket: String(draft.bucket).trim(),
-    region: draft.region || null,
-    prefix: draft.prefix ?? 'macusanite/',
-    endpoint: draft.endpoint || null,
-    profile: ssh ? (draft.sshProfile || null) : (draft.profile || null),
-    accessKey: ssh ? null : (credentials.accessKey ?? null),
-    secretKey: ssh ? null : (credentials.secretKey ?? null),
-    sessionToken: ssh ? null : (credentials.sessionToken ?? null),
-    ssh: ssh ? { host, keyFile: String(draft.sshKey ?? '').trim() || null, port } : null,
-  };
 }
 
 export function createBackupDialog({ app }) {
@@ -84,6 +47,22 @@ export function createBackupDialog({ app }) {
   // failure is almost always configuration, and a retry per pause would fill
   // the log without ever succeeding.
   let autoPausedUntil = 0;
+
+  /** The vault's backup setting, or null when it has none (or is unreadable). */
+  async function readConfig() {
+    try {
+      return parseAutoBackup(await backend.readMeta(AUTO_BACKUP_FILE));
+    } catch {
+      // A malformed file is reported by `vault autobackup`; the dialog starts
+      // from empty and the next save replaces it.
+      return null;
+    }
+  }
+
+  /** Store the setting in the vault, where every Macusanite front end sees it. */
+  async function writeConfig(config) {
+    await backend.writeMeta(AUTO_BACKUP_FILE, `${JSON.stringify(config, null, 2)}\n`, null, false);
+  }
 
   function field(label, control, hint) {
     return el('label', { class: 'settings-field' }, [
@@ -105,13 +84,12 @@ export function createBackupDialog({ app }) {
     });
   }
 
-  function render() {
-    const draft = readDraft();
-    const bucket = input('bucket', draft.bucket, { placeholder: 'my-vault-backups' });
-    const region = input('region', draft.region, { placeholder: 'us-east-1' });
-    const prefix = input('prefix', draft.prefix ?? 'macusanite/', { placeholder: 'macusanite/' });
-    const endpoint = input('endpoint', draft.endpoint, { placeholder: 'https://s3.example:9000 (optional)' });
-    const profile = input('profile', draft.profile, { placeholder: 'AWS profile (default)' });
+  function render(config) {
+    const bucket = input('bucket', config.bucket, { placeholder: 'my-vault-backups' });
+    const region = input('region', config.region, { placeholder: 'us-east-1' });
+    const prefix = input('prefix', config.prefix || 'macusanite/', { placeholder: 'macusanite/' });
+    const endpoint = input('endpoint', config.endpoint, { placeholder: 'https://s3.example:9000 (optional)' });
+    const profile = input('profile', config.profile, { placeholder: 'AWS profile (default)' });
     const accessKey = input('accessKey', '', { placeholder: 'AWS access key id (or leave blank)' });
     const secretKey = input('secretKey', '', {
       type: 'password',
@@ -125,17 +103,17 @@ export function createBackupDialog({ app }) {
     });
 
     const transport = el('select', { class: 'md-input', name: 'transport' }, [
-      el('option', { value: 'direct', text: 'Direct to S3 (AWS keys)', selected: draft.transport !== 'ssh' ? '' : null }),
-      el('option', { value: 'ssh', text: 'Through an SSH host', selected: draft.transport === 'ssh' ? '' : null }),
+      el('option', { value: 'direct', text: 'Direct to S3 (AWS keys)', selected: config.sshHost ? null : '' }),
+      el('option', { value: 'ssh', text: 'Through an SSH host', selected: config.sshHost ? '' : null }),
     ]);
-    const sshHost = input('sshHost', draft.sshHost, { placeholder: 'user@backup-host' });
-    const sshKey = input('sshKey', draft.sshKey, { placeholder: '~/.ssh/backup.pem (optional)' });
-    const sshPort = input('sshPort', draft.sshPort, { type: 'number', placeholder: '22 (optional)' });
-    const sshProfile = input('sshProfile', draft.sshProfile, { placeholder: 'Remote profile (default)' });
+    const sshHost = input('sshHost', config.sshHost, { placeholder: 'user@backup-host' });
+    const sshKey = input('sshKey', config.sshKey, { placeholder: '~/.ssh/backup.pem (optional)' });
+    const sshPort = input('sshPort', config.sshPort, { type: 'number', placeholder: '22 (optional)' });
+    const sshProfile = input('sshProfile', config.profile, { placeholder: 'Remote profile (default)' });
     const autoToggle = el('input', {
       type: 'checkbox',
       name: 'auto',
-      checked: draft.auto === true ? '' : null,
+      checked: config.enabled ? '' : null,
     });
 
     const status = el('p', { class: 'backup-status', role: 'status' });
@@ -185,42 +163,82 @@ export function createBackupDialog({ app }) {
         : 'One timestamped .tar.gz of the whole vault — veins, chambers and .macusanite. Nothing in the vault is changed.';
     };
 
-    /** The non-secret settings, exactly as they would be remembered. */
-    const snapshot = () => ({
-      bucket: bucket.value.trim(),
-      region: region.value.trim(),
-      prefix: prefix.value.trim(),
-      endpoint: endpoint.value.trim(),
-      transport: transport.value,
-      profile: profile.value.trim(),
-      sshHost: sshHost.value.trim(),
-      sshKey: sshKey.value.trim(),
-      sshPort: sshPort.value.trim(),
-      sshProfile: sshProfile.value.trim(),
-      auto: autoToggle.checked,
+    /**
+     * The setting the form describes, or the reason it cannot be saved yet.
+     * Disarming is always allowed, so it does not require a destination.
+     */
+    const formConfig = ({ requireDestination = true } = {}) => {
+      const ssh = transport.value === 'ssh';
+      const name = bucket.value.trim();
+      const host = sshHost.value.trim();
+      const portText = String(sshPort.value ?? '').trim();
+      const port = portText ? Number(portText) : null;
+      if (requireDestination) {
+        if (!name) return { error: 'A bucket is required.', focus: bucket };
+        if (ssh && !host) return { error: 'An SSH host is required.', focus: sshHost };
+        if (ssh && portText && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+          return { error: 'The SSH port must be a number between 1 and 65535.', focus: sshPort };
+        }
+      }
+      return {
+        config: {
+          enabled: autoToggle.checked,
+          bucket: name,
+          region: region.value.trim(),
+          prefix: prefix.value.trim(),
+          endpoint: endpoint.value.trim(),
+          profile: ssh ? sshProfile.value.trim() : profile.value.trim(),
+          sshHost: ssh ? host : '',
+          sshKey: ssh ? sshKey.value.trim() : '',
+          sshPort: ssh ? port : null,
+        },
+      };
+    };
+
+    const showError = (error, focus = null) => {
+      status.className = 'backup-status is-error';
+      status.textContent = error;
+      focus?.focus();
+    };
+
+    const typedCredentials = () => ({
+      accessKey: accessKey.value.trim() || null,
+      secretKey: secretKey.value || null,
+      sessionToken: sessionToken.value.trim() || null,
     });
+
     const autoNote = el('p', { class: 'md-hint' });
     const autoNoteText = () => {
       autoNote.textContent = autoToggle.checked
-        ? `Waits ${AUTO_DELAY_MS / 1000} seconds after saving stops, uses the settings above, and never runs two uploads at once. A typed secret lasts only until the window closes.`
-        : 'Tick this to repeat the last upload after every save.';
+        ? `Saved in this vault’s ${AUTO_BACKUP_PATH}. Waits ${AUTO_DELAY_MS / 1000} seconds after saving stops, uses these settings, and never runs two uploads at once — the CLI and MCP server honour the same setting. A typed secret lasts only until the window closes.`
+        : 'Turn this on to upload after every save. The setting belongs to the vault, so the CLI and MCP server honour it too.';
     };
-    transport.addEventListener('change', () => {
-      sync();
-      writeDraft(snapshot());
-    });
-    autoToggle.addEventListener('change', () => {
+    transport.addEventListener('change', sync);
+    autoToggle.addEventListener('change', async () => {
+      autoNoteText();
       // Turning this on with a secret already typed means those credentials
       // should be used; a blank form must not wipe credentials an earlier
       // upload kept.
-      const typed = {
-        accessKey: accessKey.value.trim() || null,
-        secretKey: secretKey.value || null,
-        sessionToken: sessionToken.value.trim() || null,
-      };
+      const typed = typedCredentials();
       if (autoToggle.checked && (typed.accessKey || typed.secretKey)) sessionCredentials = typed;
-      writeDraft(snapshot());
-      autoNoteText();
+      const described = formConfig({ requireDestination: autoToggle.checked });
+      if (described.error) {
+        autoToggle.checked = !autoToggle.checked;
+        autoNoteText();
+        showError(described.error, described.focus);
+        return;
+      }
+      try {
+        await writeConfig(described.config);
+        status.className = 'backup-status is-ok';
+        status.textContent = described.config.enabled
+          ? 'Automatic uploads are on for this vault — the CLI and MCP server use the same setting.'
+          : 'Automatic uploads are off for this vault.';
+      } catch (error) {
+        autoToggle.checked = !autoToggle.checked;
+        autoNoteText();
+        showError(`Could not save the setting: ${error?.message ?? error}`);
+      }
     });
     autoNoteText();
 
@@ -260,71 +278,40 @@ export function createBackupDialog({ app }) {
       event.preventDefault();
       if (busy) return;
       if (uploading) {
-        status.className = 'backup-status is-error';
-        status.textContent = 'An upload is already running — try again in a moment.';
+        showError('An upload is already running — try again in a moment.');
         return;
       }
-      const name = bucket.value.trim();
-      if (!name) {
-        status.className = 'backup-status is-error';
-        status.textContent = 'A bucket is required.';
-        bucket.focus();
+      const described = formConfig();
+      if (described.error) {
+        showError(described.error, described.focus);
         return;
       }
+      const settings = described.config;
+      const request = backupRequestFromConfig(settings, typedCredentials());
+      const overSsh = transport.value === 'ssh';
 
       busy = true;
       submit.disabled = true;
       close.disabled = true;
       status.className = 'backup-status';
-      const overSsh = transport.value === 'ssh';
-      if (overSsh && !sshHost.value.trim()) {
-        busy = false;
-        submit.disabled = false;
-        close.disabled = false;
-        status.className = 'backup-status is-error';
-        status.textContent = 'An SSH host is required.';
-        sshHost.focus();
-        return;
-      }
-      const portText = sshPort.value.trim();
-      const port = portText ? Number(portText) : null;
-      if (overSsh && portText && (!Number.isInteger(port) || port < 1 || port > 65535)) {
-        busy = false;
-        submit.disabled = false;
-        close.disabled = false;
-        status.className = 'backup-status is-error';
-        status.textContent = 'The SSH port must be a number between 1 and 65535.';
-        sshPort.focus();
-        return;
-      }
       status.textContent = overSsh
         ? 'Assembling the archive and streaming it over SSH…'
         : 'Assembling the archive and uploading…';
 
-      const request = {
-        bucket: name,
-        region: region.value.trim() || null,
-        prefix: prefix.value.trim(),
-        endpoint: endpoint.value.trim() || null,
-        profile: overSsh ? (sshProfile.value.trim() || null) : (profile.value.trim() || null),
-        accessKey: overSsh ? null : (accessKey.value.trim() || null),
-        secretKey: overSsh ? null : (secretKey.value || null),
-        sessionToken: overSsh ? null : (sessionToken.value.trim() || null),
-        ssh: overSsh
-          ? { host: sshHost.value.trim(), keyFile: sshKey.value.trim() || null, port }
-          : null,
-      };
       uploading = true;
       try {
         const report = await backend.backupS3(request);
-        writeDraft(snapshot());
+        // The backup succeeded, so its settings belong in the vault even if
+        // writing them does not: a failed write is logged, not reported as a
+        // failed backup.
+        try {
+          await writeConfig(settings);
+        } catch (error) {
+          await backend.log('warn', `could not save ${AUTO_BACKUP_PATH}: ${error?.message ?? error}`);
+        }
         autoPausedUntil = 0;
         warned = false;
-        sessionCredentials = {
-          accessKey: accessKey.value.trim() || null,
-          secretKey: secretKey.value || null,
-          sessionToken: sessionToken.value.trim() || null,
-        };
+        sessionCredentials = typedCredentials();
         secretKey.value = '';
         sessionToken.value = '';
         status.className = 'backup-status is-ok';
@@ -336,8 +323,7 @@ export function createBackupDialog({ app }) {
         app.toast(`Backed up to ${report.url}${via}`, 'ok', 6000);
         await backend.log('info', `backed up to ${report.url}${via} (${report.files} files, ${report.bytes} bytes)`);
       } catch (error) {
-        status.className = 'backup-status is-error';
-        status.textContent = error?.message ?? String(error);
+        showError(error?.message ?? String(error));
       } finally {
         busy = false;
         finishUpload();
@@ -361,17 +347,19 @@ export function createBackupDialog({ app }) {
     }, AUTO_DELAY_MS);
   }
 
-  /** The upload a save triggers, when the dialog was told to repeat it. */
+  /** The upload a save triggers, when the vault's setting asks for one. */
   async function runAutoBackup() {
     if (!backend.isDesktop) return;
-    const draft = readDraft();
-    if (draft.auto !== true) return;
-    const request = backupRequestFromDraft(draft, sessionCredentials ?? {});
-    if (!request) return;
     if (uploading) {
       queued = true;
       return;
     }
+    // Read the setting when the upload runs, so arming or disarming it — from
+    // this dialog or a shell — takes effect for the very next save.
+    const config = await readConfig();
+    if (!config?.enabled) return;
+    const request = backupRequestFromConfig(config, sessionCredentials ?? {});
+    if (!request) return;
     uploading = true;
     try {
       const report = await backend.backupS3(request);
@@ -393,19 +381,21 @@ export function createBackupDialog({ app }) {
   }
 
   return {
-    open() {
-      render();
+    async open() {
+      if (dialog.open) return;
+      const config = (await readConfig()) ?? emptyAutoBackup();
+      if (dialog.open) return; // a second click while the setting was loading
+      render(config);
       dialog.showModal();
       dialog.querySelector('input[name="bucket"]')?.focus();
     },
 
-    /** Called after a successful save; a no-op unless automatic upload is on. */
-    noteSaved() {
-      if (!backend.isDesktop) return;
-      const draft = readDraft();
-      if (draft.auto !== true) return;
-      if (Date.now() < autoPausedUntil) return;
-      if (!backupRequestFromDraft(draft, sessionCredentials ?? {})) return;
+    /** Called after a successful save; a no-op unless the vault is armed. */
+    async noteSaved() {
+      if (!backend.isDesktop || Date.now() < autoPausedUntil) return;
+      const config = await readConfig();
+      if (!config?.enabled) return;
+      if (!backupRequestFromConfig(config, sessionCredentials ?? {})) return;
       clearTimeout(autoTimer);
       autoTimer = setTimeout(() => {
         autoTimer = null;

@@ -64,6 +64,14 @@ const DEFAULT_PORT = 8765;
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_ENDPOINT = '/mcp';
 const PAGE_SIZE = 200;
+/**
+ * How long an armed vault waits for the writes to stop before uploading.
+ *
+ * An agent writing forty veins should make one archive, not forty, so the
+ * server coalesces a burst instead of uploading per tool call. The upload is
+ * flushed when the server stops, so the last write is never lost.
+ */
+const AUTO_BACKUP_QUIET_MS = 2000;
 
 /** Revisions this server implements, newest first. */
 export const LEGACY_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
@@ -429,7 +437,15 @@ async function openSession({ vault = null } = {}) {
     return { path: absolute, bytes: Buffer.byteLength(contents) };
   };
   const readFile = async (target) => fsp.readFile(path.resolve(process.cwd(), target), 'utf8');
-  const api = createVaultApi({ openVault, writeFile, readFile, backupS3: backupVaultToS3 });
+  const api = createVaultApi({
+    openVault,
+    writeFile,
+    readFile,
+    backupS3: backupVaultToS3,
+    // A tool call returns as soon as the write lands; the upload follows once
+    // the burst is over.
+    autoBackupQuietMs: AUTO_BACKUP_QUIET_MS,
+  });
   if (vault) {
     const store = await openVault(vault, { create: false });
     api.attach(store, store.root);
@@ -795,13 +811,19 @@ export async function runMcp(argv, { vault = null, version = '0.1.0', help = fal
   const server = createServer({ api, version, log });
   log('info', `${server.tools.length} tools · vault ${api.root ?? 'none open'}`);
 
-  if (mode === 'stdio') return serveStdio(server, { log });
-  if (mode === 'serve') {
-    if (!Number.isFinite(args.port) || args.port < 0) throw new Error(`--port must be a number, got ${args.port}`);
-    return serveHttp(server, { host: args.host, port: args.port, endpoint: args.endpoint, log, quiet: args.quiet });
+  try {
+    if (mode === 'stdio') await serveStdio(server, { log });
+    else if (mode === 'serve') {
+      if (!Number.isFinite(args.port) || args.port < 0) throw new Error(`--port must be a number, got ${args.port}`);
+      await serveHttp(server, { host: args.host, port: args.port, endpoint: args.endpoint, log, quiet: args.quiet });
+    } else {
+      if (!args.dir) throw new Error('mcp intake needs --dir <spool>\n\n' + MODE_HELP);
+      await serveIntake(server, { dir: args.dir, once: args.once, interval: args.interval, log });
+    }
+  } finally {
+    // A write made just before the server stopped still gets its upload.
+    await api.flushAutoBackup();
   }
-  if (!args.dir) throw new Error('mcp intake needs --dir <spool>\n\n' + MODE_HELP);
-  return serveIntake(server, { dir: args.dir, once: args.once, interval: args.interval, log });
 }
 
 export { serveStdio, serveHttp, serveIntake, openSession, MODE_HELP, INSTRUCTIONS };

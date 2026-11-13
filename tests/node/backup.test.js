@@ -30,7 +30,7 @@ import {
   resolveS3Region,
   sshArguments,
 } from '../../cli/s3Backup.js';
-import { backupRequestFromDraft } from '../../src/ui/backupDialog.js';
+import { backupRequestFromConfig, emptyAutoBackup, parseAutoBackup } from '../../src/lib/autoBackup.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, '..', '..', 'cli', 'macusanite.mjs');
@@ -495,18 +495,18 @@ test('the CLI routes --ssh-host through the catalogue without local credentials'
 
 /* ── automatic uploads ─────────────────────────────────────────────────── */
 
-test('a remembered draft becomes the automatic upload request', () => {
-  const direct = backupRequestFromDraft({
-    bucket: '  notes  ',
-    transport: 'direct',
+test('the vault setting becomes the automatic upload request', () => {
+  const direct = backupRequestFromConfig(parseAutoBackup(JSON.stringify({
+    enabled: true,
+    bucket: ' notes ',
     region: 'eu-west-1',
     prefix: 'archive/',
     endpoint: 'https://minio.local:9000',
     profile: 'backup',
-    // Credentials never come from the stored draft.
+    // Credentials never come from the file: unknown keys are dropped.
     accessKey: 'stored-ignored',
     secretKey: 'stored-ignored',
-  }, { accessKey: 'AKIA', secretKey: 'SECRET', sessionToken: 'TOKEN' });
+  })), { accessKey: 'AKIA', secretKey: 'SECRET', sessionToken: 'TOKEN' });
   assert.deepEqual(direct, {
     bucket: 'notes',
     region: 'eu-west-1',
@@ -519,14 +519,13 @@ test('a remembered draft becomes the automatic upload request', () => {
     ssh: null,
   });
 
-  const ssh = backupRequestFromDraft({
+  const ssh = backupRequestFromConfig(parseAutoBackup(JSON.stringify({
     bucket: 'notes',
-    transport: 'ssh',
     sshHost: ' backup@example.com ',
     sshKey: '~/keys/backup.pem',
-    sshPort: '2222',
-    sshProfile: 'remote',
-  }, { accessKey: 'AKIA', secretKey: 'SECRET' });
+    sshPort: 2222,
+    profile: 'remote',
+  })), { accessKey: 'AKIA', secretKey: 'SECRET' });
   assert.deepEqual(ssh.ssh, { host: 'backup@example.com', keyFile: '~/keys/backup.pem', port: 2222 });
   assert.equal(ssh.profile, 'remote');
   assert.equal(ssh.accessKey, null);
@@ -534,11 +533,12 @@ test('a remembered draft becomes the automatic upload request', () => {
   assert.equal(ssh.sessionToken, null);
 });
 
-test('a draft that cannot run yet schedules no automatic upload', () => {
-  assert.equal(backupRequestFromDraft(null), null);
-  assert.equal(backupRequestFromDraft({ bucket: '   ' }), null);
-  assert.equal(backupRequestFromDraft({ bucket: 'notes', transport: 'ssh' }), null);
-  assert.equal(backupRequestFromDraft({ bucket: 'notes', transport: 'ssh', sshHost: 'backup@example.com', sshPort: 70_000 }), null);
-  // A fresh dialog has no prefix typed yet; the shared default still applies.
-  assert.equal(backupRequestFromDraft({ bucket: 'notes' }).prefix, 'macusanite/');
+test('a setting that cannot upload yet makes no request', () => {
+  assert.equal(backupRequestFromConfig(null), null);
+  assert.equal(backupRequestFromConfig(emptyAutoBackup()), null);
+  // A port the file parser rejects is left to the SSH client's configuration.
+  const badPort = parseAutoBackup(JSON.stringify({ bucket: 'notes', sshHost: 'backup@example.com', sshPort: 70_000 }));
+  assert.equal(backupRequestFromConfig(badPort).ssh.port, null);
+  // A setting with no prefix typed still uses the shared default.
+  assert.equal(backupRequestFromConfig({ bucket: 'notes' }).prefix, 'macusanite/');
 });

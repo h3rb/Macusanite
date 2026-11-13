@@ -48,6 +48,7 @@ My Vault/
 │   ├── settings.json              # viewer settings + default colours
 │   ├── colors.json                # every colour you picked
 │   ├── history.json               # the undo and redo stacks
+│   ├── backup.json                # automatic backups for window, CLI and MCP
 │   ├── state.json                 # last vein read, expanded chambers, panel widths
 │   ├── index.json                 # headings, links and tags per vein (a cache)
 │   └── logs/session-YYYYMMDD.log  # one JSON-lines log per day
@@ -253,14 +254,36 @@ host needs an OpenSSH server, a POSIX shell, the AWS CLI and its own working ide
 runs with \`BatchMode=yes\`, so a passphrase-protected key or a password prompt fails at once instead of
 waiting.
 
-**☰ → Back up to S3…** can also repeat the upload by itself: tick *Upload automatically after each
-save*, and the window waits five seconds after saving stops, then uploads with the same transport
-and settings. One upload runs at a time — a save during an upload queues another — and a failed run
-pauses automatic uploads for five minutes so a misconfiguration does not fill the session log. Only
-the non-secret fields are remembered: a hand-typed AWS secret lasts until the window closes, after
-which the environment or \`~/.aws/credentials\` supplies it (SSH needs no local secret at all).
-Automatic uploads are a window feature; \`vault backup\` remains one upload per invocation, which is
-what a cron job or an agent uses.
+**☰ → Back up to S3…** also edits the vault’s automatic-backup setting. Ticking *Upload
+automatically after each save* writes \`.macusanite/backup.json\` — the same file the CLI and MCP
+server read — and the window then waits five seconds after saving stops and uploads with those
+settings. One upload runs at a time — a save during an upload queues another — and a failed run
+pauses automatic uploads for five minutes so a misconfiguration does not fill the session log.
+
+The file holds every non-secret field, never a credential: a hand-typed AWS secret lasts until the
+window closes, after which the environment or \`~/.aws/credentials\` supplies it (SSH needs no local
+secret at all). Because the setting belongs to the vault rather than the window, a vault armed here
+is armed in the other direction too, and the headless side needs no window and no repeated
+invocation:
+
+\`\`\`bash
+macusanite --vault ./notes vault autobackup --bucket my-notes-backups --region eu-west-1 --on
+macusanite --vault ./notes vault autobackup --bucket my-notes-backups --ssh-host backup@notes.example --on
+macusanite --vault ./notes vault autobackup --off
+\`\`\`
+
+Once armed, every write uploads a timestamped archive: a save in the window after the pause above,
+and from the CLI or MCP server every command that writes — \`vein write\`, \`vein create\`, \`append\`,
+\`section\`, \`rename\`, \`delete\`, a chamber, colours, settings, vault details, \`undo\` and \`redo\`.
+A CLI command uploads once, before it exits, and prints the report after its
+normal output (\`autoBackup\` in \`--json\`). A long-lived MCP server coalesces instead: it waits a
+couple of seconds after the last write and uploads one archive for the whole burst, so an agent
+writing forty veins makes one object rather than forty. That outcome goes to the session log, because
+no single tool call owns it, and a pending upload is flushed as the server stops, so the final write
+is never lost. Reads never upload, and neither do the viewer's own bookkeeping commands (log lines,
+state, the index cache) or \`vault backup\` itself. A failed upload does not fail the write — the edit
+has landed — it is reported or logged, and the command still exits 0. \`vault autobackup\` with no flags
+reports the current setting.
 
 Credentials are resolved the way AWS's own tools resolve them: the access key and secret from the
 command's flags (or the dialog), otherwise \`AWS_ACCESS_KEY_ID\` / \`AWS_SECRET_ACCESS_KEY\` /

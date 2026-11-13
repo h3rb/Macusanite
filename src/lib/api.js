@@ -20,6 +20,15 @@
  */
 import { prepareArgs, applyAssignments, commandNames, COMMANDS } from './catalogue.js';
 import { buildHelpMarkdown, commandPage, helpSections, DEFAULT_DOC_SECTIONS } from './helpDoc.js';
+import { assertBucket } from './backup.js';
+import {
+  AUTO_BACKUP_FILE,
+  AUTO_BACKUP_PATH,
+  autoBackupArgs,
+  emptyAutoBackup,
+  parseAutoBackup,
+  triggersAutoBackup,
+} from './autoBackup.js';
 
 /** An error a caller can show a user or an agent as-is. */
 export class ApiError extends Error {
@@ -44,10 +53,27 @@ const withExtension = (path) => (/\.(md|markdown|mdx)$/i.test(path) ? path : `${
  * @param {(options: object) => Promise<object>} [input.backupS3]
  *   uploads a vault; the CLI passes the Node implementation, and a runtime that
  *   has no network or filesystem leaves it out
+ * @param {number} [input.autoBackupQuietMs] how long an automatic upload is held
+ *   back so a burst of writes becomes one archive; `0` uploads before `dispatch`
+ *   resolves, which is what a one-shot CLI command wants
  */
-export function createVaultApi({ store = null, root = null, openVault = null, writeFile = null, readFile = null, backupS3 = null } = {}) {
+export function createVaultApi({
+  store = null,
+  root = null,
+  openVault = null,
+  writeFile = null,
+  readFile = null,
+  backupS3 = null,
+  autoBackupQuietMs = 0,
+} = {}) {
   let session = store;
   let vaultRoot = root ?? store?.root ?? null;
+
+  // With a quiet window (the MCP server), a pending upload belongs to the vault
+  // last written to; it runs on its own when the writes stop, or on flush.
+  let autoBackupTimer = null;
+  let autoBackupVault = null;
+  let autoBackupRunning = Promise.resolve();
 
   const inVault = () => {
     if (!session) {
@@ -170,57 +196,48 @@ export function createVaultApi({ store = null, root = null, openVault = null, wr
     },
 
     async 'vault.backup'(args) {
+      return uploadVault(args);
+    },
+
+    async 'vault.autobackup'(args) {
       const vault = inVault();
-      if (!backupS3) {
-        throw new ApiError('this session cannot upload to S3 (no backup provider is available)', {
-          code: 'unsupported',
-        });
+      const current = await autoBackupConfig(vault);
+      if (args.on && args.off) throw new ApiError('pass --on or --off, not both', { code: 'bad-args' });
+
+      // Only what the caller named is changed, so `--off` keeps the destination
+      // and a later `--on` needs no arguments.
+      const patch = {};
+      for (const [key, value] of Object.entries({
+        bucket: args.bucket,
+        region: args.region,
+        prefix: args.prefix,
+        endpoint: args.endpoint,
+        profile: args.profile,
+        sshHost: args['ssh-host'],
+        sshKey: args['ssh-key'],
+      })) {
+        if (value !== undefined) patch[key] = String(value).trim();
       }
-      // The secret may live in a file so that it does not appear in a process
-      // list or a shell history. Only the first line is used, because that file
-      // is often written by hand or copied from a credentials file.
-      // An SSH backup needs no local secret at all: the remote host has its own
-      // credentials, so a `--secret-key-file` alongside `--ssh-host` is ignored
-      // rather than read.
-      const overSsh = Boolean(args['ssh-host']);
-      let secretKey = args['secret-key'] ?? null;
-      if (!secretKey && args['secret-key-file'] && !overSsh) {
-        if (!readFile) {
-          throw new ApiError('this session cannot read files, so --secret-key-file is unavailable', { code: 'unsupported' });
-        }
-        let text;
+      if (args['ssh-port'] !== undefined) patch.sshPort = args['ssh-port'];
+      if (args.on !== undefined) patch.enabled = true;
+      if (args.off !== undefined) patch.enabled = false;
+
+      const next = { ...(current ?? emptyAutoBackup()), ...patch };
+      if (next.sshPort !== null && (!Number.isInteger(next.sshPort) || next.sshPort < 1 || next.sshPort > 65535)) {
+        throw new ApiError(`not a usable SSH port: ${next.sshPort}`, { code: 'bad-args' });
+      }
+      if (next.enabled) {
         try {
-          text = await readFile(args['secret-key-file']);
+          next.bucket = assertBucket(next.bucket);
         } catch (error) {
-          throw new ApiError(`could not read ${args['secret-key-file']}: ${error.message}`, { code: 'bad-args' });
-        }
-        secretKey = String(text ?? '').trim().split(/\r?\n/)[0].trim() || null;
-        if (!secretKey) {
-          throw new ApiError(`secret key file is empty: ${args['secret-key-file']}`, { code: 'bad-args' });
+          throw new ApiError(error.message, { code: 'bad-args' });
         }
       }
 
-      const info = await vault.info();
-      try {
-        return await backupS3({
-          root: vaultRoot,
-          vaultName: info.name,
-          bucket: args.bucket,
-          region: args.region ?? null,
-          prefix: args.prefix ?? null,
-          endpoint: args.endpoint ?? null,
-          accessKey: args['access-key'] ?? null,
-          secretKey,
-          sessionToken: args['session-token'] ?? null,
-          profile: args.profile ?? null,
-          sshHost: args['ssh-host'] ?? null,
-          sshKey: args['ssh-key'] ?? null,
-          sshPort: args['ssh-port'] ?? null,
-          dryRun: args['dry-run'] === true,
-        });
-      } catch (error) {
-        throw new ApiError(error?.message ?? String(error), { code: 'backup-failed' });
-      }
+      const touched = Object.keys(patch).length > 0;
+      // `record: false` — where backups go is not an edit to undo.
+      if (touched) await vault.writeMeta(AUTO_BACKUP_FILE, `${JSON.stringify(next, null, 2)}\n`, { record: false });
+      return { path: AUTO_BACKUP_PATH, ...next };
     },
 
     async 'vault.state'() {
@@ -482,6 +499,144 @@ export function createVaultApi({ store = null, root = null, openVault = null, wr
     },
   };
 
+  /** The per-vault automatic backup setting, or null when the vault has none. */
+  async function autoBackupConfig(vault) {
+    try {
+      return parseAutoBackup(await vault.readMeta(AUTO_BACKUP_FILE));
+    } catch (error) {
+      throw new ApiError(error.message, { code: 'bad-args' });
+    }
+  }
+
+  /**
+   * One upload, from `vault.backup` or from an automatic run.
+   *
+   * @param {object} args `vault.backup` arguments
+   * @param {object} [vault] the store to upload; the session's by default
+   */
+  async function uploadVault(args, vault = inVault()) {
+    if (!backupS3) {
+      throw new ApiError('this session cannot upload to S3 (no backup provider is available)', {
+        code: 'unsupported',
+      });
+    }
+    // The secret may live in a file so that it does not appear in a process
+    // list or a shell history. Only the first line is used, because that file
+    // is often written by hand or copied from a credentials file.
+    // An SSH backup needs no local secret at all: the remote host has its own
+    // credentials, so a `--secret-key-file` alongside `--ssh-host` is ignored
+    // rather than read.
+    const overSsh = Boolean(args['ssh-host']);
+    let secretKey = args['secret-key'] ?? null;
+    if (!secretKey && args['secret-key-file'] && !overSsh) {
+      if (!readFile) {
+        throw new ApiError('this session cannot read files, so --secret-key-file is unavailable', { code: 'unsupported' });
+      }
+      let text;
+      try {
+        text = await readFile(args['secret-key-file']);
+      } catch (error) {
+        throw new ApiError(`could not read ${args['secret-key-file']}: ${error.message}`, { code: 'bad-args' });
+      }
+      secretKey = String(text ?? '').trim().split(/\r?\n/)[0].trim() || null;
+      if (!secretKey) {
+        throw new ApiError(`secret key file is empty: ${args['secret-key-file']}`, { code: 'bad-args' });
+      }
+    }
+
+    const info = await vault.info();
+    try {
+      return await backupS3({
+        root: vaultRoot,
+        vaultName: info.name,
+        bucket: args.bucket,
+        region: args.region ?? null,
+        prefix: args.prefix ?? null,
+        endpoint: args.endpoint ?? null,
+        accessKey: args['access-key'] ?? null,
+        secretKey,
+        sessionToken: args['session-token'] ?? null,
+        profile: args.profile ?? null,
+        sshHost: args['ssh-host'] ?? null,
+        sshKey: args['ssh-key'] ?? null,
+        sshPort: args['ssh-port'] ?? null,
+        dryRun: args['dry-run'] === true,
+      });
+    } catch (error) {
+      throw new ApiError(error?.message ?? String(error), { code: 'backup-failed' });
+    }
+  }
+
+  /**
+   * One upload for an armed vault, or null when it is not armed.
+   *
+   * A failure comes back as a report rather than throwing: the write that
+   * triggered it has already landed. It is logged, since a held-back upload has
+   * no caller to show it to.
+   */
+  async function runAutoBackup(vault) {
+    try {
+      const config = await autoBackupConfig(vault);
+      if (!config?.enabled) return null;
+      const { transport, bucket, key, url, files, bytes } = await uploadVault(autoBackupArgs(config), vault);
+      return { ok: true, transport, bucket, key, url, files, bytes };
+    } catch (error) {
+      const report = { ok: false, error: error?.message ?? String(error) };
+      await vault.appendLog('warn', `automatic backup failed: ${report.error}`).catch(() => {});
+      return report;
+    }
+  }
+
+  /** Upload the writes the quiet window has collected, and log where it went. */
+  async function runPendingAutoBackup() {
+    const vault = autoBackupVault;
+    const report = await runAutoBackup(vault);
+    // Unlike an inline upload there is no tool result waiting, so the session
+    // log is where a coalesced upload is recorded (failures log themselves).
+    if (report?.ok) {
+      await vault.appendLog('info', `automatic backup to ${report.url}`).catch(() => {});
+    }
+  }
+
+  /** Hold this write's upload back until the writes stop, or until flush. */
+  function scheduleAutoBackup(vault) {
+    clearTimeout(autoBackupTimer);
+    autoBackupVault = vault;
+    autoBackupTimer = setTimeout(() => {
+      autoBackupTimer = null;
+      autoBackupRunning = autoBackupRunning.then(runPendingAutoBackup);
+    }, autoBackupQuietMs);
+  }
+
+  /** Run a held-back upload now and wait for it — what the MCP server does as it stops. */
+  async function flushAutoBackup() {
+    if (autoBackupTimer) {
+      clearTimeout(autoBackupTimer);
+      autoBackupTimer = null;
+      autoBackupRunning = autoBackupRunning.then(runPendingAutoBackup);
+    }
+    await autoBackupRunning;
+  }
+
+  /**
+   * Upload after a write when the vault is armed.
+   *
+   * With a quiet window the upload is left for later, so the result says nothing
+   * about it; otherwise it runs before `dispatch` resolves and the report is
+   * attached as `autoBackup`.
+   */
+  async function autoBackupAfterWrite(name, result) {
+    if (!backupS3 || !triggersAutoBackup(name)) return result;
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+    const vault = inVault();
+    if (autoBackupQuietMs > 0) {
+      scheduleAutoBackup(vault);
+      return result;
+    }
+    const report = await runAutoBackup(vault);
+    return report ? { ...result, autoBackup: report } : result;
+  }
+
   /** The colour target a `color.*` command was given. */
   function colorTarget(args) {
     switch (args.kind) {
@@ -512,11 +667,16 @@ export function createVaultApi({ store = null, root = null, openVault = null, wr
     if (!handler) throw new ApiError(`unknown command: ${name}`, { code: 'unknown-command' });
     const prepared = prepareArgs(name, rawArgs);
     if (!prepared.ok) throw new ApiError(prepared.error, { code: 'bad-args' });
-    return handler({ ...prepared.args });
+    const result = await handler({ ...prepared.args });
+    // A vault that is armed backs itself up after every write, from the CLI and
+    // from the MCP server alike.
+    return autoBackupAfterWrite(name, result);
   }
 
   return {
     dispatch,
+    /** Run any automatic upload the quiet window is holding, and wait for it. */
+    flushAutoBackup,
     commands: handlers,
     /** The store the session is on, or null. */
     get store() {

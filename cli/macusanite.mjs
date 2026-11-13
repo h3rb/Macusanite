@@ -39,7 +39,7 @@ import { commandPage } from '../src/lib/helpDoc.js';
 import { createVaultApi } from '../src/lib/api.js';
 import { openVault } from './vaultFs.js';
 import { backupVaultToS3 } from './s3Backup.js';
-import { formatResult } from './format.js';
+import { formatResult, autoBackupNote } from './format.js';
 
 const PROGRAM = 'macusanite';
 const VERSION = '0.1.0';
@@ -350,6 +350,15 @@ async function main(argv) {
   } else {
     const text = formatResult(command, result, { color: globals.color && !globals.quiet });
     if (text !== '' && text !== undefined) write(text);
+  }
+
+  // An armed vault uploaded itself after the write. The command succeeded, so a
+  // failed upload is a warning on stderr rather than a failed command.
+  const autoBackup = result && typeof result === 'object' ? result.autoBackup : null;
+  if (autoBackup?.ok === false) {
+    process.stderr.write(`warning: automatic backup failed: ${autoBackup.error}\n`);
+  } else if (autoBackup && !globals.json) {
+    write(autoBackupNote(result, { color: globals.color && !globals.quiet }));
   }
 
   // `vault doctor` reports through its exit code so a script can branch on it.

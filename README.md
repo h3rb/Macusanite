@@ -244,11 +244,31 @@ credential. `--ssh-key` names the private key (a `.pem` works), and `--region`,
 dialog offers the same choice, and the host needs the AWS CLI and its own
 working credentials.
 
-Ticking *Upload automatically after each save* in that dialog makes the window
-repeat the upload over the same transport: it waits five seconds after saving
-stops, runs one upload at a time, and pauses for five minutes after a failure.
-Only the non-secret fields are remembered; the AWS environment or
-`~/.aws/credentials` covers a restart.
+Ticking *Upload automatically after each save* in that dialog arms the vault
+itself: the setting is `.macusanite/backup.json`, the same file the CLI and MCP
+server read, so a vault armed in one place is armed in the other. The window
+waits five seconds after saving stops, runs one upload at a time, and pauses for
+five minutes after a failure. Only non-secret fields are stored; the AWS
+environment or `~/.aws/credentials` covers a restart.
+
+The CLI and MCP server use that same setting, with no window needed:
+
+```bash
+node cli/macusanite.mjs --vault ./notes vault autobackup \
+  --bucket my-notes-backups --region eu-west-1 --on
+node cli/macusanite.mjs --vault ./notes vault autobackup \
+  --bucket my-notes-backups --ssh-host backup@notes.example --on
+node cli/macusanite.mjs --vault ./notes vault autobackup --off
+```
+
+Once armed, every write uploads a timestamped archive, including window saves
+after the five-second pause. A CLI command uploads once before it exits and
+reports it as `autoBackup`. A long-lived MCP server instead waits a couple of
+seconds after the last write and uploads one archive for the whole burst — an
+agent writing forty veins makes one object rather than forty — records the
+outcome in the session log, and flushes any pending upload when it stops. A
+failed upload never fails the write; it is reported or logged instead. Reads, log
+lines, viewer state and the index cache never upload.
 
 ---
 
@@ -272,7 +292,7 @@ node cli/macusanite.mjs --vault ./notes vein write Home.md --text - < new-home.m
 node cli/macusanite.mjs help vein.write        # one command's full documentation
 ```
 
-45 commands, in seven groups: identity and settings, documents, chambers, search
+46 commands, in seven groups: identity and settings, documents, chambers, search
 and the graph, colours, history, help. Everything takes `--json` for
 machine-readable output and `--vault <folder>` (or `MACUSANITE_VAULT`) to choose a
 vault; results go to stdout, diagnostics to stderr, and the exit code is non-zero
@@ -401,7 +421,7 @@ tests/node/     unit tests for everything under src/lib plus the renderers
 ### Tests
 
 ```bash
-npm test                                  # 227 JS tests
+npm test                                  # 239 JS tests
 cargo test --manifest-path src-tauri/Cargo.toml   # 40 Rust tests
 ```
 
