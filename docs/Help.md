@@ -171,6 +171,11 @@ Pure viewer state (which page was open, what was expanded, panel widths) is writ
 and deliberately stays out of the stack, as do log lines and the index cache. A save that changes
 nothing is not recorded.
 
+The undo and redo buttons show only the top of each stack, but **History log…** in the burger menu
+opens the whole thing as a list: time, change and file, newest first, with the current state marked.
+Picking any row jumps straight to it — the steps in between are undone or redone in one move — and
+the list can be narrowed to the file you have open.
+
 One documented asymmetry: deleting a vein records `after: ""`, because the window reads the stack with
 a non-optional `after` field. Undo brings the text back; redo re-creates the file empty.
 
@@ -384,6 +389,8 @@ The sections below are the windows into the manual's own structure: `search`, `c
 | [`vault.settings`](#vault-settings) | Read the viewer settings, merged over the defaults. | read |
 | [`vault.settings.set`](#vault-settings-set) | Change viewer settings. | undoable |
 | [`vault.backup`](#vault-backup) | Upload the whole vault to an S3 bucket as one timestamped tar.gz, directly or over SSH. | upload |
+| [`vault.export`](#vault-export) | Export the open vault to one portable compressed file. | upload |
+| [`vault.import`](#vault-import) | Import a portable vault archive into the open vault. | write |
 | [`vault.autobackup`](#vault-autobackup) | Arm this vault to upload itself after every write — window, CLI and MCP — or change where it uploads. | write |
 | [`vault.state`](#vault-state) | Read the viewer state: the last vein read, expanded chambers, panel widths. | read |
 | [`vault.state.set`](#vault-state-set) | Write viewer state. | write |
@@ -609,6 +616,46 @@ macusanite vault backup my-notes-backups --region eu-west-1
 macusanite vault backup my-notes-backups --secret-key-file ~/.aws/vault-secret --prefix fieldwork/
 macusanite vault backup my-notes-backups --endpoint https://minio.local:9000 --dry-run
 macusanite vault backup my-notes-backups --ssh-host backup@notes.example --ssh-key ~/.ssh/backup.pem
+```
+
+
+### `vault.export`
+
+Export the open vault to one portable compressed file.
+
+Write a single `.tar.gz` archive holding every vault file, including `.macusanite/history.json`, so the vault with its undo/redo history can be shared and imported elsewhere. The archive carries a manifest (`macusanite-archive.json`) listing every file. `.git` internals and symlinks are left out, exactly as for `vault backup`.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | Where to write the archive, for example `notes.tar.gz`. Relative to the working directory. |
+
+**Returns** `{ path, files, bytes, history: { undo, redo } }`
+
+**Kind** uploads to a remote service · CLI only, not exposed over MCP
+
+```bash
+macusanite vault export notes.tar.gz
+```
+
+
+### `vault.import`
+
+Import a portable vault archive into the open vault.
+
+Read a `.tar.gz` archive written by `vault.export` and update the open vault with its files, including its undo/redo history. Files the archive carries are overwritten in place; files it does not carry are left alone. If existing files would change, the import refuses with an `overwrite-required` error naming them until `--overwrite` confirms it. A malformed archive, an archive whose manifest does not match its contents, or one without history is refused before anything is written.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The archive to read, for example `notes.tar.gz`. Relative to the working directory. |
+| `overwrite` | boolean | no | Confirm overwriting existing files whose contents would change. Required when the import conflicts. |
+
+**Returns** `{ path, files, written, added, updated, unchanged, conflicts, history: { undo, redo } }`
+
+**Kind** writes to the vault · CLI only, not exposed over MCP
+
+```bash
+macusanite vault import notes.tar.gz
+macusanite vault import notes.tar.gz --overwrite
 ```
 
 
@@ -1354,4 +1401,4 @@ macusanite docs --sections
 
 ---
 
-46 commands · generated 2026-11-13
+48 commands · generated 2026-11-13

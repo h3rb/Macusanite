@@ -19,7 +19,9 @@ import { buildDocumentIndex } from './lib/graph.js';
 import { parseCache, serializeCache, cacheRecord, planIndex, stubEntry, createIndex, isStub } from './lib/indexCache.js';
 import { parseFrontmatter, documentMeta } from './lib/frontmatter.js';
 import {
-  setRelation, dropRelations, relationKey, setNodeType, setNodeField, ZOOM_MIN, ZOOM_MAX,
+  setRelation, dropRelations, relationKey, setNodeType, setNodeField,
+  cleanHistoryStack, canvasRecordPatch, cleanView, cleanPositions, dropAnchorFromGroups, renameAnchorIn, cleanAnnotations, normalizeRouting, cleanCardModes, cleanCollapsedGroups,
+  lockedContentAnchors as lockedAnchorsOf, enforceLockedSource,
 } from './lib/worldbuild.js';
 import { resolveTarget } from './lib/wikilinks.js';
 import { dirname, join, basename, titleFromPath, slugify, isMarkdown } from './lib/path.js';
@@ -32,6 +34,7 @@ import { createGraphPanel } from './ui/graphPanel.js';
 import { createColorPicker } from './ui/colorpicker.js';
 import { createSettingsDialog } from './ui/settingsDialog.js';
 import { createBackupDialog } from './ui/backupDialog.js';
+import { createHistoryLog } from './ui/historyLog.js';
 import { askMerge } from './ui/mergeDialog.js';
 import { createSearchPanel } from './ui/searchPanel.js';
 import { createResizers } from './ui/resizer.js';
@@ -67,6 +70,10 @@ const state = {
   current: null,
   draft: '',
   dirty: false,
+  // A draft that tries to rewrite a locked section structurally: it stays
+  // dirty, but autosave and save refuse it until the reader answers.
+  lockedBlocked: [],
+  lockedNotice: '',
   nav: new NavHistory(),
   undoStack: [],
   redoStack: [],
@@ -111,6 +118,7 @@ let graphPanel;
 let colorPicker;
 let settingsDialog;
 let backupDialog;
+let historyLog;
 let resizers;
 let pageOverrides = {};
 // The live document index. `state.index` is this list, so replacing an entry
@@ -209,6 +217,7 @@ const app = {
     colorPicker = createColorPicker({ app, root });
     settingsDialog = createSettingsDialog({ app });
     backupDialog = createBackupDialog({ app });
+    historyLog = createHistoryLog({ app });
     resizers = createResizers({ app, root });
 
     app.configureMermaid();
@@ -759,6 +768,8 @@ const app = {
       clearClash('another vein was opened');
       state.draft = text;
       state.dirty = false;
+      state.lockedBlocked = [];
+      state.lockedNotice = '';
       state.current.headings = buildDocumentIndex({ [normalized]: text })[0]?.headings ?? [];
       // The reader just paid for this read: describe the vein with it, so the
       // link resolution, the graph and the search corpus all see it.
@@ -851,8 +862,36 @@ const app = {
   /* ------------------------------------------------------------ editing */
 
   setDraft(text) {
-    state.draft = text;
-    markDirty(state.current ? text !== state.current.raw : false);
+    const anchors = state.current ? app.lockedContentAnchors(state.current.path) : [];
+    let next = text;
+    if (anchors.length) {
+      const enforced = enforceLockedSource(state.current.raw ?? '', text, anchors);
+      if (!enforced.ok) {
+        state.draft = text;
+        state.lockedBlocked = enforced.blocked;
+        const signature = `blocked:${enforced.blocked.join('|')}`;
+        if (state.lockedNotice !== signature) {
+          state.lockedNotice = signature;
+          app.toast('A locked section cannot be changed in the source — undo that change or revert to save', 'warn', 3200);
+        }
+        markDirty(true);
+        app.scheduleAutosave();
+        return;
+      }
+      next = enforced.text;
+      if (enforced.enforced) {
+        const signature = 'restored';
+        if (state.lockedNotice !== signature) {
+          state.lockedNotice = signature;
+          app.toast('Locked sections are read-only — changes there were not kept', 'warn', 2200);
+        }
+      } else {
+        state.lockedNotice = '';
+      }
+      state.lockedBlocked = [];
+    }
+    state.draft = next;
+    markDirty(state.current ? next !== state.current.raw : false);
     app.scheduleAutosave();
   },
 
@@ -898,6 +937,13 @@ const app = {
     return Boolean(state.world[path]?.marked);
   },
 
+  /** Anchors whose markdown is locked read-only in this vein's source. */
+  lockedContentAnchors(path) {
+    const record = state.world[path];
+    if (!record) return [];
+    return [...lockedAnchorsOf(record.groups ?? {}, record.locked ?? {})];
+  },
+
   /**
    * Mark (or unmark) a vein as Worldbuilding. The layout and relationships
    * are kept either way, so unmarking is not a loss and re-marking restores
@@ -906,7 +952,7 @@ const app = {
   markWorld(path, marked) {
     if (!path) return null;
     const record = { ...state.world[path], marked: Boolean(marked) };
-    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups', 'history']
+    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups', 'colors', 'images', 'pinned', 'locked', 'annotations', 'routing', 'history', 'cardModes', 'collapsedGroups']
       .some((part) => record[part]);
     if (record.marked || keepsWork) state.world[path] = record;
     else delete state.world[path];
@@ -914,14 +960,28 @@ const app = {
     return state.world[path] ?? null;
   },
 
+  /** Connector display preferences for a vein; a view choice, not canvas work. */
+  saveWorldRouting(path, routing) {
+    if (!path || !routing || typeof routing !== 'object') return null;
+    const next = normalizeRouting(routing);
+    state.world[path] = { ...state.world[path], routing: next };
+    app.scheduleStatePersist();
+    return next;
+  },
+
+  /** Free-floating annotations for a vein, keyed by annotation id. */
+  saveWorldAnnotations(path, annotations) {
+    if (!path || !annotations || typeof annotations !== 'object') return {};
+    const next = cleanAnnotations(annotations);
+    state.world[path] = { ...state.world[path], annotations: next };
+    app.scheduleStatePersist();
+    return next;
+  },
+
   /** Card positions, keyed by note anchor; absent anchors sit on the grid. */
   saveWorldLayout(path, positions) {
     if (!path || !positions || typeof positions !== 'object') return;
-    const clean = {};
-    for (const [anchor, pos] of Object.entries(positions)) {
-      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) clean[anchor] = { x: Math.round(pos.x), y: Math.round(pos.y) };
-    }
-    state.world[path] = { ...state.world[path], positions: clean };
+    state.world[path] = { ...state.world[path], positions: cleanPositions(positions) };
     app.scheduleStatePersist();
   },
 
@@ -945,19 +1005,13 @@ const app = {
 
   /**
    * Put the canvas record back as one undo step found it: positions, groups,
-   * relationships, folds and the camera together, so a step is never half
-   * applied. The view is stored in the same anchor form saveWorldView keeps.
+   * relationships, folds, node types, structured fields, pins and the camera
+   * together, so a step is never half applied. The view is stored in the
+   * same anchor form saveWorldView keeps.
    */
-  restoreWorldCanvas(path, { positions = {}, groups = {}, relations = {}, folded = {}, view = null }) {
+  restoreWorldCanvas(path, canvas) {
     if (!path) return;
-    const patch = { positions, groups, relations, folded };
-    const x = Number(view?.x);
-    const y = Number(view?.y);
-    const s = Number(view?.s);
-    if (Number.isFinite(x) && Number.isFinite(y)) {
-      patch.view = { x, y, s: Number.isFinite(s) ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s)) : 1 };
-    }
-    state.world[path] = { ...state.world[path], ...patch };
+    state.world[path] = { ...state.world[path], ...canvasRecordPatch(canvas ?? {}) };
     app.scheduleStatePersist();
   },
 
@@ -968,8 +1022,7 @@ const app = {
    */
   saveWorldHistory(path, history) {
     if (!path) return null;
-    const clean = (snaps) => (Array.isArray(snaps) ? snaps.filter((snap) => typeof snap === 'string') : []);
-    const next = { past: clean(history?.past), future: clean(history?.future) };
+    const next = cleanHistoryStack(history);
     state.world[path] = { ...state.world[path], history: next };
     app.scheduleStatePersist();
     return next;
@@ -1017,6 +1070,89 @@ const app = {
   },
 
   /**
+   * Set (or, with null, forget) one node's embedded image: a vault-relative
+   * file reference the canvas draws as the node's medium-sized icon.
+   * Returns the vein's images record.
+   */
+  setWorldNodeImage(path, anchor, ref) {
+    if (!path || !anchor) return {};
+    const images = { ...(state.world[path]?.images ?? {}) };
+    if (ref) images[anchor] = ref;
+    else delete images[anchor];
+    state.world[path] = { ...state.world[path], images };
+    app.scheduleStatePersist();
+    return images;
+  },
+
+  /**
+   * Write one node's downscaled image (a data URL) to its file under
+   * `.macusanite/node-images/`, unrecorded: the reference in `state.json`
+   * is what history steps, not every pixel of the image.
+   */
+  async writeNodeImageFile(metaName, dataUrl) {
+    return backend.writeMeta(metaName, dataUrl, 'node image', false);
+  },
+
+  /** Read a node image file back as a data URL for the canvas to draw. */
+  async readNodeImageFile(metaName) {
+    return backend.readMeta(metaName);
+  },
+
+  /**
+   * Pin a note where it stands: Arrange works around pinned cards instead
+   * of moving them. Returns the vein's pinned record.
+   */
+  setWorldNodePin(path, anchor, pin) {
+    if (!path || !anchor) return {};
+    const next = { ...(state.world[path]?.pinned ?? {}) };
+    if (pin) next[anchor] = true;
+    else delete next[anchor];
+    state.world[path] = { ...state.world[path], pinned: next };
+    app.scheduleStatePersist();
+    return next;
+  },
+
+  /**
+   * Lock one node's content read-only: its markdown, type, fields, colour
+   * and image can no longer change, but the card itself can still be moved
+   * (unless pinned) and linked. Returns the vein's locked record.
+   */
+  setWorldNodeLock(path, anchor, lock) {
+    if (!path || !anchor) return {};
+    const next = { ...(state.world[path]?.locked ?? {}) };
+    if (lock) next[anchor] = true;
+    else delete next[anchor];
+    state.world[path] = { ...state.world[path], locked: next };
+    app.scheduleStatePersist();
+    return next;
+  },
+
+  /**
+   * A card's display mode — `full` (default, stored nowhere), `compact`, or
+   * `thumbnail`. Record state like folds, so undo and reopen both keep it.
+   */
+  setWorldCardMode(path, anchor, mode) {
+    if (!path || !anchor) return null;
+    const all = cleanCardModes({ ...(state.world[path]?.cardModes ?? {}), [anchor]: mode });
+    const record = { ...state.world[path], cardModes: all };
+    if (!Object.keys(all).length) delete record.cardModes;
+    state.world[path] = record;
+    app.scheduleStatePersist();
+    return all;
+  },
+
+  /** Collapse a group to its summary card, or expand it back to its members. */
+  setWorldGroupCollapsed(path, groupId, collapsed) {
+    if (!path || !groupId) return null;
+    const all = cleanCollapsedGroups({ ...(state.world[path]?.collapsedGroups ?? {}), [groupId]: collapsed });
+    const record = { ...state.world[path], collapsedGroups: all };
+    if (!Object.keys(all).length) delete record.collapsedGroups;
+    state.world[path] = record;
+    app.scheduleStatePersist();
+    return all;
+  },
+
+  /**
    * Remember which parts of one card are folded — `card` for the whole node,
    * `links` for its "Link to" section. Folds sit in the record beside
    * positions and view, so a vein reopens exactly as it was left.
@@ -1040,14 +1176,9 @@ const app = {
    * graph reopens exactly as it was left.
    */
   saveWorldView(path, point) {
-    const x = Number(point?.x);
-    const y = Number(point?.y);
-    const s = Number(point?.s);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    state.world[path] = {
-      ...state.world[path],
-      view: { x, y, s: Number.isFinite(s) ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s)) : 1 },
-    };
+    const view = cleanView(point);
+    if (!view) return;
+    state.world[path] = { ...state.world[path], view };
     app.scheduleStatePersist();
   },
 
@@ -1069,43 +1200,27 @@ const app = {
    * own cards can still live on its nested groups.
    */
   dropWorldGroups(path, anchor) {
-    const all = state.world[path]?.groups ?? {};
-    const effectiveSize = (id, seen) => {
-      const group = all[id];
-      if (!group || seen.has(id)) return 0;
-      seen.add(id);
-      let size = group.members.filter((a) => a !== anchor).length;
-      for (const child of group.children ?? []) size += effectiveSize(child, seen);
-      return size;
-    };
-    const surviving = new Set(
-      Object.keys(all).filter((id) => effectiveSize(id, new Set()) >= 2),
-    );
-    const next = {};
-    for (const [id, group] of Object.entries(all)) {
-      if (!surviving.has(id)) continue;
-      next[id] = {
-        ...group,
-        members: group.members.filter((a) => a !== anchor),
-        children: (group.children ?? []).filter((child) => surviving.has(child)),
-      };
-    }
-    const relations = { ...(state.world[path]?.relations ?? {}) };
-    for (const id of Object.keys(all)) {
-      if (!next[id]) Object.assign(relations, dropRelations(relations, `group:${id}`));
-    }
+    const { groups: next, dissolved } = dropAnchorFromGroups(state.world[path]?.groups ?? {}, anchor);
+    let relations = state.world[path]?.relations ?? {};
+    for (const id of dissolved) relations = dropRelations(relations, `group:${id}`);
     state.world[path] = { ...state.world[path], groups: next, relations };
     app.scheduleStatePersist();
     return next;
   },
 
-  /** Forget a deleted note's saved extras: its fields and its folds. */
+  /** Forget a deleted note's saved extras: its fields, folds, pin and lock. */
   dropWorldFields(path, anchor) {
     const fields = { ...(state.world[path]?.fields ?? {}) };
     const folded = { ...(state.world[path]?.folded ?? {}) };
+    const pinned = { ...(state.world[path]?.pinned ?? {}) };
+    const locked = { ...(state.world[path]?.locked ?? {}) };
+    const cardModes = { ...(state.world[path]?.cardModes ?? {}) };
     delete fields[anchor];
     delete folded[anchor];
-    state.world[path] = { ...state.world[path], fields, folded };
+    delete pinned[anchor];
+    delete locked[anchor];
+    delete cardModes[anchor];
+    state.world[path] = { ...state.world[path], fields, folded, pinned, locked, cardModes };
     app.scheduleStatePersist();
     return fields;
   },
@@ -1118,26 +1233,23 @@ const app = {
   renameWorldAnchor(path, before, after) {
     const record = state.world[path];
     if (!record || !before || !after || before === after) return null;
-    const move = (obj) => {
-      if (!obj || !(before in obj)) return obj ?? {};
-      const next = { ...obj, [after]: obj[before] };
-      delete next[before];
-      return next;
-    };
-    const types = move(record.types);
-    const fields = move(record.fields);
-    const folded = move(record.folded);
-    const colors = move(record.colors);
-    const groups = {};
-    for (const [id, group] of Object.entries(record.groups ?? {})) {
-      groups[id] = {
-        ...group,
-        members: group.members.map((a) => (a === before ? after : a)),
-      };
-    }
-    state.world[path] = { ...record, types, fields, folded, colors, groups };
+    // The record and a history snapshot rename the same way: positions,
+    // types, fields, folds and colours follow the new anchor, group
+    // members sit under it, and bonds naming the old name drop.
+    const moved = renameAnchorIn(record, before, after);
+    state.world[path] = { ...record, ...moved };
     app.scheduleStatePersist();
-    return { types, fields, folded, colors, groups };
+    return {
+      types: moved.types ?? {},
+      fields: moved.fields ?? {},
+      folded: moved.folded ?? {},
+      colors: moved.colors ?? {},
+      images: moved.images ?? {},
+      pinned: moved.pinned ?? {},
+      locked: moved.locked ?? {},
+      cardModes: moved.cardModes ?? {},
+      groups: moved.groups ?? {},
+    };
   },
 
   revertDraft() {
@@ -1146,17 +1258,40 @@ const app = {
     // to merge, only the one on disk.
     clearClash('the draft was discarded');
     state.draft = state.current.raw;
+    state.lockedBlocked = [];
+    state.lockedNotice = '';
     viewer.syncEditor(state.draft);
     markDirty(false);
   },
 
   async saveCurrent(options = {}) {
     if (!state.current || state.current.readOnly) return;
+    if (state.lockedBlocked?.length) {
+      if (!options.silent) app.toast('A locked section cannot be changed in the source — undo that change or revert to save', 'warn', 3200);
+      return;
+    }
     if (!state.dirty && !options.force) {
       if (!options.silent) app.toast('Nothing to save', 'info', 1600);
       return;
     }
-    const text = state.draft;
+    const anchors = app.lockedContentAnchors(state.current.path);
+    let text = state.draft;
+    if (anchors.length) {
+      const enforced = enforceLockedSource(state.current.raw ?? '', text, anchors);
+      if (!enforced.ok) {
+        state.lockedBlocked = enforced.blocked;
+        if (!options.silent) app.toast('A locked section cannot be changed in the source — undo that change or revert to save', 'warn', 3200);
+        return;
+      }
+      text = enforced.text;
+      state.draft = text;
+      if (text === state.current.raw) {
+        state.lockedBlocked = [];
+        state.lockedNotice = '';
+        markDirty(false);
+        return;
+      }
+    }
     try {
       await backend.writeVein(state.current.path, text, `edit ${state.current.path}`);
       state.bodies[state.current.path] = text;
@@ -1168,6 +1303,8 @@ const app = {
       state.current.meta = documentMeta(data);
       state.current.headings = buildDocumentIndex({ [state.current.path]: text })[0]?.headings ?? [];
       markDirty(false);
+      state.lockedBlocked = [];
+      state.lockedNotice = '';
       await app.reindex([state.current.path], { text });
       await viewer.render(state.current);
       await app.refreshGraph();
@@ -1193,6 +1330,7 @@ const app = {
   scheduleAutosave() {
     clearTimeout(autosaveTimer);
     if (!state.settings.autosave) return;
+    if (state.lockedBlocked?.length) return;
     // The offer is only worth making if the clock cannot answer it first: saving
     // the draft now would write it over the very version it is offering to merge.
     if (state.clash && state.clash.path === state.current?.path) return;
@@ -1207,6 +1345,7 @@ const app = {
       // arrive between the keystroke and the clock, and the whole point of the
       // offer is that the clock does not get to answer it by writing the draft.
       if (state.clash && state.clash.path === state.current?.path) return;
+      if (state.lockedBlocked?.length) return;
       app.saveCurrent({ silent: true });
     }, state.settings.autosaveDelayMs);
   },
@@ -1364,6 +1503,27 @@ const app = {
     await afterHistoryMove(result, 'Redone');
   },
 
+  /** Jump several steps at once — the history log's click. */
+  async undoSteps(count) {
+    const result = await backend.undoSteps(count);
+    if (!result.applied) {
+      app.toast('Nothing to undo', 'info', 1400);
+      return result;
+    }
+    await afterHistoryMove(result, 'Undone');
+    return result;
+  },
+
+  async redoSteps(count) {
+    const result = await backend.redoSteps(count);
+    if (!result.applied) {
+      app.toast('Nothing to redo', 'info', 1400);
+      return result;
+    }
+    await afterHistoryMove(result, 'Redone');
+    return result;
+  },
+
   /* ----------------------------------------------------------- settings */
 
   async updateSettings(patch) {
@@ -1412,6 +1572,11 @@ const app = {
 
   openSettings() {
     settingsDialog.open();
+  },
+
+  /** The history log: every recorded change, as a list, with jump targets. */
+  openHistoryLog() {
+    historyLog.open();
   },
 
   /** The S3 backup dialog; the CLI has the same command as `vault backup`. */
@@ -1944,49 +2109,55 @@ async function refreshHistory() {
     state.redoStack = [];
   }
   chrome?.renderNavbar();
+  historyLog?.refresh();
 }
 
 async function afterHistoryMove(result, verb) {
   await refreshHistory();
-  const affected = result.path ?? '';
-  if (affected.endsWith(META.colors) || affected.endsWith(META.settings)) {
-    // An undo of a metadata change moves the same file a hand-edit does, so it
-    // goes through the same reader. `render: false`: this function's own tail
-    // re-renders the document, the graph and the chrome.
-    await applyMetaFromDisk(affected.endsWith(META.colors) ? META.colors : META.settings, { render: false });
-  } else if (affected.endsWith(META.vault)) {
-    const raw = await backend.readMeta(META.vault);
-    state.vault = { ...state.vault, ...mergeVaultMeta(raw ? JSON.parse(raw) : null) };
-  } else if (isMarkdown(affected)) {
-    try {
-      const text = await backend.readVein(affected);
-      state.bodies[affected] = text;
-      if (state.current?.path === affected) {
-        const { data, body } = parseFrontmatter(text);
-        state.current = {
-          ...state.current,
-          text,
-          body,
-          raw: text,
-          frontmatter: data,
-          meta: documentMeta(data),
-          headings: buildDocumentIndex({ [affected]: text })[0]?.headings ?? [],
-        };
-        state.draft = text;
-        viewer.syncEditor(text);
-        markDirty(false);
+  // A jump may have moved several files: every one of them goes through the
+  // same readers a hand-edit does.
+  const paths = result.paths?.length ? result.paths : (result.path ? [result.path] : []);
+  for (const affected of paths) {
+    if (affected.endsWith(META.colors) || affected.endsWith(META.settings)) {
+      // An undo of a metadata change moves the same file a hand-edit does, so it
+      // goes through the same reader. `render: false`: this function's own tail
+      // re-renders the document, the graph and the chrome.
+      await applyMetaFromDisk(affected.endsWith(META.colors) ? META.colors : META.settings, { render: false });
+    } else if (affected.endsWith(META.vault)) {
+      const raw = await backend.readMeta(META.vault);
+      state.vault = { ...state.vault, ...mergeVaultMeta(raw ? JSON.parse(raw) : null) };
+    } else if (isMarkdown(affected)) {
+      try {
+        const text = await backend.readVein(affected);
+        state.bodies[affected] = text;
+        if (state.current?.path === affected) {
+          const { data, body } = parseFrontmatter(text);
+          state.current = {
+            ...state.current,
+            text,
+            body,
+            raw: text,
+            frontmatter: data,
+            meta: documentMeta(data),
+            headings: buildDocumentIndex({ [affected]: text })[0]?.headings ?? [],
+          };
+          state.draft = text;
+          viewer.syncEditor(text);
+          markDirty(false);
+        }
+      } catch {
+        /* the file may have been removed by the undo */
       }
-    } catch {
-      /* the file may have been removed by the undo */
     }
   }
   await app.reloadVault({ tree: true });
-  if (isMarkdown(affected)) await app.reindex([affected]);
+  const markdownPaths = paths.filter(isMarkdown);
+  if (markdownPaths.length) await app.reindex(markdownPaths);
   if (state.current) await viewer.render(state.current);
   graphPanel.render();
   chrome.render();
   sidebar.render();
-  app.toast(`${verb} ${result.label ?? ''}`.trim(), 'info', 1600);
+  app.toast((result.steps ?? 1) > 1 ? `${verb} ${result.steps} steps` : `${verb} ${result.label ?? ''}`.trim(), 'info', 1600);
 }
 
 /**

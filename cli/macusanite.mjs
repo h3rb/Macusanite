@@ -288,7 +288,14 @@ async function createSession(globals) {
     return { path: absolute, bytes: Buffer.byteLength(contents) };
   };
   const readFile = async (target) => fs.readFileSync(path.resolve(process.cwd(), target), 'utf8');
-  const api = createVaultApi({ openVault, writeFile, readFile, backupS3: backupVaultToS3 });
+  const readBinaryFile = async (target) => fs.readFileSync(path.resolve(process.cwd(), target));
+  const writeBinaryFile = async (target, bytes) => {
+    const absolute = path.resolve(process.cwd(), target);
+    fs.mkdirSync(path.dirname(absolute), { recursive: true });
+    fs.writeFileSync(absolute, bytes);
+    return { path: absolute, bytes: bytes.length };
+  };
+  const api = createVaultApi({ openVault, writeFile, readFile, readBinaryFile, writeBinaryFile, backupS3: backupVaultToS3 });
   if (globals.vault) {
     const store = await openVault(globals.vault, { create: false });
     api.attach(store, store.root);

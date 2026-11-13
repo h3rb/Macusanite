@@ -21,6 +21,7 @@
 import { prepareArgs, applyAssignments, commandNames, COMMANDS } from './catalogue.js';
 import { buildHelpMarkdown, commandPage, helpSections, DEFAULT_DOC_SECTIONS } from './helpDoc.js';
 import { assertBucket } from './backup.js';
+import { createVaultArchive, parseVaultArchive, planVaultImport } from './vaultArchive.js';
 import {
   AUTO_BACKUP_FILE,
   AUTO_BACKUP_PATH,
@@ -50,6 +51,9 @@ const withExtension = (path) => (/\.(md|markdown|mdx)$/i.test(path) ? path : `${
  * @param {(path: string, options: object) => Promise<object>} [input.openVault]
  *   how to open another folder; required only for `vault.open`/`vault.create`
  * @param {(path: string) => Promise<string>} [input.readFile] text reader, for files named by an argument
+ * @param {(path: string) => Promise<Uint8Array>} [input.readBinaryFile] binary reader, for archives
+ * @param {(path: string, bytes: Uint8Array) => Promise<object>} [input.writeBinaryFile] binary writer,
+ *   for the file a vault archive is written to
  * @param {(options: object) => Promise<object>} [input.backupS3]
  *   uploads a vault; the CLI passes the Node implementation, and a runtime that
  *   has no network or filesystem leaves it out
@@ -63,6 +67,8 @@ export function createVaultApi({
   openVault = null,
   writeFile = null,
   readFile = null,
+  readBinaryFile = null,
+  writeBinaryFile = null,
   backupS3 = null,
   autoBackupQuietMs = 0,
 } = {}) {
@@ -109,6 +115,25 @@ export function createVaultApi({
     session = await openVault(target, options);
     vaultRoot = session.root ?? target;
     return session;
+  }
+
+  /**
+   * Every vault file an archive carries, sorted, without `.git` internals.
+   *
+   * @param {object} vault the store to collect from
+   * @returns {Promise<Array<{path: string, data: string, mtime: number}>>}
+   */
+  async function collectArchiveFiles(vault) {
+    const listed = await vault.listFiles();
+    const files = [];
+    for (const file of listed) {
+      if (file.path === '.git' || file.path.startsWith('.git/')) continue;
+      const text = await vault.readFile(file.path);
+      if (text === null) continue;
+      files.push({ path: file.path, data: text, mtime: file.mtime ?? 0 });
+    }
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    return files;
   }
 
   /* ── vault ───────────────────────────────────────────────────────────── */
@@ -197,6 +222,76 @@ export function createVaultApi({
 
     async 'vault.backup'(args) {
       return uploadVault(args);
+    },
+
+    async 'vault.export'(args) {
+      const vault = inVault();
+      if (!writeBinaryFile) {
+        throw new ApiError('this session cannot write binary files, so vault export is unavailable', {
+          code: 'unsupported',
+        });
+      }
+      const info = await vault.info();
+      const files = await collectArchiveFiles(vault);
+      const bytes = await createVaultArchive(files, { vaultName: info.name });
+      let written;
+      try {
+        written = await writeBinaryFile(args.path, bytes);
+      } catch (error) {
+        throw new ApiError(`could not write ${args.path}: ${error.message}`, { code: 'bad-args' });
+      }
+      const history = await vault.historyState();
+      return {
+        path: written?.path ?? args.path,
+        files: files.length,
+        bytes: bytes.length,
+        history: { undo: history.undo.length, redo: history.redo.length },
+      };
+    },
+
+    async 'vault.import'(args) {
+      const vault = inVault();
+      if (!readBinaryFile) {
+        throw new ApiError('this session cannot read binary files, so vault import is unavailable', {
+          code: 'unsupported',
+        });
+      }
+      let bytes;
+      try {
+        bytes = await readBinaryFile(args.path);
+      } catch (error) {
+        throw new ApiError(`could not read ${args.path}: ${error.message}`, { code: 'bad-args' });
+      }
+      let archive;
+      try {
+        archive = await parseVaultArchive(bytes);
+      } catch (error) {
+        throw new ApiError(`invalid vault archive ${args.path}: ${error.message}`, { code: 'bad-args' });
+      }
+      const existing = [];
+      for (const file of archive.files) {
+        const text = await vault.readFile(file.path);
+        if (text !== null) existing.push({ path: file.path, text });
+      }
+      const plan = planVaultImport(existing, archive.files);
+      if (plan.conflicts.length && args.overwrite !== true) {
+        throw new ApiError(
+          `importing ${args.path} would overwrite ${plan.conflicts.length} existing file(s): ${plan.conflicts.join(', ')} — rerun with --overwrite to confirm`,
+          { code: 'overwrite-required' },
+        );
+      }
+      for (const write of plan.writes) await vault.writeFile(write.path, write.text);
+      await vault.dropIndexCache().catch(() => {});
+      return {
+        path: args.path,
+        files: archive.files.length,
+        written: plan.writes.length,
+        added: plan.added,
+        updated: plan.updated,
+        unchanged: plan.unchanged,
+        conflicts: plan.conflicts,
+        history: archive.manifest.history,
+      };
     },
 
     async 'vault.autobackup'(args) {

@@ -58,3 +58,25 @@ links such as [mermaid docs](https://mermaid.js.org/) open in your browser inste
 Every page, every link and every section can carry a colour. Click the little
 swatch next to a heading or a link and pick one — link colours fade along the
 line in the graph towards the colour of their target.
+
+## Try the Worldbuilding canvas
+
+This page opens as a Worldbuilding canvas (the switch at the top right of the
+centre pane). Everything new lives here:
+
+* **Overview** folds every card and link section, then fits the whole graph to
+  the screen — a bird's-eye table of contents. **Fit**, **Fit selection** and
+  **Centre** find far-apart cards without panning.
+* Cards snap to guides while dragging; a Ctrl+click selection drags as a unit,
+  then **Align** and **Distribute** tidy the set.
+* The red group is **locked**: its cards cannot move or be removed, but links
+  can still be added. The blue group and the pinned card stay put while
+  **Arrange** works around them.
+* Connectors run as **elbow** wires with **arrowheads**, and the yellow notes
+  are free-floating **annotations**. The health panel (⚠ in the toolbar) lists
+  orphans and thin groups.
+* Canvas undo steps are **named** — use the history browser beside the undo
+  button to jump between them, and the file-history log to see the vault's
+  whole story.
+
+For the full tour, see [[Chambers/Vault Notes#Worldbuilding canvas tour]].

@@ -1105,6 +1105,68 @@ mark.search-hit {
   border-color: var(--accent);
 }
 
+/* The source is one box with two layers: the highlight layer underneath
+   carries the readable text (with locked sections marked), the textarea
+   above it is transparent so its caret and selection sit exactly on the
+   highlighted text. Both layers share font, padding and border, so they
+   can never drift apart. */
+.editor-source {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.editor-source .editor-textarea {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.editor-source .editor-textarea::selection {
+  background: rgba(88, 166, 255, 0.35);
+  color: transparent;
+}
+
+.editor-highlight {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.locked-source-mark {
+  background: rgba(240, 163, 54, 0.22);
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+[data-theme='light'] .locked-source-mark {
+  background: rgba(240, 163, 54, 0.3);
+}
+
 /* The two halves of "Visual Editing": the source and its rendering, each
    taking half the pane, each scrolling on its own. */
 .editor-split {
@@ -1609,6 +1671,150 @@ dialog::backdrop {
   width: min(560px, 94vw);
   max-height: 88vh;
   overflow: auto;
+}
+
+/* ── history log ──────────────────────────────────────────────────────── */
+
+.history-dialog {
+  width: min(640px, 94vw);
+  max-height: 86vh;
+  overflow: auto;
+}
+
+.history-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.history-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.history-head h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.history-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.history-note {
+  color: var(--text-faint);
+  font-size: 12px;
+  margin: 0;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.history-section {
+  margin: 8px 0 2px;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.history-now {
+  margin: 8px 0 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-strong);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.history-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-row:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.history-row:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.history-glyph {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.history-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.history-label {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-path {
+  color: var(--text-faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-time {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.history-empty {
+  color: var(--text-faint);
+  font-size: 12.5px;
+  margin: 12px 4px;
+}
+
+.history-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-counts {
+  color: var(--text-faint);
+  font-size: 12px;
 }
 
 .backup-head {
@@ -2329,6 +2535,129 @@ dialog::backdrop {
   outline-offset: 1px;
 }
 
+/* Canvas search: hits, the current jump target, and isolated dimming. */
+.wb-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.wb-search-input {
+  flex: 1 1 auto;
+  min-width: 180px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.wb-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.wb-search-count {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.wb-search-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 10px;
+  right: 10px;
+  z-index: 20;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-lg);
+}
+
+.wb-search-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wb-search-result:hover,
+.wb-search-result.is-active {
+  background: var(--bg-sunken);
+}
+
+.wb-search-result-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-search-chip {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.wb-card.is-search-hit {
+  outline: 2px solid var(--warn);
+  outline-offset: 1px;
+}
+
+.wb-card.is-search-current {
+  outline: 3px solid var(--warn);
+  outline-offset: 2px;
+}
+
+.wb-card.is-dimmed {
+  opacity: 0.32;
+}
+
+.wb-stage.is-isolating .wb-edges {
+  opacity: 0.15;
+}
+
+.wb-stage.is-isolating .wb-annotation {
+  opacity: 0.35;
+}
+
+/* The marquee box: Shift+drag on the canvas background, in stage coords. */
+.wb-marquee {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: rgba(88, 166, 255, 0.15);
+  z-index: 7;
+  pointer-events: none;
+}
+
+.wb-select-menu {
+  min-width: 220px;
+}
+
 .wb-menu {
   position: fixed;
   z-index: 120;
@@ -2391,6 +2720,12 @@ dialog::backdrop {
   background: var(--bg-hover);
 }
 
+.wb-menu-item.is-current {
+  font-weight: 700;
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
 .wb-menu-item:disabled {
   opacity: 0.45;
   cursor: default;
@@ -2450,6 +2785,56 @@ dialog::backdrop {
   width: min(380px, calc(100vw - 16px));
 }
 
+/* The health panel: the menu's own terms, wider for card titles. */
+.wb-health {
+  width: min(300px, calc(100vw - 16px));
+}
+
+.wb-stat-warn {
+  color: var(--warn, #d29922);
+}
+
+/* The history browser: the menu's own terms, wider for step names, with a
+ * row per step and a marker for where the canvas stands now. */
+.wb-history {
+  width: min(320px, calc(100vw - 16px));
+}
+
+.wb-history-row {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wb-history-row:hover {
+  background: var(--bg-hover);
+}
+
+.wb-history-now {
+  display: block;
+  padding: 6px 10px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.wb-history-empty {
+  display: block;
+  padding: 6px 10px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
 .wb-legend-row {
   display: flex;
   align-items: center;
@@ -2500,10 +2885,157 @@ dialog::backdrop {
   pointer-events: none;
 }
 
+/* Free-floating annotations: margin scribbles above the cards, never tied
+ * to a heading. The layer itself lets clicks through to the canvas. */
+.wb-annotations {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.wb-annotation {
+  position: absolute;
+  min-height: 96px;
+  padding: 6px 8px 8px;
+  background: #fff3a6;
+  color: #3a3300;
+  border: 1px solid #d8c94c;
+  border-radius: 3px;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.22);
+  pointer-events: auto;
+}
+
+.wb-annotation-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: grab;
+  user-select: none;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.wb-annotation-head:active {
+  cursor: grabbing;
+}
+
+.wb-annotation-title {
+  flex: 1 1 auto;
+}
+
+.wb-annotation-remove {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0 2px;
+}
+
+.wb-annotation-remove:hover {
+  color: #8a0000;
+}
+
+.wb-annotation-text {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  min-height: 58px;
+  resize: vertical;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: 13px/1.35 var(--sans, system-ui, sans-serif);
+}
+
+.wb-annotation-text::placeholder {
+  color: rgba(58, 51, 0, 0.55);
+}
+
+[data-theme='light'] .wb-annotation {
+  box-shadow: 0 5px 14px rgba(20, 30, 45, 0.14);
+}
+
+/* Smart guides: the lines a drag is aligned to, drawn over the cards. */
+.wb-guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.wb-guide {
+  display: none;
+  position: absolute;
+  background: var(--accent);
+  opacity: 0.75;
+}
+
+.wb-guide-v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.wb-guide-h {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
 .wb-edge {
   stroke: var(--accent);
   stroke-width: var(--wb-weight, 1.6px);
   opacity: 0.5;
+  /* The hit path below carries pointer events; the painted line must not,
+   * or it can intercept the click and let the stage start panning. */
+  pointer-events: none;
+}
+
+/* The invisible fat twin that makes a thin wire clickable. */
+.wb-edge-hit {
+  stroke: transparent;
+  stroke-width: 14px;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.wb-edge.is-selected {
+  stroke: var(--warn);
+  stroke-width: 3px;
+  opacity: 1;
+}
+
+.wb-connector-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+
+.wb-connector-bar.hidden {
+  display: none;
+}
+
+.wb-connector-count {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-right: auto;
+}
+
+.wb-arrowhead {
+  fill: var(--accent);
+  fill: context-stroke;
+  stroke: none;
 }
 
 .wb-edge-section {
@@ -2682,13 +3214,162 @@ dialog::backdrop {
   box-shadow: var(--shadow-lg);
 }
 
+.wb-card.is-locked .wb-card-head,
+.wb-group-tab.is-locked {
+  cursor: not-allowed;
+}
+
+.wb-box.is-locked {
+  stroke-dasharray: 7 5;
+}
+
+.wb-box.is-pinned {
+  stroke-width: 3;
+}
+
+.wb-pin {
+  flex: 0 0 auto;
+  font-size: 10px;
+}
+
 /* A folded section keeps only its head; its placement and pan stay saved. */
 .wb-card.is-folded {
   height: auto;
 }
 
+/* Compact mode: head plus a one-line meta row, nothing else. */
+.wb-card.is-mode-compact {
+  width: 220px;
+  height: auto;
+  min-height: 64px;
+}
+
+.wb-card.is-mode-compact .wb-fields,
+.wb-card.is-mode-compact .wb-card-body,
+.wb-card.is-mode-compact .wb-card-rendered,
+.wb-card.is-mode-compact .wb-card-foot {
+  display: none;
+}
+
+.wb-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 4px;
+  padding: 4px 10px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* Thumbnail mode: the node's face, nothing else. */
+.wb-card.is-mode-thumbnail {
+  width: 128px;
+  height: 128px;
+  overflow: hidden;
+}
+
+.wb-card.is-mode-thumbnail .wb-card-head,
+.wb-card.is-mode-thumbnail .wb-fields,
+.wb-card.is-mode-thumbnail .wb-card-body,
+.wb-card.is-mode-thumbnail .wb-card-rendered,
+.wb-card.is-mode-thumbnail .wb-card-foot,
+.wb-card.is-mode-thumbnail .wb-meta-line {
+  display: none;
+}
+
+.wb-thumb {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-sunken);
+}
+
+.wb-thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wb-thumb-initial {
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.wb-thumb-title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  background: linear-gradient(transparent, var(--bg));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A card hidden inside a collapsed group's summary. */
+.wb-card.is-group-hidden {
+  display: none;
+}
+
+/* A collapsed group as one summary card. */
+.wb-group-summary {
+  position: absolute;
+  width: 280px;
+  height: 120px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto auto;
+  column-gap: 10px;
+  align-content: center;
+  padding: 12px 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  cursor: grab;
+}
+
+.wb-group-summary:active {
+  cursor: grabbing;
+}
+
+.wb-group-summary-icon {
+  grid-row: 1 / span 3;
+  align-self: center;
+  font-size: 28px;
+}
+
+.wb-group-summary-name {
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-group-summary-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.wb-group-summary-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
 .wb-card.is-folded .wb-fields,
 .wb-card.is-folded .wb-card-body,
+.wb-card.is-folded .wb-card-rendered,
 .wb-card.is-folded .wb-card-foot {
   display: none;
 }
@@ -2723,6 +3404,17 @@ dialog::backdrop {
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   cursor: grab;
+}
+
+/* A node's embedded image: its medium-sized icon, leading the head. */
+.wb-node-image {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  user-select: none;
 }
 
 .wb-grip {
@@ -2804,6 +3496,31 @@ dialog::backdrop {
 .wb-card-body:focus {
   color: var(--text);
   background: var(--bg-sunken);
+}
+
+/* The node's prose rendered as markdown at rest; click to edit. */
+.wb-card-rendered {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 10px;
+  overflow-y: auto;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+  cursor: text;
+}
+
+.wb-card-rendered:focus {
+  outline: none;
+  background: var(--bg-sunken);
+}
+
+.wb-card-rendered :first-child {
+  margin-top: 0;
+}
+
+.wb-card-rendered :last-child {
+  margin-bottom: 0;
 }
 
 .wb-card-foot {

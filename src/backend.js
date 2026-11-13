@@ -387,6 +387,10 @@ export const backend = {
   history: () => invoke('history_state', {}),
   undo: () => invoke('history_undo', {}),
   redo: () => invoke('history_redo', {}),
+  /** Several steps at once — the history log's jump. Loops the single-step
+   * command, so the desktop core needs no new command for it. */
+  undoSteps: (count) => moveSteps('history_undo', count),
+  redoSteps: (count) => moveSteps('history_redo', count),
   /** Upload the whole vault to S3. Never persisted: the secret lives in memory. */
   backupS3: (request) => invoke('backup_vault_s3', { request }),
   pickFolder: () => invoke('pick_folder', {}),
@@ -396,6 +400,23 @@ export const backend = {
   onVaultChange,
   log,
 };
+
+/** Walk one direction of the history stacks, up to `count` steps. */
+async function moveSteps(command, count) {
+  const wanted = Math.max(0, Math.floor(Number(count) || 0));
+  const paths = [];
+  let last = null;
+  let moved = 0;
+  for (let i = 0; i < wanted; i += 1) {
+    const result = await invoke(command, {});
+    if (!result?.applied) break;
+    last = result;
+    moved += 1;
+    if (result.path && !paths.includes(result.path)) paths.push(result.path);
+  }
+  if (!last) return { applied: false, steps: 0, paths: [], stacks: last?.stacks ?? (await invoke('history_state', {})) };
+  return { applied: true, steps: moved, path: last.path, label: last.label, paths, stacks: last.stacks };
+}
 
 /** The manual's page. Shared by the desktop command and the browser fallback. */
 export function helpWindowUrl(theme = null) {

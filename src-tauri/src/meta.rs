@@ -90,10 +90,18 @@ fn meta_file(root: &Path, name: &str) -> std::path::PathBuf {
 }
 
 /// Guard against `../` sneaking in through an IPC-supplied meta file name.
+/// Flat names are the rule; one level of nesting is allowed for node images,
+/// which live as files under `node-images/`.
 fn safe_meta_name(name: &str) -> Result<&str, String> {
     let trimmed = name.trim();
-    if trimmed.is_empty() || trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
+    if trimmed.is_empty() || trimmed.contains('\\') || trimmed.contains("..") {
         return Err(format!("invalid meta file name: {name}"));
+    }
+    if trimmed.contains('/') {
+        let (dir, file) = trimmed.split_once('/').unwrap();
+        if dir != "node-images" || file.is_empty() || file.contains('/') {
+            return Err(format!("invalid meta file name: {name}"));
+        }
     }
     Ok(trimmed)
 }
@@ -108,8 +116,11 @@ pub fn read_meta(root: &Path, name: &str) -> Option<String> {
 
 pub fn write_meta_raw(root: &Path, name: &str, contents: &str) -> Result<(), String> {
     let name = safe_meta_name(name)?;
-    fs::create_dir_all(meta_dir(root)).map_err(|e| format!(".macusanite: {e}"))?;
-    fs::write(meta_file(root, name), contents).map_err(|e| format!("{name}: {e}"))
+    let path = meta_file(root, name);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!(".macusanite: {e}"))?;
+    }
+    fs::write(path, contents).map_err(|e| format!("{name}: {e}"))
 }
 
 /// Read a meta file as JSON, falling back when it is missing or malformed.
@@ -238,6 +249,12 @@ mod tests {
         assert!(safe_meta_name("nested/evil.json").is_err());
         assert!(safe_meta_name("").is_err());
         assert_eq!(safe_meta_name("colors.json").unwrap(), "colors.json");
+        assert_eq!(
+            safe_meta_name("node-images/lens.png").unwrap(),
+            "node-images/lens.png"
+        );
+        assert!(safe_meta_name("other/file.png").is_err());
+        assert!(safe_meta_name("node-images/a/b.png").is_err());
     }
 
     #[test]

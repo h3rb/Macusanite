@@ -200,6 +200,40 @@ test('undo and redo walk the stack newest-first and clear the branch on a new ed
   assert.equal((await store.historyState()).redo.length, 0, 'a new change clears redo');
 });
 
+test('undoSteps and redoSteps jump several steps at once', async () => {
+  const root = tempVault('jump');
+  const store = await openVault(root);
+  await store.createVein('A.md', 'one\n', { record: true });
+  await store.writeVein('A.md', 'two\n', { label: 'edit A' });
+  await store.createVein('B.md', 'b body\n', { record: true });
+
+  // Two steps back: B's creation and the edit to A, in one move. The result
+  // names the last step moved and every file the jump touched.
+  const jumped = await store.undoSteps(2);
+  assert.equal(jumped.applied, true);
+  assert.equal(jumped.steps, 2);
+  assert.equal(jumped.label, 'edit A');
+  assert.deepEqual(jumped.paths, ['B.md', 'A.md']);
+  assert.equal(await store.readVein('A.md'), 'one\n');
+  assert.equal(exists(root, 'B.md'), false);
+  assert.equal((await store.historyState()).redo.length, 2);
+
+  // More steps than are there stops at the bottom of the stack.
+  const all = await store.redoSteps(10);
+  assert.equal(all.applied, true);
+  assert.equal(all.steps, 2);
+  assert.equal(await store.readVein('A.md'), 'two\n');
+  assert.equal(await store.readVein('B.md'), 'b body\n');
+  assert.equal((await store.historyState()).undo.length, 3);
+  assert.equal((await store.historyState()).redo.length, 0);
+
+  // An empty stack is a reported no-op, not an error.
+  const nothing = await store.redoSteps(3);
+  assert.equal(nothing.applied, false);
+  assert.equal(nothing.steps, 0);
+  assert.deepEqual(nothing.paths, []);
+});
+
 test('viewer state and the index cache stay out of the undo stack', async () => {
   const root = tempVault('bookkeeping');
   const store = await openVault(root);
@@ -405,7 +439,7 @@ test('the sample vault seeds with the CLI and is then fully drivable', async () 
   // Seeding comes first, so the sample's own identity is what gets written.
   const store = await openVault(root, { create: true, ensure: false });
   const written = await seedSampleVault(store);
-  assert.equal(written.length, 10, 'seven veins and three meta files');
+  assert.equal(written.length, 12, 'seven veins, four meta files and one node image');
   await store.ensureMeta();
 
   const info = await store.info();

@@ -177,6 +177,11 @@ Pure viewer state (which page was open, what was expanded, panel widths) is writ
 and deliberately stays out of the stack, as do log lines and the index cache. A save that changes
 nothing is not recorded.
 
+The undo and redo buttons show only the top of each stack, but **History log…** in the burger menu
+opens the whole thing as a list: time, change and file, newest first, with the current state marked.
+Picking any row jumps straight to it — the steps in between are undone or redone in one move — and
+the list can be narrowed to the file you have open.
+
 One documented asymmetry: deleting a vein records \`after: ""\`, because the window reads the stack with
 a non-optional \`after\` field. Undo brings the text back; redo re-creates the file empty.`,
   },

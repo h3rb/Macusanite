@@ -62,6 +62,7 @@ export function createChrome({ app, root }) {
       el('div', { class: 'menu-sep' }),
       menuItem(`Undo${canUndo ? ` — ${app.state.undoStack[0].label}` : ''}`, () => app.undo(), { disabled: !canUndo }),
       menuItem(`Redo${canRedo ? ` — ${app.state.redoStack[0].label}` : ''}`, () => app.redo(), { disabled: !canRedo }),
+      menuItem('History log…', () => app.openHistoryLog()),
       el('div', { class: 'menu-sep' }),
       menuItem('Search the vault…  (Ctrl+F)', () => app.openSearch()),
       menuItem('Settings…', () => app.openSettings()),

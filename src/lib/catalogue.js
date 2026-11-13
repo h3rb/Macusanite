@@ -254,6 +254,43 @@ export const COMMANDS = {
     ],
   },
 
+  'vault.export': {
+    group: 'Vault',
+    summary: 'Export the open vault to one portable compressed file.',
+    description:
+      'Write a single `.tar.gz` archive holding every vault file, including `.macusanite/history.json`, '
+      + 'so the vault with its undo/redo history can be shared and imported elsewhere. The archive '
+      + 'carries a manifest (`macusanite-archive.json`) listing every file. `.git` internals and '
+      + 'symlinks are left out, exactly as for `vault backup`.',
+    params: [
+      { name: 'path', type: 'string', required: true, positional: true, description: 'Where to write the archive, for example `notes.tar.gz`. Relative to the working directory.' },
+    ],
+    returns: '`{ path, files, bytes, history: { undo, redo } }`',
+    examples: ['macusanite vault export notes.tar.gz'],
+    external: true,
+    mcp: false,
+  },
+
+  'vault.import': {
+    group: 'Vault',
+    summary: 'Import a portable vault archive into the open vault.',
+    description:
+      'Read a `.tar.gz` archive written by `vault.export` and update the open vault with its files, '
+      + 'including its undo/redo history. Files the archive carries are overwritten in place; files '
+      + 'it does not carry are left alone. If existing files would change, the import refuses with an '
+      + '`overwrite-required` error naming them until `--overwrite` confirms it. A malformed archive, '
+      + 'an archive whose manifest does not match its contents, or one without history is refused '
+      + 'before anything is written.',
+    params: [
+      { name: 'path', type: 'string', required: true, positional: true, description: 'The archive to read, for example `notes.tar.gz`. Relative to the working directory.' },
+      { name: 'overwrite', type: 'boolean', description: 'Confirm overwriting existing files whose contents would change. Required when the import conflicts.' },
+    ],
+    returns: '`{ path, files, written, added, updated, unchanged, conflicts, history: { undo, redo } }`',
+    examples: ['macusanite vault import notes.tar.gz', 'macusanite vault import notes.tar.gz --overwrite'],
+    mutates: true,
+    mcp: false,
+  },
+
   'vault.autobackup': {
     group: 'Vault',
     summary: 'Arm this vault to upload itself after every write — window, CLI and MCP — or change where it uploads.',

@@ -10,6 +10,7 @@ import { renderMarkdown, renderMermaidIn, colorSwatch } from './markdown.js';
 import { parseFrontmatter } from '../lib/frontmatter.js';
 import { createWorldbuildPanel } from './worldbuildPanel.js';
 import { findMatches } from '../lib/search.js';
+import { sourceSectionRanges, lockedRangeAt } from '../lib/worldbuild.js';
 
 /** Never highlight inside these: our own marks, diagrams, swatches and chrome. */
 const SKIP_HITS = 'svg, mark, script, style, .color-swatch, .mermaid-caption';
@@ -56,30 +57,71 @@ export function createViewer({ app, root }) {
     title: 'Edit the markdown source directly',
     onclick: () => switchEditorMode('code'),
   });
-  const editorSplit = el('div', { class: 'editor-split' }, [
-    el('textarea', {
-      class: 'editor-textarea',
-      spellcheck: 'false',
-      oninput: (event) => {
-        app.setDraft(event.target.value);
-        scheduleVisualPreview();
-      },
-      onkeydown: (event) => {
-        if (event.key === 'Tab') {
+  // The source textarea draws its text through a highlight layer: the
+  // textarea itself is transparent, the layer underneath carries the same
+  // text with locked sections marked, so read-only source is visible at a
+  // glance while the textarea stays the only editing surface.
+  const sourceHighlight = el('pre', { class: 'editor-highlight', 'aria-hidden': 'true' });
+  const textareaEl = el('textarea', {
+    class: 'editor-textarea',
+    spellcheck: 'false',
+    onbeforeinput: (event) => {
+      const ta = event.target;
+      const hit = lockedRangeAt(lockedRanges, ta.selectionStart ?? 0, ta.selectionEnd ?? 0);
+      if (hit) {
+        event.preventDefault();
+        warnLocked();
+      }
+    },
+    oninput: (event) => {
+      const ta = event.target;
+      app.setDraft(ta.value);
+      // Anything the app restored away (an edit that slipped past
+      // beforeinput — IME, drop, find-and-replace) is put back on screen
+      // at once, so the locked text never looks changed.
+      if (app.state.draft !== ta.value) {
+        const caret = Math.min(ta.selectionStart ?? app.state.draft.length, app.state.draft.length);
+        ta.value = app.state.draft;
+        ta.setSelectionRange(caret, caret);
+        warnLocked();
+      }
+      paintLockedSource();
+      scheduleVisualPreview();
+    },
+    onkeydown: (event) => {
+      if (event.key === 'Tab') {
+        const ta = event.target;
+        if (lockedRangeAt(lockedRanges, ta.selectionStart ?? 0, ta.selectionEnd ?? 0)) {
           event.preventDefault();
-          const ta = event.target;
-          const start = ta.selectionStart;
-          ta.setRangeText('  ', start, ta.selectionEnd, 'end');
-          app.setDraft(ta.value);
+          warnLocked();
+          return;
         }
-      },
-    }),
-    preview,
-  ]);
+        event.preventDefault();
+        const start = ta.selectionStart;
+        ta.setRangeText('  ', start, ta.selectionEnd, 'end');
+        app.setDraft(ta.value);
+        if (app.state.draft !== ta.value) {
+          ta.value = app.state.draft;
+          paintLockedSource();
+        }
+      }
+    },
+    onscroll: () => syncHighlightScroll(),
+    ondrop: (event) => {
+      const pos = document.caretPositionFromPoint?.(event.clientX, event.clientY)?.offset;
+      if (typeof pos === 'number' && lockedRangeAt(lockedRanges, pos, pos)) {
+        event.preventDefault();
+        warnLocked();
+      }
+    },
+  });
+  const editorSource = el('div', { class: 'editor-source' }, [sourceHighlight, textareaEl]);
+  const editorSplit = el('div', { class: 'editor-split' }, [editorSource, preview]);
+  const editorHint = el('span', { class: 'editor-hint', text: 'Markdown source — Ctrl+S saves, Esc returns to the rendered view' });
   const editor = el('div', { class: 'editor-pane hidden' }, [
     el('div', { class: 'editor-toolbar' }, [
       el('div', { class: 'editor-mode-switch', role: 'group', 'aria-label': 'Editor mode' }, [visualBtn, codeBtn]),
-      el('span', { class: 'editor-hint', text: 'Markdown source — Ctrl+S saves, Esc returns to the rendered view' }),
+      editorHint,
       el('div', { class: 'spacer' }),
       el('button', { class: 'btn btn-ghost', type: 'button', text: 'Revert', onclick: () => app.revertDraft() }),
       el('button', { class: 'btn btn-primary', type: 'button', text: 'Save', onclick: () => app.saveCurrent() }),
@@ -91,7 +133,44 @@ export function createViewer({ app, root }) {
   root.append(head, body, world, editor, foot);
 
   const worldPanel = createWorldbuildPanel({ app, root: world });
-  const textarea = qs('.editor-textarea', editor);
+  const textarea = textareaEl;
+  let lockedRanges = [];
+  let lastLockWarn = 0;
+
+  function currentLockedRanges(text) {
+    const anchors = new Set(app.lockedContentAnchors?.(app.state.current?.path) ?? []);
+    if (!anchors.size) return [];
+    return sourceSectionRanges(text).filter((range) => anchors.has(range.anchor));
+  }
+
+  function warnLocked() {
+    const now = Date.now();
+    if (now - lastLockWarn < 1500) return;
+    lastLockWarn = now;
+    app.toast('That section is locked read-only — unlock it on the canvas to change it', 'warn', 2200);
+  }
+
+  function syncHighlightScroll() {
+    sourceHighlight.scrollTop = textarea.scrollTop;
+    sourceHighlight.scrollLeft = textarea.scrollLeft;
+  }
+
+  /** Paint the current source with its locked sections marked. */
+  function paintLockedSource() {
+    const text = textarea.value;
+    lockedRanges = currentLockedRanges(text);
+    clear(sourceHighlight);
+    let cursor = 0;
+    for (const range of lockedRanges) {
+      if (range.start > cursor) sourceHighlight.append(document.createTextNode(text.slice(cursor, range.start)));
+      const mark = el('span', { class: 'locked-source-mark', title: 'Locked section — read-only' });
+      mark.textContent = text.slice(range.start, range.end);
+      sourceHighlight.append(mark);
+      cursor = range.end;
+    }
+    if (cursor < text.length) sourceHighlight.append(document.createTextNode(text.slice(cursor)));
+    syncHighlightScroll();
+  }
   const emptyState = el('div', { class: 'empty-state' }, [
     el('h1', { text: 'Macusanite' }),
     el('p', { class: 'lede', text: 'Open a vault to begin — chambers on the left, veins in the middle, concepts on the right.' }),
@@ -258,6 +337,13 @@ export function createViewer({ app, root }) {
     const mode = app.state.ui.mode;
     const readOnly = Boolean(doc.readOnly);
     const inWorld = mode === 'world' && !readOnly;
+    const lockedCount = app.lockedContentAnchors?.(doc.path)?.length ?? 0;
+    editorHint.textContent = lockedCount
+      ? `${lockedCount} locked section${lockedCount === 1 ? '' : 's'} read-only — changes there are ignored`
+      : 'Markdown source — Ctrl+S saves, Esc returns to the rendered view';
+    editorHint.title = lockedCount
+      ? 'Locked group and node contents cannot be changed in the source. Links can still be added on the canvas.'
+      : '';
     editor.classList.toggle('hidden', mode !== 'edit' || readOnly);
     body.classList.toggle('hidden', (mode === 'edit' && !readOnly) || inWorld);
     world.classList.toggle('hidden', !inWorld);
@@ -332,6 +418,7 @@ export function createViewer({ app, root }) {
     );
 
     textarea.value = doc.text;
+    paintLockedSource();
     if (mode === 'edit') textarea.focus();
     if (inWorld) worldPanel.render(doc);
     await renderMermaidIn(body, rendered.mermaid, app.mermaid);
@@ -343,6 +430,7 @@ export function createViewer({ app, root }) {
   /** Called by the app after an edit is saved/reverted. */
   function syncEditor(text) {
     if (textarea.value !== text) textarea.value = text;
+    paintLockedSource();
     scheduleVisualPreview();
   }
 

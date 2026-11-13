@@ -97,11 +97,21 @@ export function safePath(rel) {
   return parts.join('/');
 }
 
-/** Meta file names are flat: no separators, no traversal. Mirrors `safe_meta_name`. */
+/**
+ * Meta file names are flat: no separators, no traversal — except one level
+ * of nesting for node images, which live under `node-images/`. Mirrors
+ * `safe_meta_name` on the Rust side.
+ */
 export function safeMetaName(name) {
   const trimmed = String(name ?? '').trim();
-  if (!trimmed || trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes('..')) {
+  if (!trimmed || trimmed.includes('\\') || trimmed.includes('..')) {
     throw new VaultPathError(`invalid meta file name: ${name}`);
+  }
+  if (trimmed.includes('/')) {
+    const [dir, file] = trimmed.split('/');
+    if (dir !== 'node-images' || !file || file.includes('/')) {
+      throw new VaultPathError(`invalid meta file name: ${name}`);
+    }
   }
   return trimmed;
 }
@@ -466,27 +476,60 @@ export function createVaultStore({ fs, root = '' }) {
     return { undo: [...stacks.undo].reverse().map(brief), redo: [...stacks.redo].reverse().map(brief) };
   }
 
-  async function undo() {
+  /**
+   * Walk one direction of the stacks, up to `count` steps: the history log
+   * jumps this way instead of stepping one at a time. It stops where the
+   * stack runs out, and only writes back when something actually moved.
+   */
+  async function moveSteps(kind, count) {
     const stacks = await refreshHistory();
-    const entry = stacks.undo.pop();
-    if (!entry) return { applied: false, stacks: await historyState() };
-    if (entry.before === null) await fs.remove(entry.path);
-    else await fs.write(entry.path, entry.before);
-    stacks.redo.push(entry);
+    const from = kind === 'undo' ? stacks.undo : stacks.redo;
+    const to = kind === 'undo' ? stacks.redo : stacks.undo;
+    const wanted = Math.max(0, Math.floor(Number(count) || 0));
+    const paths = [];
+    let last = null;
+    let moved = 0;
+    for (let i = 0; i < wanted; i += 1) {
+      const entry = from.pop();
+      if (!entry) break;
+      if (kind === 'undo') {
+        if (entry.before === null) await fs.remove(entry.path);
+        else await fs.write(entry.path, entry.before);
+      } else {
+        await fs.write(entry.path, entry.after ?? '');
+      }
+      to.push(entry);
+      moved += 1;
+      if (!paths.includes(entry.path)) paths.push(entry.path);
+      last = entry;
+    }
+    if (!last) return { applied: false, steps: 0, paths: [], stacks: await historyState() };
     await saveHistory();
     invalidate();
-    return { applied: true, path: entry.path, label: entry.label, stacks: await historyState() };
+    return {
+      applied: true, steps: moved, path: last.path, label: last.label, paths, stacks: await historyState(),
+    };
+  }
+
+  /**
+   * One step, or several at once. `steps` counts the entries moved;
+   * `paths` names every file they touched, `path`/`label` the last one —
+   * the single-step shape the window already renders.
+   */
+  async function undoSteps(count = 1) {
+    return moveSteps('undo', count);
+  }
+
+  async function redoSteps(count = 1) {
+    return moveSteps('redo', count);
+  }
+
+  async function undo() {
+    return undoSteps(1);
   }
 
   async function redo() {
-    const stacks = await refreshHistory();
-    const entry = stacks.redo.pop();
-    if (!entry) return { applied: false, stacks: await historyState() };
-    await fs.write(entry.path, entry.after ?? '');
-    stacks.undo.push(entry);
-    await saveHistory();
-    invalidate();
-    return { applied: true, path: entry.path, label: entry.label, stacks: await historyState() };
+    return redoSteps(1);
   }
 
   /* ── the document index and its cache ────────────────────────────────── */
@@ -817,6 +860,34 @@ export function createVaultStore({ fs, root = '' }) {
     return { path: `${META_DIR}/${INDEX_FILE}`, dropped: true };
   }
 
+  /**
+   * Read any vault file as text, without interpreting it. Archive import and
+   * export use this for meta files and other non-vein content.
+   */
+  async function readFile(rel) {
+    const path = safePath(rel);
+    return fs.read(path);
+  }
+
+  /**
+   * Write any vault file as text, without recording history. Import uses this
+   * to restore an exported vault wholesale, history included.
+   */
+  async function writeFile(rel, contents) {
+    const path = safePath(rel);
+    const text = String(contents ?? '');
+    await fs.write(path, text);
+    invalidate();
+    return { path, bytes: text.length };
+  }
+
+  async function removeFile(rel) {
+    const path = safePath(rel);
+    await fs.remove(path);
+    invalidate();
+    return { path };
+  }
+
   return {
     root,
     // identity and metadata
@@ -872,8 +943,13 @@ export function createVaultStore({ fs, root = '' }) {
     historyState,
     undo,
     redo,
+    undoSteps,
+    redoSteps,
     // helpers worth sharing
     listFiles,
+    readFile,
+    writeFile,
+    removeFile,
     safePath,
     safeMetaName,
     /** Wiki links of one vein, as data. */

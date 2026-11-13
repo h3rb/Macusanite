@@ -387,6 +387,602 @@ export function setNodeField(fields = {}, type, anchor, field, value) {
 
 const RELATION_BY_ID = indexById(RELATION_KINDS);
 
+/* --------------------------------------------------------- canvas history -- */
+
+/** Free-floating canvas annotations, cleaned for storage and snapshots. */
+export const ANNOTATION_MAX_TEXT = 1000;
+
+export function cleanAnnotations(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [id, value] of Object.entries(raw)) {
+    if (!id || !value || typeof value !== 'object') continue;
+    const text = String(value.text ?? '').trim().slice(0, ANNOTATION_MAX_TEXT);
+    if (!text || !Number.isFinite(value.x) || !Number.isFinite(value.y)) continue;
+    out[id] = { id, x: Math.round(value.x), y: Math.round(value.y), text };
+  }
+  return out;
+}
+
+export function makeAnnotationId(annotations = {}) {
+  let id = '';
+  do {
+    id = `ann-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  } while (annotations[id]);
+  return id;
+}
+
+/**
+ * Node images live as files under `.macusanite/node-images/`, referenced by
+ * vault-relative path — never as data URLs in the record, so a canvas
+ * snapshot carries a short path instead of duplicating the image bytes.
+ * Older records may still hold a data URL; `isInlineImage` tells them apart.
+ */
+export const NODE_IMAGES_DIR = '.macusanite/node-images';
+
+/** A legacy in-record data URL, as opposed to a file reference. */
+export function isInlineImage(ref) {
+  return typeof ref === 'string' && ref.startsWith('data:image/');
+}
+
+/**
+ * Node-graph images are stored downscaled: they only ever show as a small
+ * card icon, so the longest side is capped and the result is re-encoded
+ * with a lossy codec. Images embedded in markdown prose are a different
+ * thing entirely — those are the writer's own files and are never touched.
+ */
+export const NODE_IMAGE_MAX_SIDE = 320;
+export const NODE_IMAGE_QUALITY = 0.8;
+
+/**
+ * The downscaled pixel size for a node image: the longest side shrinks to
+ * at most `maxSide`, never upscaled. Returns `[width, height]`.
+ */
+export function nodeImageSize(naturalWidth, naturalHeight, maxSide = NODE_IMAGE_MAX_SIDE) {
+  const w = Math.max(1, Math.floor(Number(naturalWidth) || 0));
+  const h = Math.max(1, Math.floor(Number(naturalHeight) || 0));
+  const side = Math.max(1, Math.floor(Number(maxSide) || NODE_IMAGE_MAX_SIDE));
+  const scale = Math.min(1, side / Math.max(w, h));
+  return [Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale))];
+}
+
+/** The vault-relative reference for an image file name. */
+export function nodeImageRef(fileName) {
+  return `${NODE_IMAGES_DIR}/${fileName}`;
+}
+
+/**
+ * The `.macusanite`-relative meta name for an image reference, or null when
+ * the reference is not a node-image file (a legacy inline data URL, say).
+ */
+export function nodeImageMetaName(ref) {
+  if (!ref || isInlineImage(ref)) return null;
+  const clean = String(ref).replace(/\\/g, '/');
+  if (clean.startsWith(`${NODE_IMAGES_DIR}/`)) return clean.slice('.macusanite/'.length);
+  if (clean.startsWith('.macusanite/')) return clean.slice('.macusanite/'.length);
+  return null;
+}
+
+/**
+ * Anchors whose markdown content is locked read-only, whether by a node
+ * lock or by sitting in a locked group (through nesting, exactly as the
+ * canvas treats it). Relationships are not content: links to and from a
+ * locked card remain possible, and their bonds live in the record rather
+ * than in the prose.
+ */
+export function lockedContentAnchors(groups = {}, nodeLocked = {}) {
+  const out = new Set();
+  for (const [anchor, locked] of Object.entries(nodeLocked ?? {})) {
+    if (anchor && locked) out.add(anchor);
+  }
+  const all = groups ?? {};
+  const parentOf = new Map();
+  for (const [id, group] of Object.entries(all)) {
+    for (const child of Array.isArray(group?.children) ? group.children : []) {
+      if (child && !parentOf.has(child)) parentOf.set(child, id);
+    }
+  }
+  const isLocked = (id) => {
+    const seen = new Set();
+    let current = id;
+    while (current && !seen.has(current)) {
+      if (all[current]?.locked) return true;
+      seen.add(current);
+      current = parentOf.get(current) ?? null;
+    }
+    return false;
+  };
+  const collect = (id, seen) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const group = all[id];
+    if (!group) return;
+    for (const anchor of Array.isArray(group.members) ? group.members : []) {
+      if (anchor) out.add(anchor);
+    }
+    for (const child of Array.isArray(group.children) ? group.children : []) collect(child, seen);
+  };
+  for (const id of Object.keys(all)) {
+    if (isLocked(id)) collect(id, new Set());
+  }
+  return out;
+}
+
+/**
+ * Where each note's source sits in a vein, in full-text lines and offsets.
+ * Scanning matches `parseNotes` — front matter and fences aside, the same
+ * de-duplicated anchors — so a range always names the heading and the prose
+ * that belongs to it, up to the next heading.
+ */
+export function sourceSectionRanges(text) {
+  const src = String(text ?? '');
+  const { body, raw, present } = parseFrontmatter(src);
+  const lines = src.split('\n');
+  const lineStarts = [];
+  let cursor = 0;
+  for (const line of lines) {
+    lineStarts.push(cursor);
+    cursor += line.length + 1;
+  }
+  const bodyLines = body.split('\n');
+  const baseLine = present ? Math.max(0, raw.split('\n').length - 1) : 0;
+  const seen = new Map();
+  const ranges = [];
+  let inFence = false;
+  let fenceMarker = '';
+  bodyLines.forEach((line, index) => {
+    const fence = FENCE_RE.exec(line);
+    if (fence) {
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = fence[1][0];
+      } else if (fence[1][0] === fenceMarker) {
+        inFence = false;
+      }
+      return;
+    }
+    if (inFence) return;
+    const heading = HEADING_RE.exec(line);
+    if (!heading) return;
+    const title = heading[2].trim();
+    const base = slugify(title) || `section-${ranges.length + 1}`;
+    const count = seen.get(base) ?? 0;
+    seen.set(base, count + 1);
+    const startLine = baseLine + index;
+    ranges.push({
+      anchor: count === 0 ? base : `${base}-${count}`,
+      level: heading[1].length,
+      title,
+      startLine,
+      endLine: lines.length,
+      start: lineStarts[startLine] ?? src.length,
+      end: src.length,
+    });
+  });
+  for (let i = 0; i < ranges.length - 1; i += 1) {
+    ranges[i].endLine = ranges[i + 1].startLine;
+    ranges[i].end = ranges[i + 1].start;
+  }
+  return ranges;
+}
+
+/**
+ * The locked range an edit would touch, if any. A caret counts as inside
+ * when it sits at or after the range start and before its end; a selection
+ * counts when it overlaps the range at all.
+ */
+export function lockedRangeAt(ranges, start, end) {
+  const s = Math.min(Number(start) || 0, Number(end) || 0);
+  const e = Math.max(Number(start) || 0, Number(end) || 0);
+  for (const range of ranges ?? []) {
+    if (s === e) {
+      if (s >= range.start && s < range.end) return range;
+    } else if (s < range.end && range.start < e) {
+      return range;
+    }
+  }
+  return null;
+}
+
+/**
+ * Keep locked sections read-only in the source editor. Ordinary edits come
+ * back with the protected source restored from `baseText`, so outside text
+ * still saves; structural escapes — a locked heading renamed or deleted, a
+ * heading inserted or deleted inside locked prose, a locked section moved —
+ * are refused whole rather than guessed at.
+ *
+ * @returns {{ok: boolean, text: string, enforced: boolean, blocked: string[]}}
+ */
+export function enforceLockedSource(baseText, draftText, protectedAnchors) {
+  const anchors = protectedAnchors instanceof Set ? protectedAnchors : new Set(protectedAnchors ?? []);
+  const base = String(baseText ?? '');
+  const draft = String(draftText ?? '');
+  if (!anchors.size) return { ok: true, text: draft, enforced: false, blocked: [] };
+  const baseRanges = sourceSectionRanges(base);
+  const draftRanges = sourceSectionRanges(draft);
+  const baseByAnchor = new Map(baseRanges.map((range) => [range.anchor, range]));
+  const draftByAnchor = new Map(draftRanges.map((range) => [range.anchor, range]));
+  const protectedBase = baseRanges.filter((range) => anchors.has(range.anchor));
+  if (!protectedBase.length) return { ok: true, text: draft, enforced: false, blocked: [] };
+  const blocked = new Set();
+  for (const range of protectedBase) {
+    if (!draftByAnchor.has(range.anchor)) blocked.add(range.anchor);
+  }
+  const insideProtected = (startLine) => protectedBase.some(
+    (range) => range.startLine < startLine && startLine < range.endLine,
+  );
+  for (const range of draftRanges) {
+    if (!baseByAnchor.has(range.anchor) && insideProtected(range.startLine)) blocked.add(range.anchor);
+  }
+  for (const range of baseRanges) {
+    if (!draftByAnchor.has(range.anchor) && insideProtected(range.startLine)) blocked.add(range.anchor);
+  }
+  const baseOrder = protectedBase.map((range) => range.anchor);
+  const draftOrder = draftRanges.filter((range) => anchors.has(range.anchor)).map((range) => range.anchor);
+  if (baseOrder.join('\0') !== draftOrder.join('\0')) {
+    for (const anchor of draftOrder) blocked.add(anchor);
+  }
+  if (blocked.size) return { ok: false, text: draft, enforced: false, blocked: [...blocked] };
+  let text = draft;
+  const replacements = protectedBase
+    .map((range) => ({ draft: draftByAnchor.get(range.anchor), base: range }))
+    .filter((entry) => entry.draft)
+    .sort((a, b) => b.draft.start - a.draft.start);
+  for (const entry of replacements) {
+    text = text.slice(0, entry.draft.start)
+      + base.slice(entry.base.start, entry.base.end)
+      + text.slice(entry.draft.end);
+  }
+  return { ok: true, text, enforced: text !== draft, blocked: [] };
+}
+
+/**
+ * Card positions as a snapshot carries them: whole pixels, exactly as
+ * `saveWorldLayout` persists them. A drag ending at 2349.199… snapshots as
+ * 2349, so one undo restores the integer that was actually saved.
+ */
+export function cleanPositions(positions) {
+  const out = {};
+  for (const [anchor, pos] of Object.entries(positions ?? {})) {
+    if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+      out[anchor] = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    }
+  }
+  return out;
+}
+
+/**
+ * The canvas state an undo step puts back, as a comparable string: every
+ * slice of the vein record the canvas itself owns — positions, groups,
+ * relationships, folds, node types, structured fields, node colours, node
+ * images, annotations, pins, node content locks and the camera. The markdown — titles, prose,
+ * links — is edited by the vein's own undo, so it never appears here.
+ */
+/** Card display modes: `full` (the default, stored nowhere), `compact`, `thumbnail`. */
+export const CARD_MODES = ['full', 'compact', 'thumbnail'];
+
+export function cleanCardModes(modes = {}) {
+  const out = {};
+  for (const [anchor, mode] of Object.entries(modes ?? {})) {
+    if (anchor && CARD_MODES.includes(mode) && mode !== 'full') out[anchor] = mode;
+  }
+  return out;
+}
+
+export function cleanCollapsedGroups(collapsed = {}) {
+  const out = {};
+  for (const [id, value] of Object.entries(collapsed ?? {})) {
+    if (id && value === true) out[id] = true;
+  }
+  return out;
+}
+
+export function canvasSnapshot(state = {}) {
+  return JSON.stringify({
+    positions: cleanPositions(state.positions),
+    groups: state.groups ?? {},
+    relations: state.relations ?? {},
+    folded: state.folded ?? {},
+    types: state.types ?? {},
+    fields: state.fields ?? {},
+    colors: state.colors ?? {},
+    images: state.images ?? {},
+    pinned: state.pinned ?? {},
+    locked: state.locked ?? {},
+    cardModes: cleanCardModes(state.cardModes),
+    collapsedGroups: cleanCollapsedGroups(state.collapsedGroups),
+    annotations: cleanAnnotations(state.annotations),
+    view: state.view ?? { x: 0, y: 0, s: 1 },
+  });
+}
+
+/**
+ * A snapshot cleaned of every reference to an anchor the vein has no card
+ * for: its position, fold, type, fields and colour, bonds touching it, and
+ * group memberships — a group then holding fewer than two cards (its
+ * nested groups counted) dissolves with its bonds, the same cleanup a
+ * delete gives the vein record. This keeps an undo from bringing back
+ * bonds, folds, types, fields or colours for a card that is gone.
+ *
+ * Snapshots written before types, fields and colours existed carry no such
+ * keys, and gain none here: whether one restores them is the caller's
+ * business.
+ */
+/**
+ * The groups that survive a membership filter: a group lives while it holds
+ * at least two members, counting recovered children, so a parent emptied of
+ * its own cards can still live on its nested groups. Returns the surviving
+ * groups and the ids that dissolved.
+ */
+function pruneGroups(all, isLive) {
+  const effectiveSize = (id, seen) => {
+    const group = all[id];
+    if (!group || seen.has(id)) return 0;
+    seen.add(id);
+    let size = (group.members ?? []).filter(isLive).length;
+    for (const child of group.children ?? []) size += effectiveSize(child, seen);
+    return size;
+  };
+  const surviving = new Set(Object.keys(all).filter((id) => effectiveSize(id, new Set()) >= 2));
+  const groups = {};
+  for (const [id, group] of Object.entries(all)) {
+    if (!surviving.has(id)) continue;
+    groups[id] = {
+      ...group,
+      members: (group.members ?? []).filter(isLive),
+      children: (group.children ?? []).filter((child) => surviving.has(child)),
+    };
+  }
+  return { groups, dissolved: Object.keys(all).filter((id) => !surviving.has(id)) };
+}
+
+/**
+ * A deleted note leaves its group: everyone but it stays, and a group it
+ * emptied below two cards dissolves — counting nested groups, so a parent
+ * can live on its children's cards.
+ */
+export function dropAnchorFromGroups(groups = {}, anchor) {
+  return pruneGroups(groups ?? {}, (member) => member !== anchor);
+}
+
+export function pruneSnapshotAnchors(snap, live) {
+  const { groups } = pruneGroups(snap.groups ?? {}, (anchor) => live.has(anchor));
+  const relations = {};
+  for (const [key, kind] of Object.entries(snap.relations ?? {})) {
+    const [from, to] = key.split('->');
+    const known = (end) => live.has(end) || (end.startsWith('group:') && surviving.has(end.slice(6)));
+    if (from && to && known(from) && known(to)) relations[key] = kind;
+  }
+  const anchors = (obj) => Object.fromEntries(
+    Object.entries(obj ?? {}).filter(([anchor]) => live.has(anchor)),
+  );
+  return {
+    ...snap,
+    positions: anchors(snap.positions),
+    folded: anchors(snap.folded),
+    groups,
+    relations,
+    ...(snap.types ? { types: anchors(snap.types) } : {}),
+    ...(snap.fields ? { fields: anchors(snap.fields) } : {}),
+    ...(snap.colors ? { colors: anchors(snap.colors) } : {}),
+    ...(snap.images ? { images: anchors(snap.images) } : {}),
+    ...(snap.pinned ? { pinned: anchors(snap.pinned) } : {}),
+    ...(snap.locked ? { locked: anchors(snap.locked) } : {}),
+    ...(snap.cardModes ? { cardModes: anchors(snap.cardModes) } : {}),
+    ...(snap.annotations ? { annotations: cleanAnnotations(snap.annotations) } : {}),
+  };
+}
+
+/**
+ * A view as it is kept and restored: a finite origin with its zoom clamped
+ * to the canvas limits, a missing zoom meaning 1:1. Falls back when the
+ * stored view is unusable, so a step can keep the camera it found.
+ */
+export function cleanView(view, fallback = null) {
+  if (!view || !Number.isFinite(view.x) || !Number.isFinite(view.y)) return fallback;
+  const s = Number.isFinite(view.s) ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.s)) : 1;
+  return { x: view.x, y: view.y, s };
+}
+
+/**
+ * A snapshot put back as slices: parsed when it arrives as a string, and
+ * pruned of references to anchors with no card on screen. Types, fields
+ * and colours come with the restore — snapshots written before they
+ * existed keep the current ones instead. The view comes back when the
+ * snapshot has a usable one, and stays the current one otherwise.
+ *
+ * @returns {object|null} the slices, or null for a snapshot that is not one
+ */
+export function restoreSnapshot(snap, live, current = {}) {
+  let saved = snap;
+  if (typeof saved === 'string') {
+    try {
+      saved = JSON.parse(saved);
+    } catch {
+      return null;
+    }
+  }
+  if (!saved || typeof saved !== 'object') return null;
+  const pruned = pruneSnapshotAnchors(saved, live);
+  return {
+    positions: cleanPositions(pruned.positions),
+    groups: pruned.groups ?? {},
+    relations: pruned.relations ?? {},
+    folded: pruned.folded ?? {},
+    types: pruned.types ?? current.types ?? {},
+    fields: pruned.fields ?? current.fields ?? {},
+    colors: pruned.colors ?? current.colors ?? {},
+    images: pruned.images ?? current.images ?? {},
+    pinned: pruned.pinned ?? current.pinned ?? {},
+    locked: pruned.locked ?? current.locked ?? {},
+    cardModes: cleanCardModes(pruned.cardModes ?? current.cardModes),
+    collapsedGroups: cleanCollapsedGroups(pruned.collapsedGroups ?? current.collapsedGroups),
+    annotations: pruned.annotations ?? cleanAnnotations(current.annotations),
+    view: cleanView(pruned.view, current.view ?? null),
+  };
+}
+
+/**
+ * The patch an undo step writes into the vein record, as one piece so a
+ * step is never half applied: positions, groups, relationships and folds
+ * always; types, fields and colours only when the step carries them; the
+ * camera only when the step has a usable view.
+ */
+export function canvasRecordPatch({ positions = {}, groups = {}, relations = {}, folded = {}, types = null, fields = null, colors = null, images = null, pinned = null, locked = null, cardModes = null, collapsedGroups = null, annotations = null, view = null } = {}) {
+  const patch = { positions, groups, relations, folded };
+  if (types) patch.types = types;
+  if (fields) patch.fields = fields;
+  if (colors) patch.colors = colors;
+  if (images) patch.images = images;
+  if (pinned) patch.pinned = pinned;
+  if (locked) patch.locked = locked;
+  if (cardModes) patch.cardModes = cleanCardModes(cardModes);
+  if (collapsedGroups) patch.collapsedGroups = cleanCollapsedGroups(collapsedGroups);
+  if (annotations) patch.annotations = cleanAnnotations(annotations);
+  const cleaned = cleanView(view);
+  if (cleaned) patch.view = cleaned;
+  return patch;
+}
+
+/** The name a history step wears when nothing nicer was chosen for it. */
+export const DEFAULT_STEP_NAME = 'Canvas change';
+
+/**
+ * The in-memory key for a vein's canvas history. The vault path is part of
+ * it, so the same vein path in two vaults cannot share an undo stack.
+ */
+export function historyKey(vaultPath, veinPath) {
+  return `${vaultPath ?? ''}\0${veinPath ?? ''}`;
+}
+
+/**
+ * One step of a canvas stack: the name of the change, and the snapshot it
+ * put back. Stacks persisted before names existed hold bare snapshot
+ * strings, which take the default name on the way in.
+ */
+export function normalizeHistoryEntry(entry) {
+  if (typeof entry === 'string') return { name: DEFAULT_STEP_NAME, snap: entry };
+  if (entry && typeof entry.snap === 'string') {
+    const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name : DEFAULT_STEP_NAME;
+    return { name, snap: entry.snap };
+  }
+  return null;
+}
+
+/** A vein's stacks as the panel and the record keep them: entries only. */
+export function cleanHistoryStack(saved = {}, limit = Infinity) {
+  const clean = (snaps) => (Array.isArray(snaps)
+    ? snaps.map(normalizeHistoryEntry).filter(Boolean).slice(-limit)
+    : []);
+  return { past: clean(saved?.past), future: clean(saved?.future) };
+}
+
+/**
+ * Record one change on a stack, unless it left the canvas exactly as it
+ * was: a new branch, so whatever could have been redone is gone, and the
+ * oldest step gives way past the limit. Returns whether a step landed.
+ */
+export function pushHistoryStep(stack, currentSnap, before, name = DEFAULT_STEP_NAME, limit = Infinity) {
+  if (before === currentSnap) return false;
+  stack.past.push({ name, snap: before });
+  if (stack.past.length > limit) stack.past.shift();
+  stack.future.length = 0;
+  return true;
+}
+
+/**
+ * Rewrite every stored snapshot the way the vein record was just rewritten:
+ * a rename moves entries onto the new name. Each step keeps its name.
+ */
+export function rewriteHistoryStack(stack, edit) {
+  const map = (entry) => ({ name: entry.name, snap: JSON.stringify(edit(JSON.parse(entry.snap))) });
+  stack.past = stack.past.map(map);
+  stack.future = stack.future.map(map);
+  return stack;
+}
+
+/**
+ * Jump through a stack: undo or redo `count` steps at once, landing on one
+ * state. The steps leapfrogged land on the opposite stack, names intact, so
+ * single-stepping works from either end afterwards.
+ *
+ * @returns {{past, future, restore}|null} the new stacks and the snapshot
+ *   that puts the verdict state back — or null when there is nothing to jump
+ */
+export function historyJump(stack, kind, count, currentSnap) {
+  const past = stack?.past ?? [];
+  const future = stack?.future ?? [];
+  if (!Number.isInteger(count) || count < 1) return null;
+  // Walk the leapfrogged steps in the order single-stepping would, carrying
+  // the live state with them: each step's entry keeps its own name, and the
+  // state it must put back is the one the previous step left behind.
+  if (kind === 'undo') {
+    if (count > past.length) return null;
+    const cut = past.length - count;
+    const undone = past.slice(cut);
+    const entersFuture = [];
+    let snap = currentSnap;
+    for (let i = undone.length - 1; i >= 0; i -= 1) {
+      entersFuture.push({ name: undone[i].name, snap });
+      snap = undone[i].snap;
+    }
+    return { past: past.slice(0, cut), future: [...future, ...entersFuture], restore: undone[0].snap };
+  }
+  if (kind === 'redo') {
+    if (count > future.length) return null;
+    const cut = future.length - count;
+    const redone = future.slice(cut);
+    const entersPast = [];
+    let snap = currentSnap;
+    for (let i = redone.length - 1; i >= 0; i -= 1) {
+      entersPast.push({ name: redone[i].name, snap });
+      snap = redone[i].snap;
+    }
+    return { past: [...past, ...entersPast], future: future.slice(0, cut), restore: redone[0].snap };
+  }
+  return null;
+}
+
+/**
+ * A rename inside a stored snapshot: positions, folds, types, fields and
+ * group members follow the new name, as they do in the vein record, while
+ * bonds naming the old name drop, as the record's do.
+ */
+export function renameAnchorIn(snap, before, after) {
+  const move = (obj) => {
+    const next = { ...(obj ?? {}) };
+    if (before in next) {
+      next[after] = next[before];
+      delete next[before];
+    }
+    return next;
+  };
+  const relations = {};
+  for (const [key, kind] of Object.entries(snap.relations ?? {})) {
+    const [from, to] = key.split('->');
+    if (from === before || to === before) continue;
+    relations[key] = kind;
+  }
+  const groups = {};
+  for (const [id, group] of Object.entries(snap.groups ?? {})) {
+    groups[id] = { ...group, members: (group.members ?? []).map((anchor) => (anchor === before ? after : anchor)) };
+  }
+  return {
+    ...snap,
+    positions: move(snap.positions),
+    folded: move(snap.folded),
+    cardModes: move(snap.cardModes),
+    relations,
+    groups,
+    ...(snap.types ? { types: move(snap.types) } : {}),
+    ...(snap.fields ? { fields: move(snap.fields) } : {}),
+    ...(snap.colors ? { colors: move(snap.colors) } : {}),
+    ...(snap.images ? { images: move(snap.images) } : {}),
+    ...(snap.pinned ? { pinned: move(snap.pinned) } : {}),
+    ...(snap.locked ? { locked: move(snap.locked) } : {}),
+  };
+}
+
 /** The kind's record, or null for anything not on the list. */
 export function relationKind(kind) {
   return findById(RELATION_BY_ID, kind);
@@ -613,6 +1209,248 @@ export function hierarchyEdges(model = {}) {
   return edges;
 }
 
+/**
+ * Anchors of the connected component the seeds sit in, through prose links
+ * and asserted bonds (the outline spine is not a connection). The seeds
+ * themselves are included.
+ */
+export function connectedAnchors(model = {}, relations = {}, seeds = []) {
+  const notes = model.notes ?? [];
+  const adjacency = new Map(notes.map((note) => [note.anchor, new Set()]));
+  const link = (a, b) => {
+    if (adjacency.has(a) && adjacency.has(b)) {
+      adjacency.get(a).add(b);
+      adjacency.get(b).add(a);
+    }
+  };
+  // noteEdges name ends by index, bondEdges by anchor — either resolves.
+  const anchorOf = (end) => (typeof end === 'number' ? notes[end]?.anchor : end);
+  for (const edge of [...noteEdges(model, relations), ...bondEdges(model, relations)]) {
+    const from = anchorOf(edge.from);
+    const to = anchorOf(edge.to);
+    if (from && to) link(from, to);
+  }
+  const out = new Set();
+  const queue = [...new Set(seeds ?? [])].filter((anchor) => adjacency.has(anchor));
+  while (queue.length) {
+    const anchor = queue.pop();
+    if (out.has(anchor)) continue;
+    out.add(anchor);
+    for (const next of adjacency.get(anchor) ?? []) {
+      if (!out.has(next)) queue.push(next);
+    }
+  }
+  return out;
+}
+
+/**
+ * Anchors above (`'ancestors'`) or below (`'descendants'`) the seeds in the
+ * heading outline. The seeds themselves are not included.
+ */
+export function lineageAnchors(model = {}, seeds = [], direction = 'descendants') {
+  const notes = model.notes ?? [];
+  const children = new Map(notes.map((note) => [note.anchor, new Set()]));
+  const parents = new Map(notes.map((note) => [note.anchor, new Set()]));
+  for (const edge of hierarchyEdges(model)) {
+    const from = notes[edge.from]?.anchor;
+    const to = notes[edge.to]?.anchor;
+    if (from && to) {
+      children.get(from).add(to);
+      parents.get(to).add(from);
+    }
+  }
+  const graph = direction === 'ancestors' ? parents : children;
+  const seedSet = new Set(seeds ?? []);
+  const out = new Set();
+  const queue = [...seedSet].filter((anchor) => graph.has(anchor));
+  while (queue.length) {
+    const anchor = queue.pop();
+    for (const next of graph.get(anchor) ?? []) {
+      if (seedSet.has(next) || out.has(next)) continue;
+      out.add(next);
+      queue.push(next);
+    }
+  }
+  return out;
+}
+
+/**
+ * Anchors whose rect intersects `box` — the marquee hit test. Rects and the
+ * box share canvas coordinates; touching an edge counts.
+ */
+export function anchorsInRect(rects = [], box = {}) {
+  const out = new Set();
+  if (!box || !Number.isFinite(box.x) || !Number.isFinite(box.y)
+    || !Number.isFinite(box.width) || !Number.isFinite(box.height)) return out;
+  const x2 = box.x + box.width;
+  const y2 = box.y + box.height;
+  for (const rect of rects ?? []) {
+    if (!rect?.anchor || !Number.isFinite(rect.x) || !Number.isFinite(rect.y)
+      || !Number.isFinite(rect.width) || !Number.isFinite(rect.height)) continue;
+    if (rect.x <= x2 && rect.x + rect.width >= box.x && rect.y <= y2 && rect.y + rect.height >= box.y) {
+      out.add(rect.anchor);
+    }
+  }
+  return out;
+}
+
+/**
+ * Relationship depth for each anchor in `anchors`: the longest directed
+ * path through prose links and bonds inside the set. Roots (no incoming
+ * bond) sit at depth 0; cycles are bounded rather than infinite.
+ */
+export function relationshipDepths(model = {}, relations = {}, anchors = []) {
+  const notes = model.notes ?? [];
+  const target = new Set(anchors ?? []);
+  const edges = [];
+  const anchorOf = (end) => (typeof end === 'number' ? notes[end]?.anchor : end);
+  for (const edge of [...noteEdges(model, relations), ...bondEdges(model, relations)]) {
+    const from = anchorOf(edge.from);
+    const to = anchorOf(edge.to);
+    if (target.has(from) && target.has(to) && from !== to) edges.push([from, to]);
+  }
+  const indegree = new Map([...target].map((anchor) => [anchor, 0]));
+  for (const [, to] of edges) indegree.set(to, indegree.get(to) + 1);
+  const depth = new Map();
+  for (const anchor of target) {
+    if (indegree.get(anchor) === 0) depth.set(anchor, 0);
+  }
+  if (!depth.size && target.size) {
+    const indexOf = new Map(notes.map((note, i) => [note.anchor, i]));
+    depth.set([...target].sort((a, b) => (indexOf.get(a) ?? 0) - (indexOf.get(b) ?? 0))[0], 0);
+  }
+  for (let pass = 0; pass < target.size; pass += 1) {
+    let changed = false;
+    for (const [from, to] of edges) {
+      if (!depth.has(from)) continue;
+      const next = depth.get(from) + 1;
+      if (!depth.has(to) || next > depth.get(to)) {
+        depth.set(to, next);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  for (const anchor of target) {
+    if (!depth.has(anchor)) depth.set(anchor, 0);
+  }
+  return depth;
+}
+
+/**
+ * Search one vein's cards across titles, types, fields, colours and group
+ * names. Every term must land somewhere on the card (terms are ANDed,
+ * fields ORed). Returns matches in card order, title matches first, each
+ * with the kinds of fields it matched (`title`, `type`, `field`,
+ * `colour`, `group`).
+ */
+export function canvasSearch(model = {}, record = {}, query = '') {
+  const terms = String(query ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+  const notes = model.notes ?? [];
+  const types = record.types ?? {};
+  const fields = record.fields ?? {};
+  const colors = record.colors ?? {};
+  const groups = record.groups ?? {};
+  const groupNames = new Map();
+  const collect = (group, seen) => {
+    if (!group || seen.has(group.id)) return;
+    seen.add(group.id);
+    const name = group.name || 'Group';
+    for (const anchor of Array.isArray(group.members) ? group.members : []) {
+      const list = groupNames.get(anchor) ?? [];
+      if (!list.includes(name)) list.push(name);
+      groupNames.set(anchor, list);
+    }
+    for (const child of Array.isArray(group.children) ? group.children : []) collect(groups[child], seen);
+  };
+  for (const group of Object.values(groups)) collect(group, new Set());
+  const matches = [];
+  notes.forEach((note, index) => {
+    const type = nodeTypeOf(types, note.anchor);
+    const stored = fields[note.anchor] ?? {};
+    const fieldTexts = [];
+    for (const field of nodeFields(type.id)) {
+      const value = stored[field.id];
+      if (value !== undefined && value !== null && String(value).trim() !== '') {
+        fieldTexts.push(`${field.label} ${value}`);
+      }
+    }
+    for (const value of Object.values(stored)) {
+      if (String(value ?? '').trim() !== '') fieldTexts.push(String(value));
+    }
+    const searchable = [
+      { kind: 'title', text: note.title ?? '' },
+      { kind: 'type', text: `${type.label} ${type.id}` },
+      ...fieldTexts.map((text) => ({ kind: 'field', text })),
+      ...[colors[note.anchor], type.color].filter(Boolean).map((color) => ({ kind: 'colour', text: String(color) })),
+      ...(groupNames.get(note.anchor) ?? []).map((name) => ({ kind: 'group', text: name })),
+    ].map((entry) => ({ kind: entry.kind, text: entry.text.toLowerCase() }));
+    if (!terms.every((term) => searchable.some((entry) => entry.text.includes(term)))) return;
+    const reasons = [];
+    for (const term of terms) {
+      const hit = searchable.find((entry) => entry.text.includes(term));
+      if (hit && !reasons.includes(hit.kind)) reasons.push(hit.kind);
+    }
+    matches.push({ anchor: note.anchor, index, title: note.title || note.anchor, reasons });
+  });
+  return matches.sort((a, b) => (a.reasons.includes('title') ? 0 : 1) - (b.reasons.includes('title') ? 0 : 1) || a.index - b.index);
+}
+
+/**
+ * Every connector the canvas draws, named the same way: a kind, two
+ * endpoints (note anchors or `group:` endpoints), and the asserted
+ * relationship when there is one. The outline spine is a connector too,
+ * so selection and tracing see exactly what is on screen.
+ */
+export function connectorList(model = {}, groups = {}, relations = {}) {
+  const notes = model.notes ?? [];
+  const anchorOf = (index) => notes[index]?.anchor ?? null;
+  return [
+    ...hierarchyEdges(model).map((edge) => ({ from: anchorOf(edge.from), to: anchorOf(edge.to), kind: 'contains' })),
+    ...noteEdges(model, relations).map((edge) => ({ from: anchorOf(edge.from), to: anchorOf(edge.to), kind: edge.kind, relation: edge.relation })),
+    ...bondEdges(model, relations).map((edge) => ({ from: edge.from, to: edge.to, kind: 'bond', relation: edge.relation })),
+    ...groupRelationEdges(model, groups, relations).map((edge) => ({ from: edge.from, to: edge.to, kind: 'group', relation: edge.relation })),
+  ].filter((edge) => edge.from && edge.to && edge.from !== edge.to);
+}
+
+/** A connector's stable identity, for selection and routing overrides. */
+export function connectorKey(edge) {
+  return `${edge?.kind ?? 'bond'}:${edge?.from}->${edge?.to}`;
+}
+
+/**
+ * Anchors reached by following directed relationships: `'downstream'`
+ * along the arrows, `'upstream'` against them. Prose links and bonds
+ * count; the outline spine does not. Seeds excluded.
+ */
+export function pathAnchors(model = {}, relations = {}, seeds = [], direction = 'downstream') {
+  const notes = model.notes ?? [];
+  const forward = new Map(notes.map((note) => [note.anchor, new Set()]));
+  const backward = new Map(notes.map((note) => [note.anchor, new Set()]));
+  const anchorOf = (end) => (typeof end === 'number' ? notes[end]?.anchor : end);
+  for (const edge of [...noteEdges(model, relations), ...bondEdges(model, relations)]) {
+    const from = anchorOf(edge.from);
+    const to = anchorOf(edge.to);
+    if (!forward.has(from) || !forward.has(to) || from === to) continue;
+    forward.get(from).add(to);
+    backward.get(to).add(from);
+  }
+  const graph = direction === 'upstream' ? backward : forward;
+  const seedSet = new Set(seeds ?? []);
+  const out = new Set();
+  const queue = [...seedSet].filter((anchor) => graph.has(anchor));
+  while (queue.length) {
+    const anchor = queue.pop();
+    for (const next of graph.get(anchor) ?? []) {
+      if (seedSet.has(next) || out.has(next)) continue;
+      out.add(next);
+      queue.push(next);
+    }
+  }
+  return out;
+}
+
 /** The tag token shape `parseTags` reads: `#name`, with slashes and dashes inside. */
 const TAG_RE = /^[\p{L}\p{N}][\p{L}\p{N}/_-]*$/u;
 
@@ -747,6 +1585,74 @@ export const ZOOM_MIN = 0.25;
 export const ZOOM_MAX = 3;
 
 /**
+ * Connector display preferences for a vein: whether wires run as bezier
+ * curves or right-angle elbows, and whether they carry arrowheads. Stored
+ * as a view preference, so junk values can neither break the canvas nor
+ * turn an unexpected saved shape into a feature.
+ */
+export function normalizeRouting(routing) {
+  const edges = {};
+  for (const [key, value] of Object.entries(routing?.edges ?? {})) {
+    if (!key || !value || typeof value !== 'object') continue;
+    const entry = {};
+    if (typeof value.elbow === 'boolean') entry.elbow = value.elbow;
+    if (typeof value.arrows === 'boolean') entry.arrows = value.arrows;
+    if (Object.keys(entry).length) edges[key] = entry;
+  }
+  return {
+    elbow: Boolean(routing?.elbow),
+    arrows: Boolean(routing?.arrows),
+    edges,
+  };
+}
+
+/** One connector's routing: its per-connector override, else the vein default. */
+export function effectiveRouting(routing, key) {
+  const normalized = normalizeRouting(routing);
+  const override = normalized.edges[key] ?? {};
+  return {
+    elbow: override.elbow ?? normalized.elbow,
+    arrows: override.arrows ?? normalized.arrows,
+  };
+}
+
+/**
+ * The four points of an orthogonal connector between two boxes: it leaves
+ * one side, turns once, runs the other axis, and enters the other side.
+ * Vertical connectors leave bottom-to-top; horizontal ones leave side-to-
+ * side. The middle of a wire can therefore sit on a bend, which the label
+ * placer treats like any other point along it.
+ */
+export function elbowPoints(from, to, vertical = false) {
+  if (vertical) {
+    const [top, bottom] = to.y + to.height / 2 >= from.y + from.height / 2 ? [from, to] : [to, from];
+    const x1 = top.x + top.width / 2;
+    const y1 = top.y + top.height;
+    const x2 = bottom.x + bottom.width / 2;
+    const y2 = bottom.y;
+    const midY = (y1 + y2) / 2;
+    return [
+      { x: x1, y: y1 },
+      { x: x1, y: midY },
+      { x: x2, y: midY },
+      { x: x2, y: y2 },
+    ];
+  }
+  const y1 = from.y + from.height / 2;
+  const y2 = to.y + to.height / 2;
+  const rightward = to.x + to.width / 2 >= from.x + from.width / 2;
+  const x1 = rightward ? from.x + from.width : from.x;
+  const x2 = rightward ? to.x : to.x + to.width;
+  const midX = (x1 + x2) / 2;
+  return [
+    { x: x1, y: y1 },
+    { x: midX, y: y1 },
+    { x: midX, y: y2 },
+    { x: x2, y: y2 },
+  ];
+}
+
+/**
  * How far a pan may go past the canvas's own edges, in screen pixels: wires
  * reach a little beyond the cards that bound the canvas rect, and past the
  * edge is the only way to see their ends at the extremes.
@@ -789,6 +1695,192 @@ export function zoomViewAt(view, px, py, factor) {
 }
 
 /**
+ * The view that fits a content rect ({minX, minY, maxX, maxY}, in canvas
+ * coordinates) into a viewport, centred, with a margin around it on every
+ * side. The scale is clamped to the canvas limits, so a graph far wider
+ * than the viewport lands at minimum zoom, centred, instead of losing
+ * its edges off-screen.
+ *
+ * @returns {object|null} the view, or null when there is nothing to fit
+ */
+export function fitView(content, vpW, vpH, margin = 40) {
+  if (!content || !Number.isFinite(vpW) || !Number.isFinite(vpH) || vpW <= 0 || vpH <= 0) return null;
+  const w = content.maxX - content.minX;
+  const h = content.maxY - content.minY;
+  if (!(w > 0) || !(h > 0)) return null;
+  const s = Math.min(
+    ZOOM_MAX,
+    Math.max(ZOOM_MIN, Math.min((vpW - margin * 2) / w, (vpH - margin * 2) / h)),
+  );
+  return {
+    x: (vpW - w * s) / 2 - content.minX * s,
+    y: (vpH - h * s) / 2 - content.minY * s,
+    s,
+  };
+}
+
+/**
+ * The view that puts a rect's centre at the viewport's centre, keeping the
+ * current scale — centre-on-card, and the health panel's jump targets.
+ */
+export function centreView(rect, vpW, vpH, s = 1) {
+  if (!rect || !Number.isFinite(vpW) || !Number.isFinite(vpH) || vpW <= 0 || vpH <= 0) return null;
+  const scale = Number.isFinite(s) && s > 0 ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s)) : 1;
+  return {
+    x: vpW / 2 - (rect.x + rect.width / 2) * scale,
+    y: vpH / 2 - (rect.y + rect.height / 2) * scale,
+    s: scale,
+  };
+}
+
+/**
+ * Smart guides for a drag: how far the dragged rect must move so one of
+ * its edges or centrelines lines up with one of the others', within a
+ * threshold (in canvas pixels). Returns the nudge per axis and the guide
+ * positions to draw — each a canvas coordinate on its own axis.
+ */
+export function snapDelta(dragRect, others, threshold = 8) {
+  const lines = (rect) => ({
+    x: [rect.x, rect.x + rect.width / 2, rect.x + rect.width],
+    y: [rect.y, rect.y + rect.height / 2, rect.y + rect.height],
+  });
+  const mine = lines(dragRect);
+  let bestX = null;
+  let bestY = null;
+  for (const other of others ?? []) {
+    const theirs = lines(other);
+    for (let i = 0; i < 3; i += 1) {
+      for (let j = 0; j < 3; j += 1) {
+        const dx = theirs.x[j] - mine.x[i];
+        if (Math.abs(dx) <= threshold && (!bestX || Math.abs(dx) < Math.abs(bestX.delta))) {
+          bestX = { delta: dx, at: theirs.x[j] };
+        }
+        const dy = theirs.y[j] - mine.y[i];
+        if (Math.abs(dy) <= threshold && (!bestY || Math.abs(dy) < Math.abs(bestY.delta))) {
+          bestY = { delta: dy, at: theirs.y[j] };
+        }
+      }
+    }
+  }
+  return {
+    dx: bestX?.delta ?? 0,
+    dy: bestY?.delta ?? 0,
+    guides: [
+      ...(bestX ? [{ axis: 'x', at: bestX.at }] : []),
+      ...(bestY ? [{ axis: 'y', at: bestY.at }] : []),
+    ],
+  };
+}
+
+/**
+ * Lay a selected set out from its current rects. Alignment moves one axis
+ * onto the set's bounding edge or centreline; distribution keeps the first
+ * and last card fixed and spaces the others evenly between their
+ * centrelines. The untouched axis is preserved. Entries need a `key` plus
+ * finite `x`, `y`, `width`, and `height`; the result is a Map of the same
+ * keys to their new `{x, y}` positions.
+ */
+/** Practical search limit: well beyond any normal arrangement, but bounded. */
+export const MAX_ARRANGE_CANDIDATES = 4096;
+
+/**
+ * The arrangement candidate origins for one layout. The sequence would
+ * continue indefinitely for finite blockers, but callers should consume it
+ * through `findArrangeOrigin`, whose cap keeps the search practical. A
+ * shape that exhausts the search stays where it already stands rather
+ * than dropping onto the arrangement origin.
+ */
+export function* arrangeCandidateOrigins(layout, origin, { columns = 1, stepX = 0, stepY = 0, layer = 0 } = {}) {
+  if (!origin || !Number.isFinite(origin.x) || !Number.isFinite(origin.y)) return;
+  if (!Number.isFinite(stepX) || !Number.isFinite(stepY)) return;
+  if (layout === 'grid') {
+    if (!Number.isInteger(columns) || columns < 1 || stepX <= 0 || stepY <= 0) return;
+    for (let row = 0; ; row += 1) {
+      for (let col = 0; col < columns; col += 1) {
+        yield { x: origin.x + col * stepX, y: origin.y + row * stepY };
+      }
+    }
+  } else if (layout === 'rows' || layout === 'layered') {
+    if (stepX <= 0 || !Number.isFinite(layer)) return;
+    for (let k = 0; ; k += 1) {
+      yield { x: origin.x + k * stepX, y: origin.y + (layout === 'layered' ? layer * stepY : 0) };
+    }
+  } else if (layout === 'columns') {
+    if (stepY <= 0) return;
+    for (let k = 0; ; k += 1) {
+      yield { x: origin.x, y: origin.y + k * stepY };
+    }
+  } else if (layout === 'cascade') {
+    for (let k = 0; ; k += 1) {
+      yield { x: origin.x + k * 72, y: origin.y + k * 56 };
+    }
+  }
+}
+
+/**
+ * The first candidate that fits, bounded to `MAX_ARRANGE_CANDIDATES`
+ * checks so an extreme blocker cannot keep arrangement busy indefinitely.
+ */
+export function findArrangeOrigin(candidates, fits, maxCandidates = MAX_ARRANGE_CANDIDATES) {
+  if (typeof fits !== 'function' || !Number.isInteger(maxCandidates) || maxCandidates < 0) return null;
+  let searched = 0;
+  for (const candidate of candidates ?? []) {
+    if (searched >= maxCandidates) return null;
+    searched += 1;
+    if (fits(candidate)) return candidate;
+  }
+  return null;
+}
+
+export function layoutSelection(entries, mode) {
+  const list = (entries ?? []).filter((entry) => (
+    entry
+    && entry.key !== undefined
+    && Number.isFinite(entry.x)
+    && Number.isFinite(entry.y)
+    && Number.isFinite(entry.width)
+    && Number.isFinite(entry.height)
+  ));
+  const next = new Map(list.map((entry) => [entry.key, { x: entry.x, y: entry.y }]));
+  if (list.length < 2) return next;
+
+  const minX = Math.min(...list.map((entry) => entry.x));
+  const minY = Math.min(...list.map((entry) => entry.y));
+  const maxX = Math.max(...list.map((entry) => entry.x + entry.width));
+  const maxY = Math.max(...list.map((entry) => entry.y + entry.height));
+
+  if (mode === 'left') {
+    for (const entry of list) next.set(entry.key, { x: minX, y: entry.y });
+  } else if (mode === 'center-x') {
+    const centre = (minX + maxX) / 2;
+    for (const entry of list) next.set(entry.key, { x: centre - entry.width / 2, y: entry.y });
+  } else if (mode === 'right') {
+    for (const entry of list) next.set(entry.key, { x: maxX - entry.width, y: entry.y });
+  } else if (mode === 'top') {
+    for (const entry of list) next.set(entry.key, { x: entry.x, y: minY });
+  } else if (mode === 'center-y') {
+    const centre = (minY + maxY) / 2;
+    for (const entry of list) next.set(entry.key, { x: entry.x, y: centre - entry.height / 2 });
+  } else if (mode === 'bottom') {
+    for (const entry of list) next.set(entry.key, { x: entry.x, y: maxY - entry.height });
+  } else if (mode === 'distribute-x' || mode === 'distribute-y') {
+    const axis = mode === 'distribute-x' ? 'x' : 'y';
+    const size = mode === 'distribute-x' ? 'width' : 'height';
+    const ordered = [...list].sort((a, b) => (a[axis] + a[size] / 2) - (b[axis] + b[size] / 2));
+    const first = ordered[0][axis] + ordered[0][size] / 2;
+    const last = ordered[ordered.length - 1][axis] + ordered[ordered.length - 1][size] / 2;
+    const step = (last - first) / (ordered.length - 1);
+    ordered.forEach((entry, position) => {
+      const centre = first + step * position;
+      const at = { x: entry.x, y: entry.y };
+      at[axis] = centre - entry[size] / 2;
+      next.set(entry.key, at);
+    });
+  }
+  return next;
+}
+
+/**
  * The form a view is saved in: the canvas point sitting at the viewport's
  * top-left corner (zoom-independent), with the zoom it was left at.
  */
@@ -810,6 +1902,53 @@ export function viewOfAnchor(saved) {
 export function countWords(text) {
   const trimmed = String(text ?? '').trim();
   return trimmed ? trimmed.split(/\s+/).length : 0;
+}
+
+/**
+ * How healthy the canvas is: what is connected, what is not, and which
+ * groups are too thin to mean anything. An orphan is a card with no
+ * connection at all — no prose link, no bond, no outline parent or child,
+ * and no group to sit in — so it is invisible to every wire on the canvas.
+ */
+export function canvasHealth(model = {}, { relations = {}, groups = {} } = {}) {
+  const notes = model.notes ?? [];
+  const connected = new Set();
+  const bump = (index) => {
+    const anchor = notes[index]?.anchor;
+    if (anchor) connected.add(anchor);
+  };
+  const edges = [
+    ...noteEdges(model, relations),
+    ...hierarchyEdges(model),
+    ...bondEdges(model, relations),
+    ...groupRelationEdges(model, groups, relations),
+  ];
+  for (const edge of edges) {
+    bump(edge.fromIndex ?? edge.from);
+    bump(edge.toIndex ?? edge.to);
+  }
+  const grouped = new Set(Object.values(groups ?? {}).flatMap((group) => group.members ?? []));
+  const orphans = notes
+    .filter((note) => !connected.has(note.anchor) && !grouped.has(note.anchor))
+    .map((note) => ({ anchor: note.anchor, title: note.title || note.anchor }));
+  const effectiveSize = (id, seen) => {
+    const group = groups[id];
+    if (!group || seen.has(id)) return 0;
+    seen.add(id);
+    let size = (group.members ?? []).length;
+    for (const child of group.children ?? []) size += effectiveSize(child, seen);
+    return size;
+  };
+  const thinGroups = Object.entries(groups ?? {})
+    .filter(([id]) => effectiveSize(id, new Set()) < 2)
+    .map(([id, group]) => ({ id, name: group.name || 'Group' }));
+  return {
+    notes: notes.length,
+    edges: edges.length,
+    groups: Object.keys(groups ?? {}).length,
+    orphans,
+    thinGroups,
+  };
 }
 
 /** Everything the canvas header reports, computed once per change. */
