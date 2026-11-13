@@ -18,6 +18,9 @@ import * as colorStore from './lib/colorStore.js';
 import { buildDocumentIndex } from './lib/graph.js';
 import { parseCache, serializeCache, cacheRecord, planIndex, stubEntry, createIndex, isStub } from './lib/indexCache.js';
 import { parseFrontmatter, documentMeta } from './lib/frontmatter.js';
+import {
+  setRelation, dropRelations, relationKey, setNodeType, setNodeField, ZOOM_MIN, ZOOM_MAX,
+} from './lib/worldbuild.js';
 import { resolveTarget } from './lib/wikilinks.js';
 import { dirname, join, basename, titleFromPath, slugify, isMarkdown } from './lib/path.js';
 import { ancestorPaths } from './lib/tree.js';
@@ -68,6 +71,10 @@ const state = {
   undoStack: [],
   redoStack: [],
   virtualDocs: { [SYNTAX_GUIDE_PATH]: wikiDoc },
+  // Worldbuilding records by vein path: `{ marked, positions, relations }`.
+  // Pure viewer bookkeeping — saved to `.macusanite/state.json`, never to the
+  // vault's undo history.
+  world: {},
   ui: {
     mode: 'read',
     filter: '',
@@ -291,6 +298,9 @@ const app = {
     // is also the one the index pass should read first.
     const saved = await readMetaJson(META.state, null);
     state.nav = NavHistory.fromJSON(saved?.nav ?? null);
+    state.world = (saved?.world && typeof saved.world === 'object' && !Array.isArray(saved.world))
+      ? saved.world
+      : {};
     if (saved?.ui?.expanded) state.ui.expanded = { ...saved.ui.expanded };
     if (saved?.ui?.mode === 'edit') state.ui.mode = 'edit';
     if (saved?.ui?.pane === 'search') app.setPane('search');
@@ -755,6 +765,14 @@ const app = {
       await indexPath(normalized, { text });
       app.scheduleIndexPersist();
 
+      // A vein marked as Worldbuilding opens as a graph; any other vein the
+      // reader is not editing opens as text, even if they arrived from one.
+      const worldRecord = state.world[normalized];
+      if (!state.current.readOnly) {
+        if (worldRecord?.marked) state.ui.mode = 'world';
+        else if (state.ui.mode === 'world') state.ui.mode = 'read';
+      }
+
       if (!options.fromState) {
         state.nav.push({
           path: normalized,
@@ -861,7 +879,228 @@ const app = {
   /** The upper-right switch: the same vein as notes rather than as lines. */
   toggleWorldbuilding() {
     if (!state.current || state.current.readOnly) return;
-    app.setMode(state.ui.mode === 'world' ? 'read' : 'world');
+    const next = state.ui.mode === 'world' ? 'read' : 'world';
+    // Looking at a vein as worldbuilding marks it as one: it will open the
+    // same way next time. Switching back does not unmark — the toolbar can.
+    if (next === 'world') app.markWorld(state.current.path, true);
+    app.setMode(next);
+  },
+
+  /* ------------------------------------------------------ worldbuilding -- */
+
+  /** The saved worldbuilding record for a vein, or null when it has none. */
+  worldRecord(path) {
+    return state.world[path] ?? null;
+  },
+
+  /** True when this vein opens as a worldbuilding graph. */
+  isWorldMarked(path) {
+    return Boolean(state.world[path]?.marked);
+  },
+
+  /**
+   * Mark (or unmark) a vein as Worldbuilding. The layout and relationships
+   * are kept either way, so unmarking is not a loss and re-marking restores
+   * the graph.
+   */
+  markWorld(path, marked) {
+    if (!path) return null;
+    const record = { ...state.world[path], marked: Boolean(marked) };
+    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups']
+      .some((part) => record[part]);
+    if (record.marked || keepsWork) state.world[path] = record;
+    else delete state.world[path];
+    app.scheduleStatePersist();
+    return state.world[path] ?? null;
+  },
+
+  /** Card positions, keyed by note anchor; absent anchors sit on the grid. */
+  saveWorldLayout(path, positions) {
+    if (!path || !positions || typeof positions !== 'object') return;
+    const clean = {};
+    for (const [anchor, pos] of Object.entries(positions)) {
+      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) clean[anchor] = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    }
+    state.world[path] = { ...state.world[path], positions: clean };
+    app.scheduleStatePersist();
+  },
+
+  /** Assert the relationship kind of one connection; returns the vein's record. */
+  setWorldRelation(path, fromAnchor, toAnchor, kind) {
+    const relations = setRelation(state.world[path]?.relations ?? {}, fromAnchor, toAnchor, kind);
+    state.world[path] = { ...state.world[path], relations };
+    app.scheduleStatePersist();
+    return relations;
+  },
+
+  /** Remove one asserted directed relationship, leaving all other bonds. */
+  removeWorldRelation(path, fromEndpoint, toEndpoint) {
+    if (!path || !fromEndpoint || !toEndpoint) return {};
+    const relations = { ...(state.world[path]?.relations ?? {}) };
+    delete relations[relationKey(fromEndpoint, toEndpoint)];
+    state.world[path] = { ...state.world[path], relations };
+    app.scheduleStatePersist();
+    return relations;
+  },
+
+  /**
+   * Put the canvas record back as one undo step found it: positions, groups,
+   * relationships and folds together, so a step is never half applied.
+   */
+  restoreWorldCanvas(path, { positions = {}, groups = {}, relations = {}, folded = {} }) {
+    if (!path) return;
+    state.world[path] = { ...state.world[path], positions, groups, relations, folded };
+    app.scheduleStatePersist();
+  },
+
+  /** Forget every asserted relationship touching a deleted endpoint. */
+  dropWorldRelations(path, endpoint) {
+    const relations = dropRelations(state.world[path]?.relations ?? {}, endpoint);
+    state.world[path] = { ...state.world[path], relations };
+    app.scheduleStatePersist();
+    return relations;
+  },
+
+  /** Set a note's type (note, stat, skill, …); returns the vein's type record. */
+  setWorldNodeType(path, anchor, type) {
+    const types = setNodeType(state.world[path]?.types ?? {}, anchor, type);
+    state.world[path] = { ...state.world[path], types };
+    app.scheduleStatePersist();
+    return types;
+  },
+
+  /**
+   * Set one of a note's structured fields (a stat's value, a skill's level,
+   * …); returns the vein's fields record.
+   */
+  setWorldNodeField(path, anchor, type, field, value) {
+    const fields = setNodeField(state.world[path]?.fields ?? {}, type, anchor, field, value);
+    state.world[path] = { ...state.world[path], fields };
+    app.scheduleStatePersist();
+    return fields;
+  },
+
+  /**
+   * Remember which parts of one card are folded — `card` for the whole node,
+   * `links` for its "Link to" section. Folds sit in the record beside
+   * positions and view, so a vein reopens exactly as it was left.
+   */
+  setWorldFold(path, anchor, part, folded) {
+    if (!path || !anchor || !part) return {};
+    const all = { ...(state.world[path]?.folded ?? {}) };
+    const parts = typeof all[anchor] === 'object' ? { ...all[anchor] } : {};
+    if (folded) parts[part] = true;
+    else delete parts[part];
+    if (Object.keys(parts).length) all[anchor] = parts;
+    else delete all[anchor];
+    state.world[path] = { ...state.world[path], folded: all };
+    app.scheduleStatePersist();
+    return all;
+  },
+
+  /**
+   * Remember where the viewport was left for a vein: the canvas point in its
+   * top-left corner (zoom-independent), and the zoom it was left at — so the
+   * graph reopens exactly as it was left.
+   */
+  saveWorldView(path, point) {
+    const x = Number(point?.x);
+    const y = Number(point?.y);
+    const s = Number(point?.s);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    state.world[path] = {
+      ...state.world[path],
+      view: { x, y, s: Number.isFinite(s) ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s)) : 1 },
+    };
+    app.scheduleStatePersist();
+  },
+
+  /**
+   * Replace a vein's groups wholesale (created, recoloured, dissolved).
+   * A group is {members: [anchors], color}: the members' positions stay in
+   * the positions record, so a group is a set and a colour over cards that
+   * already remember where they are.
+   */
+  saveWorldGroups(path, groups) {
+    state.world[path] = { ...state.world[path], groups };
+    app.scheduleStatePersist();
+    return groups;
+  },
+
+  /**
+   * A deleted note leaves its group. A group also dissolves when nothing
+   * remains in it — counting recovered children, so a parent emptied of its
+   * own cards can still live on its nested groups.
+   */
+  dropWorldGroups(path, anchor) {
+    const all = state.world[path]?.groups ?? {};
+    const effectiveSize = (id, seen) => {
+      const group = all[id];
+      if (!group || seen.has(id)) return 0;
+      seen.add(id);
+      let size = group.members.filter((a) => a !== anchor).length;
+      for (const child of group.children ?? []) size += effectiveSize(child, seen);
+      return size;
+    };
+    const surviving = new Set(
+      Object.keys(all).filter((id) => effectiveSize(id, new Set()) >= 2),
+    );
+    const next = {};
+    for (const [id, group] of Object.entries(all)) {
+      if (!surviving.has(id)) continue;
+      next[id] = {
+        ...group,
+        members: group.members.filter((a) => a !== anchor),
+        children: (group.children ?? []).filter((child) => surviving.has(child)),
+      };
+    }
+    const relations = { ...(state.world[path]?.relations ?? {}) };
+    for (const id of Object.keys(all)) {
+      if (!next[id]) Object.assign(relations, dropRelations(relations, `group:${id}`));
+    }
+    state.world[path] = { ...state.world[path], groups: next, relations };
+    app.scheduleStatePersist();
+    return next;
+  },
+
+  /** Forget a deleted note's saved extras: its fields and its folds. */
+  dropWorldFields(path, anchor) {
+    const fields = { ...(state.world[path]?.fields ?? {}) };
+    const folded = { ...(state.world[path]?.folded ?? {}) };
+    delete fields[anchor];
+    delete folded[anchor];
+    state.world[path] = { ...state.world[path], fields, folded };
+    app.scheduleStatePersist();
+    return fields;
+  },
+
+  /**
+   * A renamed note is still the same node: its type and fields follow the new
+   * anchor, the way its position does. (Relationships are dropped instead of
+   * moved — they name link targets, and the old name no longer resolves.)
+   */
+  renameWorldAnchor(path, before, after) {
+    const record = state.world[path];
+    if (!record || !before || !after || before === after) return null;
+    const move = (obj) => {
+      if (!obj || !(before in obj)) return obj ?? {};
+      const next = { ...obj, [after]: obj[before] };
+      delete next[before];
+      return next;
+    };
+    const types = move(record.types);
+    const fields = move(record.fields);
+    const folded = move(record.folded);
+    const groups = {};
+    for (const [id, group] of Object.entries(record.groups ?? {})) {
+      groups[id] = {
+        ...group,
+        members: group.members.map((a) => (a === before ? after : a)),
+      };
+    }
+    state.world[path] = { ...record, types, fields, folded, groups };
+    app.scheduleStatePersist();
+    return { types, fields, folded, groups };
   },
 
   revertDraft() {
@@ -1346,6 +1585,7 @@ const app = {
     const payload = {
       lastPath: state.current?.path ?? null,
       nav: state.nav.toJSON(),
+      world: state.world,
       ui: { expanded: state.ui.expanded, mode: state.ui.mode, pane: state.ui.pane },
       savedAt: new Date().toISOString(),
     };

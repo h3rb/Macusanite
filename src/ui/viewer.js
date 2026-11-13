@@ -191,6 +191,9 @@ export function createViewer({ app, root }) {
         htmlNode(colorSwatch('page', { path: doc.path }, pageColor, 'Page colour')),
         el('h1', { class: 'viewer-title', text: doc.meta.title ?? doc.path.split('/').pop() }),
         readOnly ? el('span', { class: 'tag-chip', text: 'shipped guide' }) : null,
+        !readOnly && app.isWorldMarked?.(doc.path)
+          ? el('span', { class: 'tag-chip tag-chip-world', text: 'Worldbuilding', title: 'This vein opens as a worldbuilding graph' })
+          : null,
         el('div', { class: 'spacer' }),
         el('span', { class: 'viewer-path', text: doc.path, title: doc.path }),
         readOnly ? null : worldSwitch(mode),

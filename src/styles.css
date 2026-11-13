@@ -839,6 +839,11 @@ mark.search-hit {
   color: var(--text-dim);
 }
 
+.tag-chip-world {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .viewer-foot {
   max-width: var(--line-width, 78ch);
   margin-top: 34px;
@@ -2267,13 +2272,114 @@ dialog::backdrop {
   font-size: 11.5px;
 }
 
+/* The stage is the pan viewport: the canvas is translated inside it, clipped,
+ * so the graph can be moved by dragging the background. Overflow clip (not
+ * hidden) so no scroll container swallows focus changes mid-pan. */
 .wb-stage {
-  overflow: visible;
+  position: relative;
+  overflow: clip;
+  height: min(70vh, 860px);
+  min-height: 340px;
+  cursor: grab;
+}
+
+.wb-stage.is-panning {
+  cursor: grabbing;
+}
+
+.wb-card.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.wb-menu {
+  position: fixed;
+  z-index: 120;
+  min-width: 170px;
+  /* A card's menu carries its bonds, its group's and its relationships; keep
+   * it on screen and let it scroll rather than run off the window. */
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow-lg);
+}
+
+.wb-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wb-menu-label {
+  display: block;
+  padding: 6px 10px 0;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.wb-menu-swatches {
+  display: flex;
+  gap: 6px;
+  padding: 7px 10px 8px;
+}
+
+.wb-menu-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.wb-menu-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.wb-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.wb-menu-select {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-sunken);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.wb-menu-relationship {
+  display: grid;
+  gap: 5px;
+  padding: 5px 6px 7px;
 }
 
 .wb-canvas {
-  position: relative;
+  position: absolute;
+  left: 0;
+  top: 0;
   min-height: 340px;
+  /* The zoom math assumes the scale runs from the top-left corner. */
+  transform-origin: 0 0;
+  will-change: transform;
+  touch-action: none;
 }
 
 .wb-edges {
@@ -2285,7 +2391,7 @@ dialog::backdrop {
 
 .wb-edge {
   stroke: var(--accent);
-  stroke-width: 1.6;
+  stroke-width: var(--wb-weight, 1.6px);
   opacity: 0.5;
 }
 
@@ -2298,6 +2404,12 @@ dialog::backdrop {
   opacity: 0.42;
 }
 
+/* A bond stated on the canvas itself — no prose link stands behind it. */
+.wb-edge-bond {
+  stroke: var(--accent);
+  opacity: 0.62;
+}
+
 .wb-edge-contains {
   stroke: var(--text-faint);
   stroke-width: 1.2;
@@ -2305,9 +2417,127 @@ dialog::backdrop {
   opacity: 0.55;
 }
 
+/* Asserted relationship strength: the line thickens as the bond commits.
+ * `--wb-weight` is the one place a strength's thickness is decided. */
+.wb-rel-associate {
+  --wb-weight: 1.6px;
+}
+
+.wb-rel-member-of {
+  --wb-weight: 2.2px;
+}
+
+.wb-rel-template,
+.wb-rel-parent,
+.wb-rel-child {
+  --wb-weight: 2.6px;
+}
+
+.wb-rel-contains,
+.wb-rel-contained-by {
+  --wb-weight: 3px;
+}
+
+.wb-rel-controls,
+.wb-rel-controlled-by,
+.wb-rel-ally,
+.wb-rel-foe {
+  --wb-weight: 3.4px;
+}
+
+/* A group's bond is twice the weight of a card's bond of the same kind. */
+.wb-edge-group {
+  stroke-width: calc(var(--wb-weight, 1.6px) * 2);
+  opacity: 0.78;
+}
+
+/* A card dragged over a group's box: the box it would join if released. */
+.wb-box.is-drop-target {
+  fill-opacity: 0.16;
+  stroke-width: 3;
+  stroke-opacity: 1;
+}
+
+/* Polarity bonds: allies read green, foes red, on the line and its label. */
+.wb-rel-ally {
+  stroke: var(--ok);
+}
+
+.wb-rel-foe {
+  stroke: var(--error);
+}
+
+.wb-edge-label.wb-rel-ally {
+  fill: var(--ok);
+}
+
+.wb-edge-label.wb-rel-foe {
+  fill: var(--error);
+}
+
+
+/* A group's title: a mini node header straddling the box's top-left corner.
+ * It reads like the head of a card and grabs the whole group to drag. */
+.wb-group-tab {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: grab;
+  user-select: none;
+}
+
+.wb-group-tab .wb-grip {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.wb-edge-label:hover {
+  font-weight: 700;
+}
+
+.wb-link.wb-rel-ally {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.wb-link.wb-rel-foe {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* The word sits on the line and is the handle: clicking it cycles the
+ * relationship (see the panel), so it alone takes pointer events inside the
+ * otherwise untouchable edge layer. */
+.wb-edge-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  fill: var(--accent);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* The cards layer spans the whole canvas, so it must let clicks through to
+ * the edge labels underneath; only cards and group tabs take them. */
 .wb-cards {
   position: absolute;
   inset: 0;
+  pointer-events: none;
+}
+
+.wb-card,
+.wb-group-tab {
+  pointer-events: auto;
 }
 
 /* The card size is mirrored in worldbuildPanel.js (CARD_W / CARD_H). */
@@ -2332,6 +2562,39 @@ dialog::backdrop {
 .wb-card.is-dragging {
   z-index: 5;
   box-shadow: var(--shadow-lg);
+}
+
+/* A folded section keeps only its head; its placement and pan stay saved. */
+.wb-card.is-folded {
+  height: auto;
+}
+
+.wb-card.is-folded .wb-fields,
+.wb-card.is-folded .wb-card-body,
+.wb-card.is-folded .wb-card-foot {
+  display: none;
+}
+
+/* One control folds a whole card or just its "Link to" section. */
+.wb-fold-toggle {
+  flex: 0 0 auto;
+  min-width: 16px;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.wb-fold-toggle:hover {
+  color: var(--text);
+  background: var(--bg-sunken);
 }
 
 .wb-card-head {
@@ -2436,6 +2699,21 @@ dialog::backdrop {
   border-top: 1px solid var(--border);
 }
 
+.wb-link-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wb-link-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.wb-link-section.is-collapsed .wb-link-section-body {
+  display: none;
+}
 .wb-links {
   display: flex;
   flex-wrap: wrap;
@@ -2486,6 +2764,72 @@ dialog::backdrop {
   border-radius: var(--radius-sm);
   background: var(--bg-sunken);
   color: var(--text-dim);
+  font: inherit;
+  font-size: 10.5px;
+}
+
+.wb-type {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 10px;
+}
+
+/* A typed node's colour is inlined on its type picker from the type
+ * record, so the palette lives in one place with the types. */
+
+/* Structured fields for typed nodes (a stat's value, a skill's level, …). */
+.wb-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 4px 8px;
+}
+
+.wb-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 40%;
+  min-width: 0;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.wb-field-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.wb-field-input[type="number"] {
+  max-width: 72px;
+}
+
+.wb-field-range {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.wb-relator {
+  max-width: 118px;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--accent);
   font: inherit;
   font-size: 10.5px;
 }
