@@ -25,6 +25,7 @@ import {
   canvasSnapshot as snapshotCanvas, renameAnchorIn,
   connectedAnchors, lineageAnchors, anchorsInRect, relationshipDepths, canvasSearch,
   connectorList, connectorKey, pathAnchors, effectiveRouting, cleanCardModes, cleanCollapsedGroups,
+  progressionColumns,
   DEFAULT_STEP_NAME, cleanHistoryStack, historyJump, historyKey,
   restoreSnapshot, rewriteHistoryStack, pushHistoryStep,
 } from '../lib/worldbuild.js';
@@ -40,9 +41,9 @@ const GAP_X = 96;
 const GAP_Y = 76;
 const PAD = 26;
 const INTRO_H = 150;
-// A stacked pair leaves a short wire between them; a gap that still holds a
-// relationship word on the line.
-const STACK_GAP = 24;
+// A stacked pair leaves a short wire between them — tight enough that the
+// folded card and the card under it read as one stack, not two neighbours.
+const STACK_GAP = 8;
 // How unaligned a folded-above-a-link pair may be and still read as a stack.
 const STACK_TOLERANCE = 2;
 
@@ -290,6 +291,9 @@ export function createWorldbuildPanel({ app, root }) {
     linkKinds = new Map();
     mounted = true;
     build();
+    // Existing stacks reopen at the current stack gap, not the gap they were
+    // last saved with, so tightening STACK_GAP reaches saved canvases too.
+    restackAll();
   }
 
   function build() {
@@ -363,7 +367,7 @@ export function createWorldbuildPanel({ app, root }) {
         'data-arrange-toggle': '',
         'aria-haspopup': 'menu',
         'aria-expanded': 'false',
-        title: 'Arrange the selection, a group, a connected component, or one type — grid, rows, columns, cascade, or layered. Pinned and locked cards stay put.',
+        title: 'Arrange the selection, a group, a connected component, or one type — grid, rows, columns, cascade, layered, or progression columns. Pinned and locked cards stay put.',
         onclick: (event) => toggleArrangeMenu(event.currentTarget),
       }),
       el('button', {
@@ -2733,7 +2737,7 @@ export function createWorldbuildPanel({ app, root }) {
       const indexes = [...effectiveMembers(group)]
         .map((anchor) => notes.findIndex((note) => note.anchor === anchor))
         .filter((index) => index >= 0);
-      return { indexes, label: `group “${group.name || 'Group'}”` };
+      return { indexes, label: `group “${group.name || 'Group'}”`, groupId: group.id };
     }
     if (scope === 'component') {
       const anchors = connectedAnchors(model, relations, selected);
@@ -2784,7 +2788,9 @@ export function createWorldbuildPanel({ app, root }) {
     const orderedGroups = Object.values(groups ?? {}).sort(
       (a, b) => (depths.get(a.id) ?? 0) - (depths.get(b.id) ?? 0),
     );
-    for (const group of orderedGroups) {
+    // Progression columns move cards one by one: a whole group kept as one
+    // unit would keep its offsets and could never split across tiers.
+    for (const group of layout === 'progression' ? [] : orderedGroups) {
       const memberIndexes = [...effectiveMembers(group)]
         .map((anchor) => notes.findIndex((note) => note.anchor === anchor))
         .filter((index) => index >= 0);
@@ -2864,7 +2870,13 @@ export function createWorldbuildPanel({ app, root }) {
         }
       : { x: PAD, y: layout.top };
     const freeShapes = shapes.filter((shape) => !shape.fixed);
-    if (layout === 'layered') {
+    if (layout === 'progression') {
+      const columns = progressionColumns(model, targetIndexes.map((index) => notes[index].anchor));
+      for (const shape of freeShapes) {
+        shape.column = Math.min(...shape.members.map((member) => columns.get(member.anchor) ?? 0));
+      }
+      freeShapes.sort((a, b) => a.column - b.column || a.minIndex - b.minIndex);
+    } else if (layout === 'layered') {
       const depths = relationshipDepths(model, relations, targetIndexes.map((index) => notes[index].anchor));
       for (const shape of freeShapes) {
         shape.layer = Math.min(...shape.members.map((member) => depths.get(member.anchor) ?? 0));
@@ -2879,6 +2891,7 @@ export function createWorldbuildPanel({ app, root }) {
       stepX: CARD_W + GAP_X,
       stepY: CARD_H + GAP_Y,
       layer: shape.layer ?? 0,
+      column: shape.column ?? 0,
     });
     const placedRects = [];
     const fits = (at, shape) => shape.members.every((member) => {
@@ -2912,8 +2925,18 @@ export function createWorldbuildPanel({ app, root }) {
       app.toast('Nothing to arrange — fewer than two cards in scope', 'warn', 1800);
       return;
     }
-    const layoutLabel = { grid: 'Grid', rows: 'Rows', columns: 'Columns', cascade: 'Cascade', layered: 'Layered' }[layout] ?? layout;
+    const layoutLabel = { grid: 'Grid', rows: 'Rows', columns: 'Columns', cascade: 'Cascade', layered: 'Layered', progression: 'Progression columns' }[layout] ?? layout;
     step(() => {
+      // A group split into progression columns keeps its board: the lanes
+      // and tier headers are drawn from the flag, and a collapsed group
+      // opens so its cards can be seen in their columns.
+      if (layout === 'progression' && resolved.groupId && groups[resolved.groupId]) {
+        if (collapsedGroups[resolved.groupId]) {
+          collapsedGroups = app.setWorldGroupCollapsed(currentPath, resolved.groupId, false) ?? collapsedGroups;
+        }
+        groups = { ...groups, [resolved.groupId]: { ...groups[resolved.groupId], layout: 'progression' } };
+        app.saveWorldGroups(currentPath, groups);
+      }
       arrangeTargets(resolved.indexes, layout);
       savePositions();
       sizeCanvas();
@@ -2921,6 +2944,42 @@ export function createWorldbuildPanel({ app, root }) {
       build();
       fitIndexes(resolved.indexes);
     }, `Arrange ${resolved.label} — ${layoutLabel}`);
+  }
+
+  /**
+   * Split one group into progression columns: its cards re-laid by heading-
+   * tree tier, top items left, deeper tiers right, as one undoable step —
+   * the group's Arrange → Progression columns, aimed at the group itself.
+   */
+  function splitGroupProgression(groupId) {
+    const group = groups[groupId];
+    if (!group || !model) return;
+    if (isGroupLocked(group)) {
+      app.toast(`“${group.name || 'Group'}” is locked — unlock it before splitting it`, 'warn', 2200);
+      return;
+    }
+    const notes = model.notes ?? [];
+    const indexes = [...effectiveMembers(group)]
+      .map((anchor) => notes.findIndex((note) => note.anchor === anchor))
+      .filter((index) => index >= 0);
+    if (indexes.length < 2) {
+      app.toast('Nothing to split — fewer than two cards in the group', 'warn', 1800);
+      return;
+    }
+    step(() => {
+      if (collapsedGroups[groupId]) {
+        collapsedGroups = app.setWorldGroupCollapsed(currentPath, groupId, false) ?? collapsedGroups;
+      }
+      groups = { ...groups, [groupId]: { ...groups[groupId], layout: 'progression' } };
+      app.saveWorldGroups(currentPath, groups);
+      arrangeTargets(indexes, 'progression');
+      savePositions();
+      sizeCanvas();
+      drawEdges();
+      build();
+      fitIndexes(indexes);
+    }, `Split “${group.name || 'Group'}” into progression columns`);
+    app.toast(`“${group.name || 'Group'}” split into progression columns`, 'ok', 1800);
   }
 
   /** The Arrange menu: pick a scope, then a layout. */
@@ -2991,6 +3050,7 @@ export function createWorldbuildPanel({ app, root }) {
       ['columns', 'Columns', 'One vertical column'],
       ['cascade', 'Cascade', 'Each card offset down and right from the last'],
       ['layered', 'Layered', 'Relationship depth as rows, roots on top'],
+      ['progression', 'Progression columns', 'Heading-tree tiers as columns, top items on the left, deeper tiers to the right'],
     ];
     const items = [el('span', { class: 'wb-menu-label', text: `Arrange ${resolved.label} (${resolved.indexes.length})` })];
     for (const [layout, label, title] of layouts) {
@@ -4367,6 +4427,17 @@ export function createWorldbuildPanel({ app, root }) {
         onclick: () => { closeMenu(); renameGroup(group.id); },
       }));
       items.push(el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Split into progression columns',
+        title: isGroupLocked(group)
+          ? 'Locked group contents cannot be rearranged'
+          : 'Lay the group out like a Kanban board: top items of the heading tree on the left, each deeper tier one column to the right',
+        disabled: isGroupLocked(group) ? true : undefined,
+        onclick: () => {
+          closeMenu();
+          splitGroupProgression(group.id);
+        },
+      }));
+      items.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: collapsedGroups[group.id] ? 'Expand group' : 'Collapse to summary',
         title: collapsedGroups[group.id]
           ? 'Show the group’s cards again'
@@ -4609,6 +4680,39 @@ export function createWorldbuildPanel({ app, root }) {
         'stroke-opacity': 0.75,
         'stroke-width': 2,
       }));
+      // A group split into progression columns wears its board: one lane per
+      // heading-tree tier, labelled at the top, behind the cards.
+      if (group.layout === 'progression') {
+        const columns = progressionColumns(model, [...effectiveMembers(group)]);
+        const byColumn = new Map();
+        for (const index of indexes) {
+          const column = columns.get(model.notes[index].anchor) ?? 0;
+          const list = byColumn.get(column) ?? [];
+          list.push(rectOf(index));
+          byColumn.set(column, list);
+        }
+        for (const [column, rects] of [...byColumn.entries()].sort((a, b) => a[0] - b[0])) {
+          const laneX = Math.min(...rects.map((rect) => rect.x)) - 8;
+          const laneW = Math.max(...rects.map((rect) => rect.x + rect.width)) - laneX + 8;
+          edgeSvg.append(svgNode('rect', {
+            class: 'wb-column-lane',
+            x: laneX,
+            y: boxY,
+            width: laneW,
+            height: box.height + pad * 2,
+            rx: 8,
+            fill: color,
+            'fill-opacity': column % 2 ? 0.04 : 0.1,
+          }));
+          const label = svgNode('text', {
+            class: 'wb-column-label',
+            x: laneX + 10,
+            y: boxY + 18,
+          });
+          label.textContent = `Tier ${column + 1}`;
+          edgeSvg.append(label);
+        }
+      }
       // The title: a mini node header straddling the box's top-left corner —
       // grip, accent edge, name — and it grabs the whole group to drag.
       const name = group.name || 'Group';

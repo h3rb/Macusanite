@@ -21,6 +21,7 @@ import {
   connectedAnchors, lineageAnchors, anchorsInRect, relationshipDepths, canvasSearch,
   connectorList, connectorKey, pathAnchors, effectiveRouting, cleanCardModes, cleanCollapsedGroups,
   arrangeCandidateOrigins, findArrangeOrigin,
+  progressionColumns, layoutProgressionColumns,
 } from '../../src/lib/worldbuild.js';
 
 const VEIN = `---
@@ -379,6 +380,40 @@ test('arrangement search stops at its safety bound', () => {
   );
   assert.equal(found, null);
   assert.equal(checks, 3);
+});
+
+test('progressionColumns puts top tree items left and deeper tiers right', () => {
+  const model = parseNotes(VEIN);
+  const columns = progressionColumns(model, ['fieldwork', 'sieve-series', 'composition', 'composition-1']);
+  assert.deepEqual([...columns.entries()], [
+    ['fieldwork', 0],
+    ['sieve-series', 1],
+    ['composition', 2],
+    ['composition-1', 1],
+  ]);
+  // A card whose parent is outside the set is a top item of the set.
+  const subset = progressionColumns(model, ['composition']);
+  assert.deepEqual([...subset.entries()], [['composition', 0]]);
+  assert.deepEqual([...progressionColumns(model, []).entries()], []);
+});
+
+test('layoutProgressionColumns stacks each column top to bottom', () => {
+  const next = layoutProgressionColumns([
+    { key: 'a', column: 0, height: 100 },
+    { key: 'b', column: 1, height: 100 },
+    { key: 'c', column: 0, height: 50 },
+    { key: 'd', column: 2, height: 100 },
+  ], { origin: { x: 10, y: 20 }, stepX: 300, stepY: 40 });
+  assert.deepEqual(next.get('a'), { x: 10, y: 20 });
+  assert.deepEqual(next.get('b'), { x: 310, y: 20 });
+  assert.deepEqual(next.get('c'), { x: 10, y: 160 });
+  assert.deepEqual(next.get('d'), { x: 610, y: 20 });
+});
+
+test('progression arrangement walks down one column', () => {
+  const candidates = arrangeCandidateOrigins('progression', { x: 5, y: 7 }, { stepX: 300, stepY: 100, column: 2 });
+  assert.deepEqual(candidates.next().value, { x: 605, y: 7 });
+  assert.deepEqual(candidates.next().value, { x: 605, y: 107 });
 });
 
 test('normalizeTag cleans up and rejects what the reader cannot read back', () => {

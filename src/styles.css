@@ -3240,6 +3240,23 @@ dialog::backdrop {
   stroke-width: 3;
 }
 
+/* Progression columns: the lanes behind a split group's cards, and the
+   tier label at the top of each one. */
+.wb-column-lane {
+  stroke: currentColor;
+  stroke-opacity: 0.18;
+  stroke-width: 1;
+}
+
+.wb-column-label {
+  fill: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
 .wb-pin {
   flex: 0 0 auto;
   font-size: 10px;

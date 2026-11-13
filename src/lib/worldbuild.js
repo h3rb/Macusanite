@@ -1128,6 +1128,60 @@ export function noteEdges(model = {}, relations = {}) {
 }
 
 /**
+ * Progression columns for a set of anchors: where each card sits on a
+ * Kanban-style board of its group, by the heading tree. The top items —
+ * cards with no shallower ancestor inside the set — form the leftmost
+ * column (tier 0); a card under one of them sits one tier to the right,
+ * and so on down the outline. A card whose parent is not in the set is a
+ * top item of the set, however deep it sits in the vein. Returns a Map of
+ * anchor to column, in card order for the anchors present in the model.
+ */
+export function progressionColumns(model = {}, anchors = []) {
+  const notes = model.notes ?? [];
+  const target = new Set(anchors ?? []);
+  const parentOf = new Map();
+  for (const edge of hierarchyEdges(model)) {
+    const from = notes[edge.from]?.anchor;
+    const to = notes[edge.to]?.anchor;
+    if (from && to && target.has(from) && target.has(to)) parentOf.set(to, from);
+  }
+  const columns = new Map();
+  const depthOf = (anchor, seen = new Set()) => {
+    if (columns.has(anchor)) return columns.get(anchor);
+    if (seen.has(anchor)) return 0;
+    seen.add(anchor);
+    const parent = parentOf.get(anchor);
+    const depth = parent ? depthOf(parent, seen) + 1 : 0;
+    columns.set(anchor, depth);
+    return depth;
+  };
+  for (const note of notes) {
+    if (target.has(note.anchor)) depthOf(note.anchor);
+  }
+  return columns;
+}
+
+/**
+ * Lay entries out as progression columns: each entry's column steps right
+ * by `stepX`, and entries stack down their column in the order given, each
+ * `stepY` below the last card's bottom. Entries need a `key`, a finite
+ * `column`, and finite `height`. Returns a Map of key to `{x, y}`.
+ */
+export function layoutProgressionColumns(entries, { origin = { x: 0, y: 0 }, stepX = 0, stepY = 0 } = {}) {
+  const next = new Map();
+  const tops = new Map();
+  const list = (entries ?? []).filter((entry) => (
+    entry && entry.key !== undefined && Number.isFinite(entry.column) && entry.column >= 0 && Number.isFinite(entry.height)
+  ));
+  for (const entry of list) {
+    const y = tops.get(entry.column) ?? origin.y;
+    next.set(entry.key, { x: origin.x + entry.column * stepX, y });
+    tops.set(entry.column, y + entry.height + stepY);
+  }
+  return next;
+}
+
+/**
  * How far a card must move, in canvas pixels, before a drop changes its
  * membership — a nudge is not a placement.
  */
@@ -1790,7 +1844,7 @@ export const MAX_ARRANGE_CANDIDATES = 4096;
  * shape that exhausts the search stays where it already stands rather
  * than dropping onto the arrangement origin.
  */
-export function* arrangeCandidateOrigins(layout, origin, { columns = 1, stepX = 0, stepY = 0, layer = 0 } = {}) {
+export function* arrangeCandidateOrigins(layout, origin, { columns = 1, stepX = 0, stepY = 0, layer = 0, column = 0 } = {}) {
   if (!origin || !Number.isFinite(origin.x) || !Number.isFinite(origin.y)) return;
   if (!Number.isFinite(stepX) || !Number.isFinite(stepY)) return;
   if (layout === 'grid') {
@@ -1799,6 +1853,13 @@ export function* arrangeCandidateOrigins(layout, origin, { columns = 1, stepX = 
       for (let col = 0; col < columns; col += 1) {
         yield { x: origin.x + col * stepX, y: origin.y + row * stepY };
       }
+    }
+  } else if (layout === 'progression') {
+    // One column, top to bottom: the column's x is fixed, the search walks
+    // down it until the shape fits.
+    if (stepX <= 0 || stepY <= 0 || !Number.isInteger(column) || column < 0) return;
+    for (let k = 0; ; k += 1) {
+      yield { x: origin.x + column * stepX, y: origin.y + k * stepY };
     }
   } else if (layout === 'rows' || layout === 'layered') {
     if (stepX <= 0 || !Number.isFinite(layer)) return;
