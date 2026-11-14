@@ -421,8 +421,8 @@ tests/node/     unit tests for everything under src/lib plus the renderers
 ### Tests
 
 ```bash
-npm test                                  # 255 JS tests
-cargo test --manifest-path src-tauri/Cargo.toml   # 40 Rust tests
+npm test                                  # 355 JS tests
+cargo test --manifest-path src-tauri/Cargo.toml   # 41 Rust tests
 ```
 
 The Rust suite covers path traversal refusal, vault scanning (including the

@@ -282,6 +282,44 @@ impl Pending {
         self.full = false;
         Some(Batch { full, changes })
     }
+
+    /// A directory created and filled before its inotify watch is in place
+    /// reports the directory but not the files inside it. At flush time, walk
+    /// every created chamber and add the entries the watcher missed; paths
+    /// already noted keep their stronger kind.
+    fn expand_new_chambers(&mut self, root: &Path) {
+        let chambers: Vec<String> = self
+            .kinds
+            .iter()
+            .filter(|(path, kind)| kind.as_str() == CREATED && root.join(path).is_dir())
+            .map(|(path, _)| path.clone())
+            .collect();
+        for chamber in chambers {
+            let mut stack = vec![chamber];
+            while let Some(rel_dir) = stack.pop() {
+                let Ok(entries) = std::fs::read_dir(root.join(&rel_dir)) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let Some(rel) = relative(root, &entry.path()) else {
+                        continue;
+                    };
+                    if ignored(&rel) {
+                        continue;
+                    }
+                    let Ok(file_type) = entry.file_type() else {
+                        continue;
+                    };
+                    if file_type.is_dir() {
+                        self.note(rel.clone(), CREATED);
+                        stack.push(rel);
+                    } else if file_type.is_file() && vault::is_markdown(&rel) {
+                        self.note(rel, CREATED);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Remember a `.macusanite` file this application is about to write.
@@ -354,6 +392,7 @@ where
     };
 
     let flush_pending = Arc::clone(&pending);
+    let flush_root = root.clone();
     let emit = Arc::new(emit);
     std::thread::Builder::new()
         .name("macusanite-watch".to_string())
@@ -370,13 +409,19 @@ where
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
                 }
-                if let Some(batch) = flush_pending.lock().ok().and_then(|mut p| p.take()) {
-                    emit(batch);
+                if let Ok(mut p) = flush_pending.lock() {
+                    p.expand_new_chambers(&flush_root);
+                    if let Some(batch) = p.take() {
+                        emit(batch);
+                    }
                 }
             }
             // The watcher was dropped: hand over anything still queued.
-            if let Some(batch) = flush_pending.lock().ok().and_then(|mut p| p.take()) {
-                emit(batch);
+            if let Ok(mut p) = flush_pending.lock() {
+                p.expand_new_chambers(&flush_root);
+                if let Some(batch) = p.take() {
+                    emit(batch);
+                }
             }
         })
         .map_err(|e| format!("cannot start the watch thread: {e}"))?;

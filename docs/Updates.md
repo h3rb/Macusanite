@@ -12,6 +12,14 @@ install and restart.
   `createUpdaterArtifacts` is on, so `tauri build` emits a `.sig` next to each
   updater artifact (NSIS setup exe on Windows, `.app.tar.gz` on macOS,
   AppImage on Linux).
+- **Where the installed app lives.** On Windows the only bundle target is
+  NSIS with `installMode: "currentUser"`, so the app installs per user into
+  `%LOCALAPPDATA%\Macusanite` (AppData) — never Program Files, never with
+  admin rights. An update is the same NSIS installer run by the updater in
+  `passive` mode against that same folder: `macusanite.exe` is replaced in
+  place, the same way the portable `macusanite.exe` is replaced, and the app
+  restarts into the new version. There is no MSI and no per-machine install
+  to keep in sync.
 - **Check.** A few seconds after a vault opens — unless automatic checks are
   off — the app asks the updater for a newer version. Settings → Updates →
   **Check for updates** checks on demand at any time, even when automatic

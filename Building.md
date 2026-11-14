@@ -286,6 +286,26 @@ cp src-tauri/target/release/macusanite \
   src-tauri/target/release/bundle/appimage/*.AppImage release/
 ```
 
+### WSL
+
+WSL is a normal Linux build host, with two traps:
+
+* **Node.** Ubuntu 24.04's `nodejs` package is Node 18, which Vite 8 does not
+  support. Install Node 22 (`nvm`, NodeSource or the official tarball), put it
+  first on `PATH`, and confirm `node -v` before `npm run setup` or
+  `npm install`; the setup script trusts whatever `node` it finds first.
+* **Where the tree lives.** Keep the Linux checkout and its `node_modules` in
+  the Linux filesystem (for example `~/macusanite`), not under `/mnt/c`.
+  Windows and Linux install different native binaries for esbuild and Rollup,
+  so running `npm install` from both sides overwrites the other's
+  dependencies. Copy the working tree with
+  `rsync -a --exclude node_modules --exclude dist --exclude src-tauri/target <checkout>/ ~/macusanite/`,
+  then build and test in `~/macusanite`.
+
+The shell needs no display for `npm test`, `npm run build` or `cargo test`;
+`npm run tauri:dev` and a release build do need an X/Wayland session (or
+`xvfb-run`).
+
 ### Notes
 
 * **Build on old, run on new.** glibc compatibility is inherited from the build
@@ -316,9 +336,9 @@ cp src-tauri/target/release/macusanite \
 | `npm run build` | bundle the interface into `dist/` (`index.html` and `help.html`) | Node |
 | `npm run tauri:dev` | the real desktop window, hot reload | everything |
 | `npm run tauri:build` | release binary + installer, collected into `release/` (runs `npm run build` first) | everything |
-| `npm test` | 255 JavaScript tests (`node --test`, no browser needed) | Node |
+| `npm test` | 355 JavaScript tests (`node --test`, no browser needed) | Node |
 | `npm run test -- tests/node/mcp.test.js` | one suite | Node |
-| `cargo test --manifest-path src-tauri/Cargo.toml` | 40 Rust tests (paths, scanning, writes, undo/redo, watcher) | Rust |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | 41 Rust tests (paths, scanning, writes, undo/redo, watcher) | Rust |
 | `npm run docs` | regenerate [docs/Help.md](docs/Help.md) from the catalogue | Node |
 | `npm run docs:check` | fail if the manual is out of date (used by the tests) | Node |
 | `npm run vault:sample` | write the bundled sample vault to `reference-vault/` | Node |
@@ -364,11 +384,11 @@ the checklist, in order, cheapest first:
 
 ```bash
 # 1. the logic (no display, no Rust, ~3 s)
-npm test                                   # expect: 255 pass, 0 fail
+npm test                                   # expect: 355 pass, 0 fail
 npm run docs:check                         # expect: docs in sync
 
 # 2. the Rust half
-cargo test --manifest-path src-tauri/Cargo.toml    # expect: 40 pass
+cargo test --manifest-path src-tauri/Cargo.toml    # expect: 41 pass
 
 # 3. the interface bundle (both pages must be emitted)
 npm run build && ls dist/index.html dist/help.html
