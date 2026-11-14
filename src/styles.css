@@ -2871,6 +2871,59 @@ dialog::backdrop {
   cursor: pointer;
 }
 
+.wb-submenu-panel {
+  position: fixed;
+  z-index: 121;
+  min-width: 190px;
+}
+
+.wb-menu-item.wb-submenu-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+}
+
+.wb-submenu-trigger[aria-expanded="true"] {
+  background: var(--bg-hover);
+}
+
+.wb-submenu-value {
+  overflow: hidden;
+  margin-left: auto;
+  color: var(--text-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-submenu-arrow {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.wb-submenu-trigger:has(.wb-submenu-value) .wb-submenu-arrow {
+  margin-left: 0;
+}
+
+.wb-menu-item.wb-submenu-choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.wb-submenu-choice-label {
+  flex: 1;
+}
+
+.wb-menu-check {
+  width: 1em;
+  color: var(--text);
+  font-weight: 700;
+  text-align: center;
+}
+
 .wb-menu-label {
   display: block;
   padding: 6px 10px 0;
@@ -3092,9 +3145,9 @@ dialog::backdrop {
   position: absolute;
   min-height: 96px;
   padding: 6px 8px 8px;
-  background: #fff3a6;
-  color: #3a3300;
-  border: 1px solid #d8c94c;
+  background: var(--wb-annotation-color, #fff3a6);
+  color: #242424;
+  border: 1px solid var(--wb-annotation-border, #d8c94c);
   border-radius: 3px;
   box-shadow: 0 5px 14px rgba(0, 0, 0, 0.22);
   pointer-events: auto;
@@ -3149,7 +3202,7 @@ dialog::backdrop {
 }
 
 .wb-annotation-text::placeholder {
-  color: rgba(58, 51, 0, 0.55);
+  color: rgba(0, 0, 0, 0.55);
 }
 
 [data-theme='light'] .wb-annotation {
@@ -3276,6 +3329,12 @@ dialog::backdrop {
   opacity: 0.62;
 }
 
+/* A kind's translucency belongs to its wire, not to the diamond that ends it:
+ * the cut marker stays solid so it reads as the clickable control it is. */
+.wb-edge-cut {
+  opacity: 1;
+}
+
 .wb-edge-contains {
   stroke: var(--text-faint);
   stroke-width: 1.2;
@@ -3376,6 +3435,13 @@ dialog::backdrop {
   font-weight: 700;
 }
 
+/* A short leader marks labels moved off their wire to avoid a collision. */
+.wb-edge-label-leader {
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  pointer-events: none;
+}
+
 /* The word sits on the line and is the handle: clicking it cycles the
  * relationship (see the panel), so it alone takes pointer events inside the
  * otherwise untouchable edge layer. */
@@ -3420,6 +3486,29 @@ dialog::backdrop {
 
 [data-theme='light'] .wb-card {
   box-shadow: 0 6px 18px rgba(20, 30, 45, 0.12);
+}
+
+/* Content-sized cards grow to their prose instead of scrolling it: no fixed
+   box, and neither the prose nor the tags clip. Only full cards use this;
+   compact and thumbnail cards keep the boxes designed for them. */
+.wb-card.is-content-sized {
+  height: auto;
+}
+
+.wb-card.is-content-sized .wb-card-rendered {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.wb-card.is-content-sized .wb-card-body {
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.wb-card.is-content-sized .wb-card-foot {
+  max-height: none;
+  overflow: visible;
 }
 
 .wb-card.is-dragging {
@@ -3477,6 +3566,7 @@ dialog::backdrop {
 .wb-card.is-mode-compact .wb-fields,
 .wb-card.is-mode-compact .wb-card-body,
 .wb-card.is-mode-compact .wb-card-rendered,
+.wb-card.is-mode-compact .wb-resources,
 .wb-card.is-mode-compact .wb-card-foot {
   display: none;
 }
@@ -3501,6 +3591,7 @@ dialog::backdrop {
 .wb-card.is-mode-thumbnail .wb-fields,
 .wb-card.is-mode-thumbnail .wb-card-body,
 .wb-card.is-mode-thumbnail .wb-card-rendered,
+.wb-card.is-mode-thumbnail .wb-resources,
 .wb-card.is-mode-thumbnail .wb-card-foot,
 .wb-card.is-mode-thumbnail .wb-meta-line {
   display: none;
@@ -3600,6 +3691,7 @@ dialog::backdrop {
 .wb-card.is-folded .wb-fields,
 .wb-card.is-folded .wb-card-body,
 .wb-card.is-folded .wb-card-rendered,
+.wb-card.is-folded .wb-resources,
 .wb-card.is-folded .wb-card-foot {
   display: none;
 }
@@ -3742,6 +3834,81 @@ dialog::backdrop {
 
 .wb-card-rendered:focus {
   outline: none;
+  background: var(--bg-sunken);
+}
+
+/* Attachments and web URLs attached to a node, under its prose. */
+.wb-resources {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px 10px 7px;
+  border-top: 1px dashed var(--border);
+  background: var(--panel);
+}
+
+.wb-resource {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wb-resource-link {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 1px 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wb-resource-link:hover {
+  text-decoration: underline;
+}
+
+.wb-resource-icon {
+  flex: 0 0 auto;
+  font-size: 10px;
+  opacity: 0.9;
+}
+
+.wb-resource-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-resource-meta {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-resource-x {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  color: var(--text-faint);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.wb-resource-x:hover {
+  color: var(--error);
   background: var(--bg-sunken);
 }
 

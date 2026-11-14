@@ -93,8 +93,8 @@ line in the graph towards the colour of their target.
 This page opens as a Worldbuilding canvas (the switch at the top right of the
 centre pane). Everything new lives here:
 
-* **Overview** folds every card and link section, then fits the whole graph to
-  the screen — a bird's-eye table of contents. **Fit**, **Fit selection** and
+* **Overview** folds every card, then fits the whole graph to the screen — a
+  bird's-eye table of contents. **Fit**, **Fit selection** and
   **Centre** find far-apart cards without panning.
 * Cards snap to guides while dragging; a Ctrl+click selection drags as a unit,
   then **Align** and **Distribute** tidy the set.
@@ -435,6 +435,8 @@ function showcaseWorldRecord() {
     'ann-tour-1': { id: 'ann-tour-1', x: 832, y: 712, text: 'Start here: Overview folds everything, then fits.' },
     'ann-tour-2': { id: 'ann-tour-2', x: 40, y: 1720, text: 'Elbow wires + arrowheads are on for this canvas.' },
   };
+  // The retired “links” part, kept as saved data older records carry: the
+  // canvas ignores it now that a card's fold is its only fold.
   const folded = { 'the-three-panes': { links: true } };
   const view = { x: 0, y: 0, s: 1 };
   const current = { positions, groups, relations, folded, types, fields, colors, images, pinned, locked, annotations, view };

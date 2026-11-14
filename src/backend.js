@@ -201,6 +201,12 @@ const fallbackCommands = {
     if (record !== false) virtual.record({ path, before, after: contents, label: label ?? `update ${name}` });
     return { path };
   },
+  async delete_meta({ name }) {
+    const path = join(META_DIR, name);
+    const deleted = virtual.files.delete(path);
+    virtual.persist();
+    return deleted;
+  },
   async append_log({ level, message }) {
     virtual.logs.push({ ts: new Date().toISOString(), level, message });
     virtual.persist();
@@ -380,8 +386,12 @@ export const backend = {
     label: label ?? null,
     record,
   }),
+  /** Delete a meta file without a history entry; a missing file is fine. */
+  deleteMeta: (name) => invoke('delete_meta', { name }),
   reveal: () => invoke('reveal_meta', {}),
   openExternal: (url) => invoke('open_external', { url }),
+  /** Open one file under `.macusanite/node-files/` with the OS default app. */
+  openAttachment: (name) => invoke('open_attachment', { name }),
   /** The manual, in its own window (the theme is passed because it has no vault). */
   openHelpWindow: (theme) => invoke('open_help_window', { theme: theme ?? null }),
   history: () => invoke('history_state', {}),

@@ -90,8 +90,8 @@ fn meta_file(root: &Path, name: &str) -> std::path::PathBuf {
 }
 
 /// Guard against `../` sneaking in through an IPC-supplied meta file name.
-/// Flat names are the rule; one level of nesting is allowed for node images,
-/// which live as files under `node-images/`.
+/// Flat names are the rule; one level of nesting is allowed for node images
+/// (`node-images/`) and attached files (`node-files/`).
 fn safe_meta_name(name: &str) -> Result<&str, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() || trimmed.contains('\\') || trimmed.contains("..") {
@@ -99,11 +99,22 @@ fn safe_meta_name(name: &str) -> Result<&str, String> {
     }
     if trimmed.contains('/') {
         let (dir, file) = trimmed.split_once('/').unwrap();
-        if dir != "node-images" || file.is_empty() || file.contains('/') {
+        if (dir != "node-images" && dir != "node-files") || file.is_empty() || file.contains('/') {
             return Err(format!("invalid meta file name: {name}"));
         }
     }
     Ok(trimmed)
+}
+
+/// The path of one attached file, refusing anything outside `node-files/`.
+/// The frontend only ever asks for files it recorded, but the command is an
+/// IPC boundary like any other: validate here, not there.
+pub fn node_file_path(root: &Path, name: &str) -> Result<std::path::PathBuf, String> {
+    let name = safe_meta_name(name)?;
+    if !name.starts_with("node-files/") {
+        return Err(format!("not an attachment: {name}"));
+    }
+    Ok(meta_file(root, name))
 }
 
 /* ── reading and writing ───────────────────────────────────────────────── */
@@ -126,6 +137,18 @@ pub fn write_meta_raw(root: &Path, name: &str, contents: &str) -> Result<(), Str
 /// Read a meta file as JSON, falling back when it is missing or malformed.
 pub fn read_json(root: &Path, name: &str) -> Option<Value> {
     read_meta(root, name).and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+}
+
+/// Delete a meta file. Unrecorded and idempotent: a missing file is not an
+/// error, so orphan cleanup can sweep without racing its own deletes.
+/// Node-image cleanup deletes through here, never through the history stack.
+pub fn delete_meta(root: &Path, name: &str) -> Result<bool, String> {
+    let name = safe_meta_name(name)?;
+    match fs::remove_file(meta_file(root, name)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("{name}: {e}")),
+    }
 }
 
 /// Write a meta file, optionally recording an undoable history entry.
@@ -292,6 +315,22 @@ mod tests {
         assert_eq!(text.lines().count(), 2);
         assert!(text.contains("\"info\""));
         assert!(text.contains("hello"));
+    }
+
+    #[test]
+    fn delete_meta_is_unrecorded_and_idempotent() {
+        let root = std::env::temp_dir().join("macusanite-meta-delete");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        ensure_meta(&root, None, None).unwrap();
+
+        write_meta(&root, "node-images/orphan.png", "data:image/png;base64,AAA", Some("node image"), false).unwrap();
+        assert!(meta_dir(&root).join("node-images").join("orphan.png").exists());
+        assert!(delete_meta(&root, "node-images/orphan.png").unwrap());
+        assert!(!meta_dir(&root).join("node-images").join("orphan.png").exists());
+        assert!(!delete_meta(&root, "node-images/orphan.png").unwrap(), "missing is not an error");
+        assert!(crate::history::load(&root).undo.is_empty(), "deletes never enter the stack");
+        assert!(delete_meta(&root, "../evil.png").is_err());
     }
 
     #[test]

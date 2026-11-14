@@ -302,6 +302,14 @@ fn write_meta(
 }
 
 #[tauri::command]
+fn delete_meta(name: String, state: State<'_, VaultState>) -> Result<bool, String> {
+    let root = state.root()?;
+    // Unrecorded, like the node-image writes it cleans up after: the canvas
+    // history steps the reference in state.json, not the image bytes.
+    meta::delete_meta(&root, &name)
+}
+
+#[tauri::command]
 fn append_log(level: String, message: String, state: State<'_, VaultState>) -> Result<(), String> {
     let root = state.root()?;
     meta::append_log(&root, &level, &message);
@@ -434,6 +442,28 @@ fn is_web_url(url: &str) -> bool {
         && !trimmed.contains(|c: char| c.is_whitespace() || c == '"' || c == '<' || c == '>')
 }
 
+/// Open one attached file with the operating system's default application.
+/// Only files under `.macusanite/node-files/` are eligible; the path is
+/// validated in the core, never trusted from the webview.
+#[tauri::command]
+fn open_attachment(state: State<'_, VaultState>, name: String) -> Result<String, String> {
+    let root = state.root()?;
+    let path = meta::node_file_path(&root, &name)?;
+    if !path.is_file() {
+        return Err(format!("attachment not found: {name}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("explorer").arg(&path).spawn();
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(&path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = std::process::Command::new("xdg-open").arg(&path).spawn();
+
+    result.map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    Ok(name)
+}
+
 /// Open a link in the user's browser rather than navigating the vault window.
 #[tauri::command]
 fn open_external(app: AppHandle, url: String) -> Result<(), String> {
@@ -484,6 +514,7 @@ pub fn run() {
             create_chamber,
             read_meta,
             write_meta,
+            delete_meta,
             append_log,
             reveal_meta,
             history_state,
@@ -494,6 +525,7 @@ pub fn run() {
             pick_file,
             quit_app,
             open_external,
+            open_attachment,
             backup_vault_s3,
         ])
         .setup(|app| {

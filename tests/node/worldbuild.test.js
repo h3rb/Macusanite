@@ -7,22 +7,24 @@ import {
   RELATION_KINDS, DEFAULT_RELATION, relationKind, relationKey,
   setRelation, dropRelations, relationOf, groupEndpoint, groupRelationEdges, bondEdges,
   NODE_TYPES, DEFAULT_NODE_TYPE, nodeType, nodeTypeOf, setNodeType,
-  NODE_FIELDS, nodeFields, nodeFieldOf, setNodeField, fieldRangeHint, UNIT_SUGGESTIONS, normalizeUnit, unitSuggestions,
+  NODE_FIELDS, nodeFields, nodeFieldOf, setNodeField, fieldRangeHint, UNIT_SUGGESTIONS, normalizeUnit, rememberUnit, UNIT_VOCABULARY_LIMIT, unitSuggestions,
   ZOOM_MIN, ZOOM_MAX, clampView, zoomViewAt, anchorOfView, viewOfAnchor,
   DROP_MIN_PX, dropMembershipKind,
   canvasSnapshot, pruneSnapshotAnchors, renameAnchorIn,
   DEFAULT_STEP_NAME, normalizeHistoryEntry, cleanHistoryStack, historyJump, historyKey,
   cleanView, restoreSnapshot, canvasRecordPatch,
   pushHistoryStep, rewriteHistoryStack, renameHistoryAnchor, pruneHistoryStack, dropAnchorFromGroups, fitView,
-  centreView, snapDelta, canvasHealth, layoutSelection, normalizeRouting, elbowPoints, connectorCurve, sampleConnectorCurve, CONNECTOR_CUT_SPAN, cleanAnnotations,
+  centreView, snapDelta, canvasHealth, layoutSelection, normalizeRouting, elbowPoints,   connectorCurve, sampleConnectorCurve, spreadConnectorCurves, prepareConnectorGeometry, CONNECTOR_LANE_PITCH, CONNECTOR_SPREAD, CONNECTOR_CUT_SPAN, cleanAnnotations,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
   nodeImageMetaNames, nodeImageMetaNamesFromSnapshot, referencedNodeImageMetaNames, orphanedNodeImageMetaNames,
   NODE_IMAGE_MAX_SIDE, NODE_IMAGE_QUALITY, nodeImageSize,
+  NODE_FILES_DIR, nodeFileRef, nodeFileMetaName, nodeFileMetaNames, nodeFileMetaNamesFromSnapshot,
+  referencedNodeFileMetaNames, orphanedNodeFileMetaNames, cleanNodeResources, normalizeWebUrl,
   lockedContentAnchors, sourceSectionRanges, enforceLockedSource, lockedRangeAt,
   connectedAnchors, lineageAnchors, anchorsInRect, relationshipDepths, canvasSearch,
-  connectorList, connectorKey, pathAnchors, effectiveRouting, cleanCardModes, cleanCollapsedGroups, proseLinkBetween,
+  connectorList, connectorKey, pathAnchors, effectiveRouting, cleanCardModes, cleanCollapsedGroups, proseLinkBetween, unlinkProseBetween,
   arrangeCandidateOrigins, findArrangeOrigin,
-  progressionColumns, layoutProgressionColumns,
+  progressionColumns, layoutProgressionColumns, placeConnectorLabels,
 } from '../../src/lib/worldbuild.js';
 
 const VEIN = `---
@@ -334,6 +336,27 @@ test('proseLinkBetween reports the markdown link a bond removal leaves behind', 
   assert.equal(proseLinkBetween(mention, 'a', 'a'), null);
 });
 
+test('unlinkProseBetween takes the markdown link out and keeps its words', () => {
+  const model = parseNotes('# A\n\nSee [[#B]] and [[#C]].\n\n## B\n\n[[A]] again.\n\n## C\n\nEnd.\n');
+  // Both directions go: the wire only leaves once neither note links the other.
+  const unlinked = unlinkProseBetween(model, 'a', 'b');
+  assert.equal(unlinked.removed, 2);
+  assert.equal(unlinked.model.notes[0].body, 'See B and [[#C]].');
+  assert.equal(unlinked.model.notes[1].body, 'A again.');
+  assert.equal(proseLinkBetween(unlinked.model, 'a', 'b'), null);
+  assert.equal(proseLinkBetween(unlinked.model, 'a', 'c')?.kind, 'section', 'other links stay');
+  // The alias is what the reader saw, so it is what the prose keeps.
+  const aliased = parseNotes('# A\n\nSee [[#B|the second one]].\n\n## B\n\nEnd.\n');
+  assert.equal(unlinkProseBetween(aliased, 'a', 'b').model.notes[0].body, 'See the second one.');
+  // Links parse again from the new prose, so nothing else about the note drifts.
+  assert.deepEqual(unlinked.model.notes[0].links.map((link) => link.anchor), ['c']);
+  // Nothing to unlink: the model comes back untouched.
+  const bare = parseNotes('# A\n\nBody.\n\n## B\n\nBody.\n');
+  assert.equal(unlinkProseBetween(bare, 'a', 'b').removed, 0);
+  assert.equal(unlinkProseBetween(bare, 'a', 'b').model, bare);
+  assert.equal(unlinkProseBetween(bare, 'a', 'a').removed, 0);
+});
+
 test('pathAnchors traces downstream and upstream along directed bonds', () => {
   const model = parseNotes('# A\n\nBody.\n\n## B\n\nBody.\n\n## C\n\nBody.\n');
   const relations = setRelation(setRelation({}, 'a', 'b', 'contains'), 'b', 'c', 'controls');
@@ -592,6 +615,39 @@ test('an attribute is a value and unit pair; units normalise and join the autoco
   assert.equal(normalizeUnit(''), '');
 });
 
+test('hand-typed units stay offered after their field is cleared or card deleted', () => {
+  let fields = setNodeField({}, 'attribute', 'a', 'unit', '  furlongs  per  day ');
+  let learned = rememberUnit([], nodeFieldOf(fields, 'a', 'unit'));
+  assert.deepEqual(learned, ['furlongs per day']);
+  assert.ok(unitSuggestions(fields, learned).includes('furlongs per day'));
+
+  // Clearing the unit removes it from the stored fields, but not from the
+  // vocabulary that feeds the autocomplete.
+  fields = setNodeField(fields, 'attribute', 'a', 'unit', '');
+  assert.equal(nodeFieldOf(fields, 'a', 'unit'), '');
+  assert.ok(unitSuggestions(fields, learned).includes('furlongs per day'));
+
+  // Deleting the card removes its fields record entirely; the suggestion stays.
+  delete fields.a;
+  assert.ok(unitSuggestions(fields, learned).includes('furlongs per day'));
+
+  // Learned units lead the non-predetermined suggestions, newest first, and
+  // de-duplicate case-insensitively against both learned and stored values.
+  learned = rememberUnit(learned, 'Tokens');
+  learned = rememberUnit(learned, 'tokens');
+  const suggestions = unitSuggestions({ b: { unit: 'FURLONGS PER DAY' } }, learned);
+  assert.deepEqual(suggestions.slice(UNIT_SUGGESTIONS.length, UNIT_SUGGESTIONS.length + 2), ['tokens', 'furlongs per day']);
+  assert.equal(suggestions.filter((unit) => unit.toLowerCase() === 'tokens').length, 1);
+  assert.equal(suggestions.filter((unit) => unit.toLowerCase() === 'furlongs per day').length, 1);
+
+  // An empty input never adds a blank suggestion, and the list is bounded.
+  assert.deepEqual(rememberUnit(learned, '   '), learned);
+  let many = [];
+  for (let i = 0; i <= UNIT_VOCABULARY_LIMIT; i++) many = rememberUnit(many, `unit ${i}`);
+  assert.equal(many.length, UNIT_VOCABULARY_LIMIT);
+  assert.equal(many[0], `unit ${UNIT_VOCABULARY_LIMIT}`);
+});
+
 test('fieldRangeHint renders the declared range for the editor', () => {
   assert.equal(fieldRangeHint(nodeFields('skill')[0]), '0–10');
   assert.equal(fieldRangeHint({ kind: 'number', min: 2 }), '≥ 2');
@@ -730,6 +786,8 @@ test('canvasSnapshot carries every canvas slice, node types, fields and colours 
     colors: { a: '#ff0000', b: '#00ff00' },
     images: { a: 'data:image/png;base64,AAA' },
     locked: { a: true },
+    cardSizes: { a: 'content', b: 'fixed' },
+    resources: { a: { files: [{ name: 'field.pdf', ref: '.macusanite/node-files/field.pdf', size: 2048 }], urls: [{ label: 'example.com', url: 'https://example.com/' }] } },
     view: { x: 3, y: 4, s: 1.5 },
   });
   const back = JSON.parse(str);
@@ -742,11 +800,15 @@ test('canvasSnapshot carries every canvas slice, node types, fields and colours 
   assert.deepEqual(back.colors, { a: '#ff0000', b: '#00ff00' });
   assert.deepEqual(back.images, { a: 'data:image/png;base64,AAA' });
   assert.deepEqual(back.locked, { a: true });
+  // Both heights survive: `fixed` is an override of a content-sized vault.
+  assert.deepEqual(back.cardSizes, { a: 'content', b: 'fixed' });
+  assert.deepEqual(back.resources.a.urls, [{ label: 'example.com', url: 'https://example.com/' }]);
+  assert.equal(back.resources.a.files[0].ref, '.macusanite/node-files/field.pdf');
   assert.deepEqual(back.view, { x: 3, y: 4, s: 1.5 });
   // Missing slices default, camera included.
   const bare = JSON.parse(canvasSnapshot());
   assert.deepEqual(bare, {
-    positions: {}, groups: {}, relations: {}, folded: {}, types: {}, fields: {}, colors: {}, images: {}, pinned: {}, locked: {}, cardModes: {}, collapsedGroups: {}, annotations: {}, view: { x: 0, y: 0, s: 1 },
+    positions: {}, groups: {}, relations: {}, folded: {}, types: {}, fields: {}, colors: {}, images: {}, resources: {}, pinned: {}, locked: {}, cardModes: {}, cardSizes: {}, collapsedGroups: {}, annotations: {}, view: { x: 0, y: 0, s: 1 },
   });
 });
 
@@ -855,6 +917,60 @@ test('replaced or removed node images are orphaned only once nothing references 
   // A file shared by two nodes is never orphaned while one still names it.
   assert.deepEqual(nodeImageMetaNames({ x: '.macusanite/node-images/s.png', y: '.macusanite/node-images/s.png' }), ['node-images/s.png']);
   assert.deepEqual(nodeImageMetaNamesFromSnapshot('not json'), []);
+});
+
+test('node resources attach files under node-files and validate web URLs', () => {
+  assert.equal(NODE_FILES_DIR, '.macusanite/node-files');
+  assert.equal(nodeFileRef('brief.pdf'), '.macusanite/node-files/brief.pdf');
+  assert.equal(nodeFileMetaName('.macusanite/node-files/brief.pdf'), 'node-files/brief.pdf');
+  assert.equal(nodeFileMetaName('node-files/brief.pdf'), 'node-files/brief.pdf');
+  assert.equal(nodeFileMetaName('.macusanite/node-images/x.png'), null);
+  assert.equal(nodeFileMetaName('../secret.txt'), null);
+  assert.equal(normalizeWebUrl('https://example.com/a b'), 'https://example.com/a%20b');
+  assert.equal(normalizeWebUrl('http://example.com'), 'http://example.com/');
+  assert.equal(normalizeWebUrl('javascript:alert(1)'), null);
+  assert.equal(normalizeWebUrl('file:///etc/passwd'), null);
+  assert.equal(normalizeWebUrl('not a url'), null);
+
+  const cleaned = cleanNodeResources({
+    a: {
+      files: [
+        { name: 'brief.pdf', ref: '.macusanite/node-files/brief.pdf', size: 2048, type: 'application/pdf' },
+        { name: 'again.pdf', ref: '.macusanite/node-files/brief.pdf' },
+        { name: 'escape', ref: '../secret.txt' },
+      ],
+      urls: [
+        { label: 'Example', url: 'https://example.com/' },
+        { label: 'dup', url: 'https://example.com/' },
+        { label: 'bad', url: 'file:///etc/passwd' },
+      ],
+    },
+    empty: { files: [], urls: [] },
+    junk: 'nope',
+  });
+  assert.deepEqual(Object.keys(cleaned), ['a']);
+  assert.equal(cleaned.a.files.length, 1);
+  assert.deepEqual(cleaned.a.files[0], {
+    name: 'brief.pdf', ref: '.macusanite/node-files/brief.pdf', size: 2048, type: 'application/pdf',
+  });
+  assert.deepEqual(cleaned.a.urls, [{ label: 'Example', url: 'https://example.com/' }]);
+});
+
+test('attachment files are orphans only when no record or snapshot names them', () => {
+  const snap = (resources) => JSON.stringify({ resources });
+  const resources = { a: { files: [{ ref: '.macusanite/node-files/keep.pdf' }] } };
+  const referenced = referencedNodeFileMetaNames({
+    resources,
+    history: { past: [{ name: 'Attach', snap: snap(resources) }], future: [] },
+    worlds: { 'Other.md': { resources: { b: { files: [{ ref: '.macusanite/node-files/undo.pdf' }] } } } },
+  });
+  assert.deepEqual([...referenced].sort(), ['node-files/keep.pdf', 'node-files/undo.pdf']);
+  assert.deepEqual(
+    orphanedNodeFileMetaNames(['.macusanite/node-files/gone.pdf', '.macusanite/node-files/keep.pdf'], referenced),
+    ['node-files/gone.pdf'],
+  );
+  assert.deepEqual(nodeFileMetaNames(resources), ['node-files/keep.pdf']);
+  assert.deepEqual(nodeFileMetaNamesFromSnapshot('not json'), []);
 });
 
 test('node images are capped at 320px on the longest side and never upscaled', () => {
@@ -1438,10 +1554,14 @@ test('cleanAnnotations keeps usable margin notes only', () => {
   assert.deepEqual(cleanAnnotations(null), {});
   assert.deepEqual(cleanAnnotations({
     memo: { x: 12.4, y: 30.6, text: '  check this later  ' },
+    colored: { x: 20, y: 40, text: 'remember color', color: '#57D364' },
+    invalidColor: { x: 50, y: 60, text: 'ignore invalid color', color: 'red' },
     blank: { x: 0, y: 0, text: '   ' },
     broken: { x: 'east', y: 0, text: 'junk' },
   }), {
     memo: { id: 'memo', x: 12, y: 31, text: 'check this later' },
+    colored: { id: 'colored', x: 20, y: 40, text: 'remember color', color: '#57d364' },
+    invalidColor: { id: 'invalidColor', x: 50, y: 60, text: 'ignore invalid color' },
   });
 });
 
@@ -1531,6 +1651,191 @@ test('the occlusion sampler is the drawn curve: sampled points lie on the SVG pa
   assert.match(wide.path, /^M 100 25 C 190 25 210 125 300 125$/);
   const narrow = connectorCurve({ x: 0, y: 0, width: 100, height: 50 }, { x: 130, y: 0, width: 100, height: 50 });
   assert.match(narrow.path, /^M 100 25 C 136 25 94 25 130 25$/);
+});
+
+test('connector preparation uses actual card rects, lane offsets and per-edge routing', () => {
+  const a = { x: 0, y: 0, width: 300, height: 500 };
+  const b = { x: 500, y: 0, width: 320, height: 100 };
+  const c = { x: 500, y: 300, width: 300, height: 100 };
+  const connectors = [
+    { from: 'a', to: 'b', kind: 'mention' },
+    { from: 'a', to: 'c', kind: 'mention' },
+  ];
+  const prepared = prepareConnectorGeometry(connectors, {
+    rectFor: (endpoint) => ({ a, b, c })[endpoint] ?? null,
+    routing: normalizeRouting({ edges: { 'mention:a->b': { elbow: true } } }),
+    isStacked: () => false,
+  });
+  assert.equal(prepared.length, 2);
+  // a has two wires: half a lane above and half below its real centre.
+  assert.equal(CONNECTOR_LANE_PITCH, 16);
+  assert.equal(prepared[0].from.y, -8);
+  assert.equal(prepared[1].from.y, 8);
+  assert.equal(prepared[0].from.height, 500, 'the content-sized height is not CARD_H');
+  assert.equal(prepared[0].elbow, true);
+  assert.equal(prepared[1].elbow, false);
+  // The drawn start uses a's 500px height and the first lane offset, not a
+  // plain 260px card: 0 + 500/2 - 8.
+  assert.match(
+    connectorCurve(prepared[0].from, prepared[0].to, prepared[0]).path,
+    /^M 300 242 /,
+  );
+  // The second wire is a horizontal curve on the lower lane, while the first
+  // takes its own elbow routing.
+  assert.match(
+    connectorCurve(prepared[1].from, prepared[1].to, prepared[1]).path,
+    /^M 300 258 C /,
+  );
+  assert.match(
+    connectorCurve(prepared[0].from, prepared[0].to, prepared[0]).path,
+    /^M 300 242 L /,
+  );
+
+  // A stacked pair skips the lane offset and stays vertical.
+  const stacked = prepareConnectorGeometry([connectors[0]], {
+    rectFor: (endpoint) => ({ a, b })[endpoint] ?? null,
+    isStacked: () => true,
+  });
+  assert.equal(stacked[0].vertical, true);
+  assert.equal(stacked[0].from.y, 0);
+});
+
+test('connector labels with zero-size measurements still keep clear of neighbours', () => {
+  const label = (y) => ({
+    label: 'ally',
+    width: 0,
+    height: 0,
+    at: (t) => ({ x: t * 400, y }),
+  });
+  const [first, second] = placeConnectorLabels([label(0), label(16)]);
+
+  assert.deepEqual(first, { x: 200, y: 0 });
+  assert.deepEqual(second, { x: 152, y: 16 }, 'the second word slides along its wire using the fallback text box');
+  const fallbackWidth = 'ally'.length * 6 + 6;
+  const fallbackHeight = 12 + 6;
+  const apartX = Math.abs(first.x - second.x) - fallbackWidth;
+  const apartY = Math.abs(first.y - second.y) - fallbackHeight;
+  assert.ok(apartX >= 14 || apartY >= 14, 'estimated text boxes retain the label gap');
+
+  const stuck = { label: 'ally', width: 0, height: 0, at: () => ({ x: 40, y: 40 }) };
+  const [onWire, fallback] = placeConnectorLabels([stuck, stuck]);
+  assert.deepEqual(onWire, { x: 40, y: 40 });
+  assert.deepEqual(fallback, { x: 40, y: 76, leader: { x: 40, y: 40 } },
+    'coincident wire labels move off the midpoint and get a leader instead of overlapping');
+});
+
+test('connector labels stay off a node instead of sitting behind it', () => {
+  const wire = (t) => ({ x: t * 800, y: 100 });
+  const card = { x: 320, y: 20, width: 300, height: 200 };
+  const [spot] = placeConnectorLabels([{ label: 'ally', width: 40, height: 12, at: wire, rects: [card] }]);
+  assert.ok(spot, 'the word is still placed');
+  // The midpoint (400, 100) is inside the card; the word slides along its wire.
+  assert.ok(spot.x < card.x - 4 || spot.x > card.x + card.width + 4, `clear of the card, got ${spot.x}`);
+});
+
+test('connector labels clear a group border and its title tab', () => {
+  const band = { x: 100, y: 100, width: 400, height: 8 };
+  const down = (t) => ({ x: 300, y: t * 300 });
+  const [overBand] = placeConnectorLabels([{ label: 'ally', width: 40, height: 12, at: down, rects: [band] }]);
+  assert.ok(overBand);
+  assert.ok(overBand.y < band.y - 4 || overBand.y > band.y + band.height + 4,
+    `the word leaves the border band, got ${overBand.y}`);
+
+  // A group's fill is not a surface: the same wire may keep its midpoint word.
+  const [insideBox] = placeConnectorLabels([{ label: 'ally', width: 40, height: 12, at: down }]);
+  assert.deepEqual(insideBox, { x: 300, y: 150 });
+});
+
+test('connector labels stay visible when every slot is covered', () => {
+  const card = { x: 0, y: 0, width: 800, height: 300 };
+  const wire = (t) => ({ x: t * 800, y: 100 });
+  const [spot] = placeConnectorLabels([{ label: 'ally', width: 40, height: 12, at: wire, rects: [card] }]);
+  // No slot or leader is clear, so the least-covered slot is kept rather than
+  // hiding the relationship word entirely.
+  assert.ok(spot);
+  assert.equal(typeof spot.x, 'number');
+});
+
+test('connector labels move away from another wire crossing their candidate position', () => {
+  const horizontal = (y) => (t) => ({ x: t * 400, y });
+  const verticalCrossing = (t) => ({ x: 200, y: -80 + t * 160 });
+  const [spot] = placeConnectorLabels([{
+    label: 'ally', width: 0, height: 0,
+    at: horizontal(0),
+    obstacles: [verticalCrossing],
+  }]);
+
+  assert.deepEqual(spot, { x: 176, y: 0 }, 'the midpoint crossing is avoided using the next along-wire slot');
+});
+
+test('a trimmed wire can point at a card hidden by a collapsed group', () => {
+  const source = { x: 0, y: 0, width: 300, height: 100 };
+  const hidden = { x: 2400, y: 0, width: 300, height: 100 };
+  const connectors = [{ from: 'source', to: 'hidden', kind: 'mention' }];
+  // The far card is inside a collapsed group, so the canvas has no visible
+  // rect for it; its real place comes only from the cut-wire proxy.
+  const rectFor = (endpoint) => (endpoint === 'source' ? source : null);
+  let proxied = 0;
+  const proxyRectFor = (endpoint) => {
+    proxied += 1;
+    return endpoint === 'hidden' ? hidden : null;
+  };
+
+  // Without Trim the hidden end stays hidden, exactly as before.
+  assert.deepEqual(prepareConnectorGeometry(connectors, { rectFor, proxyRectFor }), []);
+  assert.equal(proxied, 0);
+
+  for (const elbow of [false, true]) {
+    const prepared = prepareConnectorGeometry(connectors, {
+      rectFor,
+      proxyRectFor,
+      routing: normalizeRouting({ cut: true, elbow }),
+    });
+    assert.equal(prepared.length, 1);
+    assert.equal(prepared[0].edge.to, 'hidden');
+    assert.equal(prepared[0].to.x, hidden.x);
+    assert.equal(prepared[0].limit, CONNECTOR_CUT_SPAN);
+    const [wire] = spreadConnectorCurves(prepared);
+    assert.ok(wire.cut, `${elbow ? 'elbow' : 'curve'} wire is cut`);
+    assert.ok(wire.cut.total > CONNECTOR_CUT_SPAN);
+    assert.ok(wire.cut.x >= CONNECTOR_CUT_SPAN - 1);
+  }
+});
+
+test('connectors that would share a path are spread apart', () => {
+  const a = { x: 0, y: 0, width: 100, height: 50 };
+  const b = { x: 300, y: 0, width: 100, height: 50 };
+  const entries = [
+    { from: a, to: b, key: 'first' },
+    { from: a, to: b, key: 'second' },
+    { from: a, to: b, key: 'third' },
+    { from: b, to: a, key: 'reverse' },
+  ];
+  const curves = spreadConnectorCurves(entries);
+  const paths = curves.map((curve) => curve.path);
+  assert.equal(new Set(paths).size, paths.length, 'every wire has its own path');
+  assert.equal(curves[0].path, connectorCurve(a, b).path, 'the first wire keeps its place');
+  // Spread is perpendicular, in even lanes, and the caller's fields survive.
+  assert.equal(curves[1].from.y - a.y, CONNECTOR_SPREAD);
+  assert.equal(curves[2].from.y - a.y, -CONNECTOR_SPREAD);
+  assert.equal(curves[1].key, 'second');
+  assert.deepEqual(spreadConnectorCurves(entries).map((curve) => curve.path), paths, 'stable for the same order');
+  // An uncrowded canvas is untouched.
+  const alone = spreadConnectorCurves([{ from: a, to: b }]);
+  assert.equal(alone[0].path, connectorCurve(a, b).path);
+});
+
+test('stacked connectors spread sideways, keeping their column height', () => {
+  const top = { x: 0, y: 0, width: 100, height: 50 };
+  const bottom = { x: 0, y: 120, width: 100, height: 50 };
+  const [first, second] = spreadConnectorCurves([
+    { from: top, to: bottom, vertical: true, kind: 'section' },
+    { from: top, to: bottom, vertical: true, kind: 'mention' },
+  ]);
+  assert.notEqual(first.path, second.path);
+  assert.equal(second.from.x - top.x, CONNECTOR_SPREAD);
+  assert.equal(second.from.y, top.y);
+  assert.equal(second.to.y, bottom.y);
 });
 
 test('a long wire is cut off at the limit, facing the card beyond it', () => {

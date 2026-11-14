@@ -20,9 +20,10 @@ import { parseCache, serializeCache, cacheRecord, planIndex, stubEntry, createIn
 import { parseFrontmatter, documentMeta } from './lib/frontmatter.js';
 import {
   setRelation, dropRelations, relationKey, setNodeType, setNodeField,
-  cleanHistoryStack, canvasRecordPatch, cleanView, cleanPositions, dropAnchorFromGroups, renameAnchorIn, cleanAnnotations, normalizeRouting, cleanCardModes, cleanCollapsedGroups,
+  cleanHistoryStack, canvasRecordPatch, cleanView, cleanPositions, dropAnchorFromGroups, renameAnchorIn, cleanAnnotations, normalizeRouting, cleanCardModes, cleanCardSizes, cleanNodeResources, referencedNodeFileMetaNames, cleanCollapsedGroups,
   lockedContentAnchors as lockedAnchorsOf, enforceLockedSource,
   referencedNodeImageMetaNames,
+  normalizeUnit, rememberUnit,
 } from './lib/worldbuild.js';
 import { resolveTarget } from './lib/wikilinks.js';
 import { dirname, join, basename, titleFromPath, slugify, isMarkdown } from './lib/path.js';
@@ -1008,7 +1009,7 @@ const app = {
   markWorld(path, marked) {
     if (!path) return null;
     const record = { ...state.world[path], marked: Boolean(marked) };
-    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups', 'colors', 'images', 'pinned', 'locked', 'annotations', 'routing', 'history', 'cardModes', 'collapsedGroups']
+    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups', 'colors', 'images', 'resources', 'pinned', 'locked', 'annotations', 'routing', 'history', 'cardModes', 'cardSizes', 'collapsedGroups']
       .some((part) => record[part]);
     if (record.marked || keepsWork) state.world[path] = record;
     else delete state.world[path];
@@ -1141,6 +1142,23 @@ const app = {
   },
 
   /**
+   * Set (or clear, with an empty entry) one node's resources: attached files
+   * and web URLs shown on the card. Files are references into
+   * `.macusanite/node-files/`; both lists are cleaned here, so the record can
+   * never point at a foreign path or a non-web URL.
+   */
+  setWorldNodeResources(path, anchor, entry) {
+    if (!path || !anchor) return {};
+    const resources = { ...(state.world[path]?.resources ?? {}) };
+    const clean = cleanNodeResources({ [anchor]: entry })[anchor];
+    if (clean) resources[anchor] = clean;
+    else delete resources[anchor];
+    state.world[path] = { ...state.world[path], resources };
+    app.scheduleStatePersist();
+    return resources;
+  },
+
+  /**
    * Write one node's downscaled image (a data URL) to its file under
    * `.macusanite/node-images/`, unrecorded: the reference in `state.json`
    * is what history steps, not every pixel of the image.
@@ -1166,6 +1184,49 @@ const app = {
   /** Every node-image file any vein's record or history still references. */
   referencedNodeImageMetaNames() {
     return referencedNodeImageMetaNames({ worlds: state.world });
+  },
+
+  /**
+   * Write one attached file (a data URL) under `.macusanite/node-files/`,
+   * unrecorded: the card's record names the file, and history steps the name.
+   */
+  async writeNodeAttachmentFile(metaName, dataUrl) {
+    return backend.writeMeta(metaName, dataUrl, 'node attachment', false);
+  },
+
+  /** Read one attached file back as a data URL. */
+  async readNodeAttachmentFile(metaName) {
+    return backend.readMeta(metaName);
+  },
+
+  /** Delete an attached file nothing references any more. */
+  async deleteNodeAttachmentFile(metaName) {
+    return backend.deleteMeta(metaName);
+  },
+
+  /**
+   * Open one attached file: the desktop shell hands it to the OS default
+   * application; a browser has no filesystem to open, so it downloads the
+   * stored data URL instead. Both paths name the same `.macusanite` file.
+   */
+  async openNodeAttachmentFile(metaName, name) {
+    if (!metaName) return;
+    if (isDesktop) {
+      await backend.openAttachment(metaName);
+      await backend.log('info', `opened attachment: ${metaName}`);
+      return;
+    }
+    const dataUrl = await backend.readMeta(metaName);
+    if (!dataUrl) throw new Error('the attachment file is missing');
+    const link = el('a', { href: dataUrl, download: name || metaName.split('/').pop() });
+    document.body.append(link);
+    link.click();
+    link.remove();
+  },
+
+  /** Every attachment file any vein's record or history still references. */
+  referencedNodeFileMetaNames() {
+    return referencedNodeFileMetaNames({ worlds: state.world });
   },
 
   /**
@@ -1211,6 +1272,22 @@ const app = {
     return all;
   },
 
+  /**
+   * A card's height: `content` fits the card to its prose, `fixed` keeps the
+   * standard box with scrolling prose. Stored per node like a card mode so a
+   * node can override the vault's default either way; record state, so undo
+   * and reopen both keep it.
+   */
+  setWorldCardSize(path, anchor, size) {
+    if (!path || !anchor) return null;
+    const all = cleanCardSizes({ ...(state.world[path]?.cardSizes ?? {}), [anchor]: size });
+    const record = { ...state.world[path], cardSizes: all };
+    if (!Object.keys(all).length) delete record.cardSizes;
+    state.world[path] = record;
+    app.scheduleStatePersist();
+    return all;
+  },
+
   /** Collapse a group to its summary card, or expand it back to its members. */
   setWorldGroupCollapsed(path, groupId, collapsed) {
     if (!path || !groupId) return null;
@@ -1223,17 +1300,15 @@ const app = {
   },
 
   /**
-   * Remember which parts of one card are folded — `card` for the whole node,
-   * `links` for its "Link to" section. Folds sit in the record beside
-   * positions and view, so a vein reopens exactly as it was left.
+   * Remember whether one card is folded to its header. Folds sit in the
+   * record beside positions and view, so a vein reopens exactly as it was
+   * left; a card's fold is its only fold, so any other stored part — the
+   * retired `links` one included — is simply left behind.
    */
-  setWorldFold(path, anchor, part, folded) {
-    if (!path || !anchor || !part) return {};
+  setWorldFold(path, anchor, folded) {
+    if (!path || !anchor) return {};
     const all = { ...(state.world[path]?.folded ?? {}) };
-    const parts = typeof all[anchor] === 'object' ? { ...all[anchor] } : {};
-    if (folded) parts[part] = true;
-    else delete parts[part];
-    if (Object.keys(parts).length) all[anchor] = parts;
+    if (folded) all[anchor] = { card: true };
     else delete all[anchor];
     state.world[path] = { ...state.world[path], folded: all };
     app.scheduleStatePersist();
@@ -1278,19 +1353,26 @@ const app = {
     return next;
   },
 
-  /** Forget a deleted note's saved extras: its fields, folds, pin and lock. */
+  /** Forget a deleted note's saved extras: its fields, folds, pin, lock, mode, height and resources. */
   dropWorldFields(path, anchor) {
     const fields = { ...(state.world[path]?.fields ?? {}) };
+    // A unit typed by hand belongs to the vault's vocabulary, not just to the
+    // card being deleted; keep it offerable after this record is gone.
+    app.rememberWorldUnit(fields[anchor]?.unit);
     const folded = { ...(state.world[path]?.folded ?? {}) };
     const pinned = { ...(state.world[path]?.pinned ?? {}) };
     const locked = { ...(state.world[path]?.locked ?? {}) };
     const cardModes = { ...(state.world[path]?.cardModes ?? {}) };
+    const cardSizes = { ...(state.world[path]?.cardSizes ?? {}) };
+    const resources = { ...(state.world[path]?.resources ?? {}) };
     delete fields[anchor];
     delete folded[anchor];
     delete pinned[anchor];
     delete locked[anchor];
     delete cardModes[anchor];
-    state.world[path] = { ...state.world[path], fields, folded, pinned, locked, cardModes };
+    delete cardSizes[anchor];
+    delete resources[anchor];
+    state.world[path] = { ...state.world[path], fields, folded, pinned, locked, cardModes, cardSizes, resources };
     app.scheduleStatePersist();
     return fields;
   },
@@ -1318,6 +1400,8 @@ const app = {
       pinned: moved.pinned ?? {},
       locked: moved.locked ?? {},
       cardModes: moved.cardModes ?? {},
+      cardSizes: moved.cardSizes ?? {},
+      resources: moved.resources ?? {},
       groups: moved.groups ?? {},
     };
   },
@@ -1595,6 +1679,21 @@ const app = {
   },
 
   /* ----------------------------------------------------------- settings */
+
+  /**
+   * Add a hand-typed attribute unit to the vault's autocomplete vocabulary.
+   * It lives in settings, not in the cards, so clearing the unit or deleting
+   * the card cannot remove a suggestion the user has already typed.
+   */
+  rememberWorldUnit(raw) {
+    const unit = normalizeUnit(raw);
+    if (!unit) return;
+    const current = state.settings.worldbuild?.units ?? [];
+    const next = rememberUnit(current, unit);
+    if (next.length === current.length && next.every((value, index) => value === current[index])) return;
+    state.settings.worldbuild = { ...(state.settings.worldbuild ?? {}), units: next };
+    app.persistSettings({ record: false });
+  },
 
   async updateSettings(patch) {
     const autoCheckBefore = isAutoCheckEnabled(state.settings);

@@ -368,6 +368,262 @@ aside to \`<name>.done\`. One file may hold a single request or an array of them
 file, or watch the directory. \`--once\` processes whatever is pending and exits, which is all a cron
 job or a tool call needs.`,
   },
+  {
+    slug: 'worldbuilding',
+    title: 'The Worldbuilding canvas',
+    body: `A vein marked as **Worldbuilding** (the switch at the top right of the centre pane, or the
+**★ Mark** button on the canvas toolbar) opens not as lines but as cards on a canvas — one card
+per heading of the vein, editing the same markdown the reader sees. Switching to **Markdown**
+never loses the layout, and unmarking a vein keeps every card's place and bonds until it is marked
+again.
+
+The canvas *is* the vein: typing in a card writes that heading's prose, **+ Note** writes a new
+section, **✕** deletes one (click once to arm, again to delete), and autosave and the markdown undo
+apply exactly as they do in the editor. Because the layout lives in \`.macusanite/state.json\`
+and the prose stays plain markdown, the same vein still reads correctly in the reader, on GitHub,
+through the CLI and over MCP.
+
+### Gestures
+
+* **Drag** a card by its grip to move it; snap guides line it up with its neighbours. Dragging the
+  background pans the canvas, and the wheel zooms around the pointer.
+* **Right-click** a card for everything it can be: link it, relate it, colour it, give it an image,
+  choose its type, fold it, pin it or lock it. Right-click a group for the group's own menu, and a
+  connector for its relationship and routing.
+* **Ctrl+click** picks cards into a set that drags as one; **Shift+drag** on the background
+  box-selects. **Select ▾** offers quick picks, and the selection's menu aligns and distributes it.
+* **Arrange ▾** lays out the selection, a group, a connected component, one type, or the whole vein.
+* The **?** button opens the gesture cheatsheet, **Legend ▾** explains every wire and icon, and
+  **Export ▾** writes the canvas out as SVG, PNG or Mermaid.
+
+### Undoing canvas changes
+
+The canvas keeps its own undo, separate from the markdown editor's. The toolbar's **↶** and **↷**
+arrows undo and redo one step and name it in their tooltip; **Ctrl+Z** and **Ctrl+Shift+Z** (or
+**Ctrl+Y**) do the same while the canvas has focus, and **History** beside the arrows lists the
+whole stack — redo above the current point, undo below — with a click to jump anywhere in it. Each
+vein keeps its own stack, saved with its canvas record, so the steps are still there when the vault
+is closed and reopened. A step is one canvas change: a move, a group, a bond, a fold, a type, a
+colour, an arrangement. Typing is not a canvas step — a card's title, prose, fields and tag box keep
+their own undo while the cursor is in them, and the prose's markdown undo belongs to the editor.
+[Canvas history](#canvas-history-exports-and-health) covers what a step restores.
+
+### Deeper sections
+
+The rest of this topic goes deeper: [cards and their heights](#cards-prose-and-heights), [types,
+fields, colours and images](#types-fields-colours-and-images), [bonds, groups and
+annotations](#bonds-groups-and-annotations), [arranging and
+navigating](#arranging-and-navigating), and [history, exports and
+health](#canvas-history-exports-and-health).`,
+  },
+  {
+    slug: 'worldbuilding-cards',
+    title: 'Cards, prose and heights',
+    body: `Every card is a heading of the vein. Its title is the heading text, its prose is what sits
+under that heading, and the card before the first heading is the **intro** card, titled “Before the
+first heading”. Clicking a card's rendered prose swaps in the source textarea; leaving it renders
+the markdown again — tables, task lists, callouts and mermaid diagrams included.
+
+### Modes
+
+**Cards ▾** on the toolbar, or **Card mode** in a card's right-click menu, sets
+every card in the current selection:
+
+* **Full** — prose, fields and links, the normal card.
+* **Compact** — title, type, link and word counts only, for a dense overview.
+* **Thumbnail** — just the node's image (or its initial), 128 × 128, for a face-only map.
+
+### Height
+
+A full card is either a fixed 260 px box whose prose scrolls, or **fit to content**,
+where the card grows to show the whole note — no inner scrollbar, and the editing textarea grows
+as you type. Choose per node under **Card height** in the right-click menu, or for the selection in
+**Cards ▾**. The default for the vault lives in **Settings → Worldbuilding → Card height**; a
+node's own choice overrides it either way, and overrides are saved with the vein. Content height
+applies to full cards only — compact and thumbnail cards keep their designed boxes. Everything
+that measures the canvas uses the real height, so connectors, group boxes, arrangement, untangle
+scoring and exports follow a taller card.
+
+### Folding, tags and locks
+
+* The **▾ Fold** chevron collapses a card to its header; folded cards stack neatly above the card
+they link to, and **Overview** folds every card at once.
+* **Tags** under a card are doors: a tag naming another card flies the camera to it when clicked.
+  The tag is still the note's own markdown either way; a tag that names no card stays plain text.
+* Editing a **title** renames the heading, and every canvas extra — position, folds, type, fields,
+  colour, image, pin, lock, mode, height — follows the new name. Bonds naming the old title drop,
+  because the link target no longer resolves.
+* A **content lock** (or a locked group) disables the textarea, type, fields, colour, image and
+  delete button while leaving the card movable and linkable.`,
+  },
+  {
+    slug: 'worldbuilding-types',
+    title: 'Types, fields, colours and images',
+    body: `The drop-down in a card's header chooses what the node **is**. The type gives the card its
+icon and colour and, for the game-like types, its structured fields:
+
+| Type | Fields |
+| --- | --- |
+| **Stat** | a free-text value |
+| **Skill** | a level, 0–10 |
+| **Ability** | a minimum and maximum, unbounded |
+| **Attribute** | key, value and unit — the unit box autocompletes from units used or typed earlier in the vault |
+| **Property** | key and value |
+| **Rating** | one value, 0–10 |
+| **Note, Place, Person, Thing, Location, Locale, Biome, Scene, Perk, Effect, Condition** | prose, like a note |
+
+### Fields
+
+Fields are stored with the vein's canvas record, not written into the prose, and a numeric field
+clamps to its range on the way in. A type change is one undo step and rewrites the card's fields
+row in place; the values already stored for the new type are kept.
+
+### Colour and image
+
+* **Node colour** in the right-click menu overrides the type's colour for that card alone, and
+  **Use the type colour** forgets the override.
+* **Node image** attaches a picture as the node's icon in its header and as its face in thumbnail
+  mode. Images are copied into \`.macusanite/node-images/\`; replacing or removing one deletes the
+  old file once no card — and no undo snapshot — still names it.
+### Pins and locks
+
+* **Pin node** makes Arrange work around the card; the node can still be dragged by hand. **Pin
+group** does the same for a whole group.
+* **Lock node content** makes the card read-only while it stays movable, linkable and exportable.
+  Locking a **group** is stronger: its cards cannot move, be regrouped, edited or removed, though
+  relationships in and out still work. Both locks show a padlock on the card and are undone from
+  the same menu.
+
+A **tag** is never a canvas-only annotation: it is parsed from the note's markdown. The canvas just
+makes it clickable, counts it in the stats bar, and offers to open the card it names.`,
+  },
+  {
+    slug: 'worldbuilding-bonds',
+    title: 'Bonds, groups and annotations',
+    body: `**Wires come from the prose first.** A dotted wire is the vein's own outline — each card
+nested under its nearest shallower heading. A solid wire is a \`[[#Heading]]\` link written in a
+note, and a faint green wire is a mention of another vein, \`[[Another note]]\`. A bond asserted on
+the canvas itself is drawn like any other bond of its kind, and a wire to a group is drawn at twice
+the weight. If removing a bond leaves its prose link drawing the same line, the notice offers to
+remove that markdown link too, as a normal prose edit.
+
+### Wires and relationships
+
+Every wire can carry a **relationship**: associate, member of, template, parent/child,
+contains/contained by, controls/controlled by, affects/affected by, ally and foe, thickening as it
+strengthens. **Click the word on the wire** to step to the next kind. Right-click a connector for
+**Cycle relationship**, **Reverse relationship**, **Remove asserted relationship**, curve style,
+end selection and **Trace upstream/downstream**. Dragging from a selected set's menu, or
+**Relate to…** in a card's menu, asserts a bond between cards or a group endpoint.
+
+### Groups
+
+**Groups** gather cards into one coloured box:
+
+* Select two or more cards and choose **Group**. A whole group inside the selection is nested, not
+dissolved; dragging a card into a group's box adds it, and dragging it out removes it.
+* Drag a group's tab to move every member. **Collapse** turns the group into one summary card with
+  a member count and link total; **Collapse all groups** does the whole vein.
+* **Split into progression columns** turns a group into lanes — the group's top cards on the left,
+  their subsections a tier to the right, and so on, each lane headed by its **Tier**.
+* **Group colour**, **Group icon**, **Rename group**, **Pin group** and **Lock group** are in the
+  group's right-click menu, beside **Ungroup** (keep the cards) and **Remove from group**.
+
+### Annotations
+
+**Annotations** are free-floating margin notes, independent of every heading: **+ Annotation**, or
+double-click empty canvas. They drag, scroll with the canvas, export with it, and delete from their
+**✕** — the vein's markdown never changes.`,
+  },
+  {
+    slug: 'worldbuilding-arrange',
+    title: 'Arranging and navigating',
+    body: `### Selecting
+
+Click a card; **Ctrl+click** toggles it in the set and a picked set drags as
+one; **Shift+drag** on the background box-selects everything it touches. **Select ▾** adds quick
+picks — connected, ancestors, descendants, same type or colour, group members, pinned, locked,
+untyped, imageless — and the selection's right-click menu aligns and distributes it. **Fit
+selection** zooms to just those cards.
+
+### Layouts
+
+**Arrange ▾** asks for a scope — **Selection**, **Group**, **Connected component**, **One type** —
+then one of six layouts:
+
+* **Grid** — rows of cards in a near-square block.
+* **Rows** and **Columns** — one line, horizontal or vertical.
+* **Cascade** — each card offset down and right from the last.
+* **Layered** — relationship depth as rows, roots on top.
+* **Progression columns** — heading-tree tiers as columns, top items left, deeper tiers right.
+
+Pinned and locked cards stay where they are and act as obstacles; collapsed groups are laid out as
+their summary; and the untangler only accepts a swap that reduces how many connectors pass behind
+cards. **Whole vein (grid)** is the original one-click tidy. Arrange fits its result into view.
+
+### Getting around
+
+Drag the background to pan and wheel to zoom around the pointer; **⤢ Fit**
+frames every card, **Overview** folds every card and then fits, and double-clicking a
+card's header centres it. Zoom and pan are a view, not a canvas change, so they never take an undo
+step.
+
+### Routing
+
+**Elbow** switches selected connectors (or the whole vein) between curves and
+right-angle bends; **Arrows** adds arrowheads; **Trim** ends a wire longer than a screen in a
+diamond that faces the far card. Click it to reveal the far card if it is inside a collapsed group,
+then centre the view on it; otherwise the view centres on the card directly. A connector's
+right-click menu overrides routing for that wire alone or sends it back to the vein default.
+
+### Finding things
+
+**Search** filters the canvas live across titles, types, fields, colours and
+group names, with previous/next jumps, **Select all** and **Isolate** (dim everything outside the
+matches' connected subgraph). **Health** lists orphans and groups holding fewer than two cards,
+and clicking a row selects and centres it. The **Legend ▾** and **?** popovers explain the rest in
+place.`,
+  },
+  {
+    slug: 'worldbuilding-history',
+    title: 'Canvas history, exports and health',
+    body: `The canvas keeps its **own undo history**, separate from the markdown editor's. A drag, a
+layout, a type, a colour, a bond, a fold, a card's mode or height — each is one named step, and
+**Undo** and **Redo** name what they would change (\`Ctrl+Z\`, \`Ctrl+Shift+Z\` or \`Ctrl+Y\` while
+the canvas has focus). **History** opens the stack as a list: redo above the current point, undo
+below it, each row jumpable, capped at 60 steps per vein.
+
+### What a step restores
+
+A step restores the whole canvas state — positions, groups, bonds, folds, types, fields, colours,
+images, pins, locks, display modes, heights and the camera — because they are saved together in
+the vein's record. History survives closing and reopening the vault. Renaming or deleting a card
+prunes dead anchors from every stored step, and deleting a node sweeps image files no step still
+references.
+
+### Exports
+
+**Export ▾** writes the canvas out for other tools:
+
+* **SVG — vector file** — a standalone drawing of every visible card, wire, group box and
+  annotation, with text preserved as text.
+* **SVG — Inkscape layers** — the same drawing in four named layers (Groups, Connectors, Cards,
+  Annotations), so each can be selected, reordered or hidden in Inkscape.
+* **PNG — image file** — the whole canvas rendered at up to twice its size, for slides and print.
+* **Mermaid — markdown file** — headings become nodes and the canvas's links become edges in a
+  \`flowchart\`, ready for a markdown file that renders it.
+
+SVG and PNG draw what is on screen, so a collapsed group exports as its summary and a folded card
+as its header; the Mermaid export lists every note and relationship regardless. Files are named
+after the vein — \`<vein>-canvas.svg\`, \`<vein>-canvas.png\` — so an export is easy to find again.
+
+### Health
+
+**Health** is the lint pass for the canvas: orphans (no wire in or out) and thin groups (fewer
+than two cards) appear as jumpable rows, with the counts beside the button. The vault-wide default
+for card height sits in **Settings → Worldbuilding**, and every node can override it from its own
+menu.`,
+  },
 ];
 
 const slugify = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');

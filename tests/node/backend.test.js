@@ -132,6 +132,22 @@ test('meta files round trip and unrecorded writes stay out of the undo stack', a
   assert.match(afterColors.undo[0].path, /colors\.json$/);
 });
 
+test('deleting a meta file is unrecorded and a missing file is not an error', async () => {
+  virtualVault.reset();
+  await backend.openVault('/sample-vault');
+  const before = await backend.history();
+  await backend.writeMeta('node-images/orphan.png', 'data:image/png;base64,AAA', 'node image', false);
+  assert.equal(await backend.readMeta('node-images/orphan.png'), 'data:image/png;base64,AAA');
+  assert.equal(await backend.deleteMeta('node-images/orphan.png'), true);
+  assert.equal(await backend.readMeta('node-images/orphan.png'), null);
+  assert.equal(await backend.deleteMeta('node-images/orphan.png'), false);
+  await backend.writeMeta('node-files/brief.pdf', 'data:application/pdf;base64,AAA', 'node attachment', false);
+  assert.equal(await backend.readMeta('node-files/brief.pdf'), 'data:application/pdf;base64,AAA');
+  assert.equal(await backend.deleteMeta('node-files/brief.pdf'), true);
+  const after = await backend.history();
+  assert.equal(after.undo.length, before.undo.length, 'node image and attachment deletes never enter the stack');
+});
+
 test('undoing a metadata write restores the previous file contents', async () => {
   virtualVault.reset();
   await backend.openVault('/sample-vault');

@@ -34,8 +34,12 @@ test('paths cannot leave the vault and meta names stay flat', () => {
   assert.throws(() => safePath(''), VaultPathError);
 
   assert.equal(safeMetaName('colors.json'), 'colors.json');
+  // One level under the two content directories is the only nesting allowed.
+  assert.equal(safeMetaName('node-images/lens.png'), 'node-images/lens.png');
+  assert.equal(safeMetaName('node-files/brief.pdf'), 'node-files/brief.pdf');
   assert.throws(() => safeMetaName('../evil.json'), VaultPathError);
   assert.throws(() => safeMetaName('nested/evil.json'), VaultPathError);
+  assert.throws(() => safeMetaName('node-files/a/b.pdf'), VaultPathError);
   assert.throws(() => safeMetaName(''), VaultPathError);
 });
 
@@ -430,6 +434,17 @@ test('meta files round-trip verbatim, and unknown names are refused', async () =
   assert.equal((await store.historyState()).undo[0].path, '.macusanite/colors.json');
   await assert.rejects(() => store.readMeta('../outside.json'), VaultPathError);
   assert.equal(await store.readMeta('nothing.json'), null);
+});
+
+test('deleteMeta removes a node image unrecorded, and a missing file is fine', async () => {
+  const root = tempVault('meta-delete');
+  const store = await openVault(root);
+  await store.writeMeta('node-images/orphan.png', 'data:image/png;base64,AAA', { record: false });
+  assert.deepEqual(await store.deleteMeta('node-images/orphan.png'), { path: '.macusanite/node-images/orphan.png', deleted: true });
+  assert.equal(await store.readMeta('node-images/orphan.png'), null);
+  assert.deepEqual(await store.deleteMeta('node-images/orphan.png'), { path: '.macusanite/node-images/orphan.png', deleted: false });
+  assert.equal((await store.historyState()).undo.length, 0, 'deletes never enter the stack');
+  await assert.rejects(() => store.deleteMeta('../outside.json'), VaultPathError);
 });
 
 /* ── the whole thing, on the sample vault ──────────────────────────────── */

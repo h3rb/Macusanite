@@ -99,8 +99,8 @@ export function safePath(rel) {
 
 /**
  * Meta file names are flat: no separators, no traversal — except one level
- * of nesting for node images, which live under `node-images/`. Mirrors
- * `safe_meta_name` on the Rust side.
+ * of nesting for node images (`node-images/`) and attached files
+ * (`node-files/`). Mirrors `safe_meta_name` on the Rust side.
  */
 export function safeMetaName(name) {
   const trimmed = String(name ?? '').trim();
@@ -108,8 +108,9 @@ export function safeMetaName(name) {
     throw new VaultPathError(`invalid meta file name: ${name}`);
   }
   if (trimmed.includes('/')) {
-    const [dir, file] = trimmed.split('/');
-    if (dir !== 'node-images' || !file || file.includes('/')) {
+    const parts = trimmed.split('/');
+    const [dir, file] = parts;
+    if (parts.length !== 2 || (dir !== 'node-images' && dir !== 'node-files') || !file) {
       throw new VaultPathError(`invalid meta file name: ${name}`);
     }
   }
@@ -277,6 +278,18 @@ export function createVaultStore({ fs, root = '' }) {
     if (record) await recordHistory(rel, label ?? safeMetaName(name), before, contents);
     invalidate();
     return { path: rel };
+  }
+
+  /**
+   * Delete a `.macusanite` file, unrecorded and idempotent — node-image
+   * cleanup deletes through here, and a missing file is not an error.
+   */
+  async function deleteMeta(name) {
+    const rel = metaPath(name);
+    const deleted = (await fs.read(rel)) !== null;
+    await fs.remove(rel);
+    invalidate();
+    return { path: rel, deleted };
   }
 
   async function appendLog(level, message) {
@@ -896,6 +909,7 @@ export function createVaultStore({ fs, root = '' }) {
     updateVaultMeta,
     readMeta,
     writeMeta,
+    deleteMeta,
     appendLog,
     logs,
     // documents

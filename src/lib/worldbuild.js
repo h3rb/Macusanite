@@ -307,9 +307,9 @@ const KEY_VALUE = [
 
 /**
  * The predetermined units an attribute's unit input autocompletes from.
- * A unit the user types by hand joins this list for the rest of the vault:
- * `unitSuggestions` reads the units already stored in the fields records,
- * so a hand-entered unit is offered on every later attribute.
+ * A unit the user types by hand is remembered separately from the cards
+ * (`rememberUnit`), so clearing the field or deleting the card does not take
+ * the suggestion with it.
  */
 export const UNIT_SUGGESTIONS = [
   '%', 'px', 'mm', 'cm', 'm', 'km', 'in', 'ft', 'mi', 'yd',
@@ -326,13 +326,42 @@ export function normalizeUnit(unit) {
   return String(unit ?? '').trim().replace(/\s+/g, ' ').slice(0, UNIT_MAX_LENGTH);
 }
 
+/** How many hand-typed units a vault remembers for its autocomplete. */
+export const UNIT_VOCABULARY_LIMIT = 120;
+
+/**
+ * A learned-unit list with `raw` at the front, normalised and de-duplicated
+ * case-insensitively. The newest hand-typed unit wins; an emptied field does
+ * not remove anything from the vocabulary.
+ */
+export function rememberUnit(units = [], raw) {
+  const wanted = normalizeUnit(raw);
+  const out = [];
+  const seen = new Set();
+  if (wanted) {
+    out.push(wanted);
+    seen.add(wanted.toLowerCase());
+  }
+  for (const value of Array.isArray(units) ? units : []) {
+    const unit = normalizeUnit(value);
+    if (!unit) continue;
+    const key = unit.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(unit);
+  }
+  return out.slice(0, UNIT_VOCABULARY_LIMIT);
+}
+
 /**
  * The autocomplete list for a unit input: the predetermined units first,
- * then every unit already stored in the given fields records (one record,
- * or an array of them, e.g. every vein's record), in first-seen order.
+ * then the vault's learned units, then every unit currently stored in the
+ * given fields records (one record, or an array of them, e.g. every vein's
+ * record), in first-seen order. The learned list is what keeps a hand-typed
+ * unit offerable after its field is cleared or its card deleted.
  * De-duplicated case-insensitively, so "Tokens" and "tokens" are one entry.
  */
-export function unitSuggestions(fields = {}) {
+export function unitSuggestions(fields = {}, learned = []) {
   const records = Array.isArray(fields) ? fields : [fields];
   const seen = new Set();
   const out = [];
@@ -345,6 +374,7 @@ export function unitSuggestions(fields = {}) {
     out.push(unit);
   };
   for (const unit of UNIT_SUGGESTIONS) offer(unit);
+  for (const unit of Array.isArray(learned) ? learned : []) offer(unit);
   for (const record of records) {
     for (const stored of Object.values(record ?? {})) {
       if (stored && typeof stored === 'object') offer(stored.unit);
@@ -452,7 +482,9 @@ export function cleanAnnotations(raw) {
     if (!id || !value || typeof value !== 'object') continue;
     const text = String(value.text ?? '').trim().slice(0, ANNOTATION_MAX_TEXT);
     if (!text || !Number.isFinite(value.x) || !Number.isFinite(value.y)) continue;
-    out[id] = { id, x: Math.round(value.x), y: Math.round(value.y), text };
+    const annotation = { id, x: Math.round(value.x), y: Math.round(value.y), text };
+    if (typeof value.color === 'string' && /^#[\da-f]{6}$/i.test(value.color)) annotation.color = value.color.toLowerCase();
+    out[id] = annotation;
   }
   return out;
 }
@@ -573,6 +605,145 @@ export function orphanedNodeImageMetaNames(candidates, referenced) {
   const orphans = new Set();
   for (const candidate of candidates ?? []) {
     const metaName = nodeImageMetaName(candidate) ?? (String(candidate ?? '').startsWith('node-images/') ? String(candidate) : null);
+    if (metaName && !keep.has(metaName)) orphans.add(metaName);
+  }
+  return [...orphans];
+}
+
+/**
+ * Files attached to nodes live under `.macusanite/node-files/`, beside node
+ * images and for the same reason: a canvas snapshot carries a short path,
+ * never the bytes. URLs are validated web resources, not arbitrary schemes.
+ */
+export const NODE_FILES_DIR = '.macusanite/node-files';
+
+/** One attached file's ceiling; the vault keeps files, not archives of them. */
+export const NODE_FILE_MAX_BYTES = 8 * 1024 * 1024;
+
+/** The most attachments and URLs one node records. */
+export const NODE_RESOURCE_LIMIT = 24;
+
+/** The vault-relative reference for an attached file name. */
+export function nodeFileRef(fileName) {
+  return `${NODE_FILES_DIR}/${fileName}`;
+}
+
+/**
+ * The `.macusanite`-relative meta name for an attachment reference, or null
+ * when the reference is not a node file.
+ */
+export function nodeFileMetaName(ref) {
+  const clean = String(ref ?? '').replace(/\\/g, '/');
+  if (clean.startsWith(`${NODE_FILES_DIR}/`) && !clean.includes('..')) return clean.slice('.macusanite/'.length);
+  if (clean.startsWith('node-files/') && !clean.includes('..')) return clean;
+  return null;
+}
+
+/** A web resource URL, or null for anything that is not http(s). */
+export function normalizeWebUrl(value) {
+  try {
+    const url = new URL(String(value ?? '').trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (!url.hostname) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One node's resources, cleaned: attachments must name a node file, URLs must
+ * be http(s), duplicates collapse, and both lists are capped. Empty nodes are
+ * dropped, so a record only carries resources that exist.
+ */
+export function cleanNodeResources(resources = {}) {
+  const out = {};
+  for (const [anchor, entry] of Object.entries(resources ?? {})) {
+    if (!anchor || !entry || typeof entry !== 'object') continue;
+    const files = [];
+    const seenRefs = new Set();
+    for (const file of Array.isArray(entry.files) ? entry.files : []) {
+      if (!file || typeof file !== 'object') continue;
+      const ref = String(file.ref ?? '').replace(/\\/g, '/');
+      if (!ref.startsWith(`${NODE_FILES_DIR}/`) || ref.includes('..')) continue;
+      if (ref.split('/').length !== 3 || seenRefs.has(ref)) continue;
+      seenRefs.add(ref);
+      const size = Number(file.size);
+      const name = String(file.name ?? '').trim().slice(0, 160) || ref.split('/').pop();
+      files.push({
+        name,
+        ref,
+        ...(Number.isFinite(size) && size >= 0 ? { size: Math.round(size) } : {}),
+        ...(typeof file.type === 'string' && file.type ? { type: file.type.slice(0, 100) } : {}),
+      });
+      if (files.length >= NODE_RESOURCE_LIMIT) break;
+    }
+    const urls = [];
+    const seenUrls = new Set();
+    for (const link of Array.isArray(entry.urls) ? entry.urls : []) {
+      const url = normalizeWebUrl(link?.url);
+      if (!url || url.length > 2048 || seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      urls.push({ url, label: String(link?.label ?? '').trim().slice(0, 120) || url });
+      if (urls.length >= NODE_RESOURCE_LIMIT) break;
+    }
+    if (files.length || urls.length) out[anchor] = { files, urls };
+  }
+  return out;
+}
+
+/** The attachment files one resources map points at, as meta names. */
+export function nodeFileMetaNames(resources) {
+  const names = new Set();
+  for (const entry of Object.values(resources ?? {})) {
+    for (const file of Array.isArray(entry?.files) ? entry.files : []) {
+      const metaName = nodeFileMetaName(file?.ref);
+      if (metaName) names.add(metaName);
+    }
+  }
+  return [...names];
+}
+
+/** The attachment files one canvas snapshot (string or object) points at. */
+export function nodeFileMetaNamesFromSnapshot(snap) {
+  let saved = snap;
+  if (typeof saved?.snap === 'string') saved = saved.snap;
+  if (typeof saved === 'string') {
+    try {
+      saved = JSON.parse(saved);
+    } catch {
+      return [];
+    }
+  }
+  return nodeFileMetaNames(saved?.resources);
+}
+
+/**
+ * Every attachment file still referenced anywhere: the current resources, the
+ * undo/redo snapshots of this vein, and every other vein's record and
+ * persisted history. A file a snapshot still names is not an orphan.
+ */
+export function referencedNodeFileMetaNames({ resources = {}, history = null, worlds = {} } = {}) {
+  const names = new Set(nodeFileMetaNames(resources));
+  const fromHistory = (stack) => {
+    for (const entry of [...(stack?.past ?? []), ...(stack?.future ?? [])]) {
+      for (const name of nodeFileMetaNamesFromSnapshot(entry)) names.add(name);
+    }
+  };
+  fromHistory(history);
+  for (const record of Object.values(worlds ?? {})) {
+    for (const name of nodeFileMetaNames(record?.resources)) names.add(name);
+    fromHistory(record?.history);
+  }
+  return names;
+}
+
+/** Candidate attachment files (refs or meta names) that nothing references. */
+export function orphanedNodeFileMetaNames(candidates, referenced) {
+  const keep = referenced instanceof Set ? referenced : new Set(referenced ?? []);
+  const orphans = new Set();
+  for (const candidate of candidates ?? []) {
+    const metaName = nodeFileMetaName(candidate);
     if (metaName && !keep.has(metaName)) orphans.add(metaName);
   }
   return [...orphans];
@@ -784,6 +955,22 @@ export function cleanCardModes(modes = {}) {
   return out;
 }
 
+/**
+ * Card heights: `fixed` (the vault default, stored only as an override) or
+ * `content`, where a full card grows to its prose instead of scrolling it.
+ * Unlike modes, `fixed` is kept: a node can opt back out of a vault that
+ * fits cards to content by default.
+ */
+export const CARD_SIZES = ['fixed', 'content'];
+
+export function cleanCardSizes(sizes = {}) {
+  const out = {};
+  for (const [anchor, size] of Object.entries(sizes ?? {})) {
+    if (anchor && CARD_SIZES.includes(size)) out[anchor] = size;
+  }
+  return out;
+}
+
 export function cleanCollapsedGroups(collapsed = {}) {
   const out = {};
   for (const [id, value] of Object.entries(collapsed ?? {})) {
@@ -802,9 +989,11 @@ export function canvasSnapshot(state = {}) {
     fields: state.fields ?? {},
     colors: state.colors ?? {},
     images: state.images ?? {},
+    resources: cleanNodeResources(state.resources),
     pinned: state.pinned ?? {},
     locked: state.locked ?? {},
     cardModes: cleanCardModes(state.cardModes),
+    cardSizes: cleanCardSizes(state.cardSizes),
     collapsedGroups: cleanCollapsedGroups(state.collapsedGroups),
     annotations: cleanAnnotations(state.annotations),
     view: state.view ?? { x: 0, y: 0, s: 1 },
@@ -887,9 +1076,11 @@ export function pruneSnapshotAnchors(snap, live) {
     ...(snap.fields ? { fields: anchors(snap.fields) } : {}),
     ...(snap.colors ? { colors: anchors(snap.colors) } : {}),
     ...(snap.images ? { images: anchors(snap.images) } : {}),
+    ...(snap.resources ? { resources: anchors(snap.resources) } : {}),
     ...(snap.pinned ? { pinned: anchors(snap.pinned) } : {}),
     ...(snap.locked ? { locked: anchors(snap.locked) } : {}),
     ...(snap.cardModes ? { cardModes: anchors(snap.cardModes) } : {}),
+    ...(snap.cardSizes ? { cardSizes: anchors(snap.cardSizes) } : {}),
     ...(snap.collapsedGroups ? { collapsedGroups } : {}),
     ...(snap.annotations ? { annotations: cleanAnnotations(snap.annotations) } : {}),
   };
@@ -935,9 +1126,11 @@ export function restoreSnapshot(snap, live, current = {}) {
     fields: pruned.fields ?? current.fields ?? {},
     colors: pruned.colors ?? current.colors ?? {},
     images: pruned.images ?? current.images ?? {},
+    resources: cleanNodeResources(pruned.resources ?? current.resources),
     pinned: pruned.pinned ?? current.pinned ?? {},
     locked: pruned.locked ?? current.locked ?? {},
     cardModes: cleanCardModes(pruned.cardModes ?? current.cardModes),
+    cardSizes: cleanCardSizes(pruned.cardSizes ?? current.cardSizes),
     collapsedGroups: cleanCollapsedGroups(pruned.collapsedGroups ?? current.collapsedGroups),
     annotations: pruned.annotations ?? cleanAnnotations(current.annotations),
     view: cleanView(pruned.view, current.view ?? null),
@@ -950,15 +1143,17 @@ export function restoreSnapshot(snap, live, current = {}) {
  * always; types, fields and colours only when the step carries them; the
  * camera only when the step has a usable view.
  */
-export function canvasRecordPatch({ positions = {}, groups = {}, relations = {}, folded = {}, types = null, fields = null, colors = null, images = null, pinned = null, locked = null, cardModes = null, collapsedGroups = null, annotations = null, view = null } = {}) {
+export function canvasRecordPatch({ positions = {}, groups = {}, relations = {}, folded = {}, types = null, fields = null, colors = null, images = null, resources = null, pinned = null, locked = null, cardModes = null, cardSizes = null, collapsedGroups = null, annotations = null, view = null } = {}) {
   const patch = { positions, groups, relations, folded };
   if (types) patch.types = types;
   if (fields) patch.fields = fields;
   if (colors) patch.colors = colors;
   if (images) patch.images = images;
+  if (resources) patch.resources = cleanNodeResources(resources);
   if (pinned) patch.pinned = pinned;
   if (locked) patch.locked = locked;
   if (cardModes) patch.cardModes = cleanCardModes(cardModes);
+  if (cardSizes) patch.cardSizes = cleanCardSizes(cardSizes);
   if (collapsedGroups) patch.collapsedGroups = cleanCollapsedGroups(collapsedGroups);
   if (annotations) patch.annotations = cleanAnnotations(annotations);
   const cleaned = cleanView(view);
@@ -1125,12 +1320,14 @@ export function renameAnchorIn(snap, before, after) {
     positions: move(snap.positions),
     folded: move(snap.folded),
     cardModes: move(snap.cardModes),
+    cardSizes: move(snap.cardSizes),
     relations,
     groups,
     ...(snap.types ? { types: move(snap.types) } : {}),
     ...(snap.fields ? { fields: move(snap.fields) } : {}),
     ...(snap.colors ? { colors: move(snap.colors) } : {}),
     ...(snap.images ? { images: move(snap.images) } : {}),
+    ...(snap.resources ? { resources: move(snap.resources) } : {}),
     ...(snap.pinned ? { pinned: move(snap.pinned) } : {}),
     ...(snap.locked ? { locked: move(snap.locked) } : {}),
   };
@@ -1298,6 +1495,44 @@ export function proseLinkBetween(model = {}, from, to) {
     return (source === from && target === to) || (source === to && target === from);
   });
   return edge ? { from: anchorOf(edge.from), to: anchorOf(edge.to), kind: edge.kind } : null;
+}
+
+/**
+ * Unlink two cards' prose from each other: every `[[#Heading]]` section link
+ * and `[[Note]]` mention the two notes write between them — in either
+ * direction — loses its brackets and keeps the words the reader saw, so the
+ * wire the prose was drawing goes away and the sentence still reads. Links to
+ * other notes, and the note bodies either side of them, are left alone.
+ *
+ * @returns {{model: object, removed: number}} a new model and how many links
+ *   came out — the same model and 0 when there was nothing to unlink
+ */
+export function unlinkProseBetween(model = {}, from, to) {
+  if (!from || !to || from === to) return { model, removed: 0 };
+  const notes = model.notes ?? [];
+  const byAnchor = new Map(notes.map((note, index) => [note.anchor, index]));
+  const byTitle = new Map(notes.map((note, index) => [String(note.title).toLowerCase(), index]));
+  let removed = 0;
+  const next = notes.map((note) => {
+    const other = note.anchor === from ? to : note.anchor === to ? from : null;
+    const otherIndex = other ? byAnchor.get(other) : undefined;
+    if (otherIndex === undefined) return note;
+    const title = String(notes[otherIndex].title ?? '');
+    const reaches = (link) => (link.samePage
+      ? byAnchor.get(link.anchor) === otherIndex
+      : Boolean(link.target) && byTitle.get(String(link.target).toLowerCase()) === otherIndex);
+    // Right to left, so each edit leaves the offsets before it alone.
+    const hits = parseWikiLinks(note.body).filter(reaches).sort((a, b) => b.start - a.start);
+    if (!hits.length) return note;
+    let body = note.body;
+    for (const hit of hits) {
+      const words = hit.alias || hit.section || title;
+      body = `${body.slice(0, hit.start)}${words}${body.slice(hit.end)}`;
+      removed += 1;
+    }
+    return { ...note, body, ...describeBody(body) };
+  });
+  return removed ? { model: { ...model, notes: next }, removed } : { model, removed: 0 };
 }
 
 /**
@@ -2032,9 +2267,9 @@ function cutCubic(points, limit, steps = 64) {
  * ({ x, y, dir, length, total }) so the panel can end it in a marker pointing
  * at the far card. A wire that fits is unchanged.
  *
- * This is the one place the bend math lives: the panel draws `path` and the
- * occlusion scorer samples `at` (via `sampleConnectorCurve`), so the curve
- * scored is always the curve drawn.
+ * This is the one place the bend math lives: the panel draws `path`, and the
+ * arrangement scorer samples the prepared entry's `at`, so the curve scored is
+ * always the curve drawn.
  */
 export function connectorCurve(from, to, { vertical = false, elbow = false, limit = Infinity } = {}) {
   const unit = (x, y) => {
@@ -2104,10 +2339,315 @@ export function connectorCurve(from, to, { vertical = false, elbow = false, limi
 }
 
 /**
- * Sampled points along `connectorCurve(from, to, …)` — the sampler the
- * arrangement's occlusion scorer uses, so it scores the curve the reader
- * sees. With `cardSize`, plain card boxes are substituted (the grid the
- * arrangement packs on), exactly as the scorer wants them.
+ * How far apart two connectors that would otherwise share a path are spread,
+ * in canvas pixels: enough to read as two wires, small enough to stay on the
+ * sides of a card.
+ */
+export const CONNECTOR_SPREAD = 12;
+
+const CONNECTOR_LABEL_SLOTS = [0.5, 0.44, 0.56, 0.38, 0.62, 0.32, 0.68, 0.26, 0.74, 0.2, 0.8];
+const CONNECTOR_LABEL_SLOTS_CLEAR = [0.5, 0.56, 0.44, 0.62, 0.38, 0.68, 0.32, 0.74, 0.26, 0.8, 0.2];
+const CONNECTOR_LABEL_GAP = 14;
+const CONNECTOR_LABEL_STROKE_PAD = 3;
+const CONNECTOR_LABEL_WIRE_CLEARANCE = 6;
+const CONNECTOR_LABEL_WIRE_STEPS = 48;
+const CONNECTOR_LABEL_FALLBACK_OFFSETS = [12, 20, 28, 36];
+const CONNECTOR_LABEL_BOX_CLEARANCE = 4;
+
+function segmentIntersectsBox(a, b, box) {
+  let low = 0;
+  let high = 1;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  for (const [origin, delta, min, max] of [
+    [a.x, dx, box.left, box.right],
+    [a.y, dy, box.top, box.bottom],
+  ]) {
+    if (Math.abs(delta) < 1e-9) {
+      if (origin < min || origin > max) return false;
+      continue;
+    }
+    const enter = (min - origin) / delta;
+    const exit = (max - origin) / delta;
+    low = Math.max(low, Math.min(enter, exit));
+    high = Math.min(high, Math.max(enter, exit));
+    if (low > high) return false;
+  }
+  return true;
+}
+
+/**
+ * Place connector words at the nearest clear slot along their own wires.
+ * SVG text can report a zero box while its stage or font is unavailable; in
+ * that case estimate a conservative monospace box from the visible word.
+ * Candidate boxes include the text halo and avoid other connector curves/lines.
+ * Rectangular obstacles — card bodies and group or card borders — reject any
+ * candidate that would cover or straddle them. If no along-wire slot is clear,
+ * try readable off-wire positions with a short leader. Return null only if
+ * neither placement is clear.
+ *
+ * @param {Array<{label: string, width: number, height: number, at: (t: number) => {x: number, y: number}, obstacles?: Array<(t: number) => {x: number, y: number}>, rects?: Array<{x: number, y: number, width: number, height: number}>}>} labels
+ * @returns {Array<{x: number, y: number, leader?: {x: number, y: number}}|null>}
+ */
+export function placeConnectorLabels(labels = []) {
+  const placed = [];
+  return labels.map(({ label = '', width, height, at, obstacles = [], rects = [] }) => {
+    const measuredWidth = Number(width);
+    const measuredHeight = Number(height);
+    const fallbackWidth = Math.max(6, [...String(label)].length * 6);
+    const labelWidth = Number.isFinite(measuredWidth) && measuredWidth > 0 ? measuredWidth : fallbackWidth;
+    const labelHeight = Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : 12;
+    // The visible halo extends past getBBox() on each side. Include it in both
+    // label-to-label tests and line clearance so halos cannot touch or overlap.
+    const boxWidth = labelWidth + CONNECTOR_LABEL_STROKE_PAD * 2;
+    const boxHeight = labelHeight + CONNECTOR_LABEL_STROKE_PAD * 2;
+    const obstaclePoints = obstacles.map((obstacleAt) => {
+      const points = [];
+      for (let i = 0; i <= CONNECTOR_LABEL_WIRE_STEPS; i += 1) {
+        points.push(obstacleAt(i / CONNECTOR_LABEL_WIRE_STEPS));
+      }
+      return points;
+    });
+    // The word's own box, halo included, and the wider box its wire needs.
+    const wordBox = (candidate) => ({
+      left: candidate.x - boxWidth / 2,
+      right: candidate.x + boxWidth / 2,
+      top: candidate.y - boxHeight / 2,
+      bottom: candidate.y + boxHeight / 2,
+    });
+    // A card's body, a group's box edge or a card's border is a surface the
+    // word must not cover or straddle: it would read as part of the node.
+    const surfaceOverlap = (candidate) => {
+      const word = wordBox(candidate);
+      return rects.reduce((most, rect) => {
+        if (!rect || !Number.isFinite(rect.x) || !Number.isFinite(rect.y)) return most;
+        const width = Math.max(0, Number(rect.width) || 0);
+        const height = Math.max(0, Number(rect.height) || 0);
+        const overlapX = Math.min(word.right, rect.x + width + CONNECTOR_LABEL_BOX_CLEARANCE)
+          - Math.max(word.left, rect.x - CONNECTOR_LABEL_BOX_CLEARANCE);
+        const overlapY = Math.min(word.bottom, rect.y + height + CONNECTOR_LABEL_BOX_CLEARANCE)
+          - Math.max(word.top, rect.y - CONNECTOR_LABEL_BOX_CLEARANCE);
+        if (overlapX <= 0 || overlapY <= 0) return most;
+        return Math.max(most, overlapX * overlapY);
+      }, 0);
+    };
+    const clearAt = (candidate) => {
+      if (surfaceOverlap(candidate)) return false;
+      const box = {
+        left: wordBox(candidate).left - CONNECTOR_LABEL_WIRE_CLEARANCE,
+        right: wordBox(candidate).right + CONNECTOR_LABEL_WIRE_CLEARANCE,
+        top: wordBox(candidate).top - CONNECTOR_LABEL_WIRE_CLEARANCE,
+        bottom: wordBox(candidate).bottom + CONNECTOR_LABEL_WIRE_CLEARANCE,
+      };
+      const crossesWire = obstaclePoints.some((points) => points.some((point, i) => (
+        i > 0 && segmentIntersectsBox(points[i - 1], point, box)
+      )));
+      if (crossesWire) return false;
+      return placed.every((other) => {
+        const apartX = Math.abs(candidate.x - other.x) - (boxWidth + other.width) / 2;
+        const apartY = Math.abs(candidate.y - other.y) - (boxHeight + other.height) / 2;
+        return apartX >= CONNECTOR_LABEL_GAP || apartY >= CONNECTOR_LABEL_GAP;
+      });
+    };
+    // With surfaces in play the middle can be blocked, so the slots alternate
+    // outwards from it rather than running one way first; a bare canvas keeps
+    // the original order.
+    const slots = rects.length ? CONNECTOR_LABEL_SLOTS_CLEAR : CONNECTOR_LABEL_SLOTS;
+    let spot = null;
+    for (const t of slots) {
+      const candidate = at(t);
+      if (clearAt(candidate)) {
+        spot = candidate;
+        break;
+      }
+    }
+    if (!spot) {
+      for (const t of slots) {
+        const anchor = at(t);
+        const before = at(Math.max(0, t - 0.01));
+        const after = at(Math.min(1, t + 0.01));
+        const dx = after.x - before.x;
+        const dy = after.y - before.y;
+        const length = Math.hypot(dx, dy);
+        const normal = length > 1e-9 ? { x: -dy / length, y: dx / length } : { x: 0, y: 1 };
+        for (const offset of CONNECTOR_LABEL_FALLBACK_OFFSETS) {
+          for (const sign of [1, -1]) {
+            const candidate = {
+              x: anchor.x + normal.x * offset * sign,
+              y: anchor.y + normal.y * offset * sign,
+            };
+            if (!clearAt(candidate)) continue;
+            spot = { ...candidate, leader: anchor };
+            break;
+          }
+          if (spot) break;
+        }
+        if (spot) break;
+      }
+    }
+    if (!spot) {
+      // Nothing is clear: keep the relationship readable on the slot that
+      // covers the least of any node or group rather than hiding the word.
+      let least = Infinity;
+      for (const t of slots) {
+        const candidate = at(t);
+        const overlap = surfaceOverlap(candidate);
+        if (overlap < least) {
+          least = overlap;
+          spot = candidate;
+        }
+      }
+    }
+    if (spot) placed.push({ x: spot.x, y: spot.y, width: boxWidth, height: boxHeight });
+    return spot;
+  });
+}
+
+/**
+ * Give every connector in a drawing its own geometry.
+ *
+ * The lane fan-out at each endpoint keeps most wires apart, but two
+ * connectors can still resolve to exactly the same boxes and routing — a
+ * folded pair with both a prose link and a mention, two links between the
+ * same cards in one direction, or two endpoints that measure to one box.
+ * Drawing them would paint one wire on top of the other, hiding the second
+ * relationship (and its click target).
+ *
+ * Entries are taken in drawing order and each one keeps its path unless that
+ * path is already claimed; then it is shifted perpendicular to its own wire
+ * (down/up for a horizontal wire, sideways for a vertical one) in growing
+ * steps until the path is unique. The first wire of a duplicated set stays
+ * where it was, so ordinary canvases are unchanged, and the result is stable
+ * for the same drawing order. `from`/`to` come back adjusted for the callers
+ * that need the endpoints themselves.
+ *
+ * @param {Array<{from: object, to: object, vertical?: boolean, elbow?: boolean, limit?: number}>} entries
+ * @returns {Array<object>} the entries with `from`, `to`, `path`, `at`, `head`, `headDir` and `cut`
+ */
+export function spreadConnectorCurves(entries = []) {
+  const used = new Set();
+  const options = (entry) => ({ vertical: Boolean(entry.vertical), elbow: Boolean(entry.elbow), limit: entry.limit ?? Infinity });
+  const shifted = (rect, offset, vertical) => (vertical
+    ? { ...rect, x: rect.x + offset }
+    : { ...rect, y: rect.y + offset });
+  return entries.map((entry) => {
+    const base = connectorCurve(entry.from, entry.to, options(entry));
+    if (!used.has(base.path)) {
+      used.add(base.path);
+      return { ...entry, ...base };
+    }
+    for (let step = 1; step <= 30; step += 1) {
+      for (const sign of [1, -1]) {
+        const offset = sign * step * CONNECTOR_SPREAD;
+        const from = shifted(entry.from, offset, Boolean(entry.vertical));
+        const to = shifted(entry.to, offset, Boolean(entry.vertical));
+        const candidate = connectorCurve(from, to, options(entry));
+        if (used.has(candidate.path)) continue;
+        used.add(candidate.path);
+        return { ...entry, from, to, ...candidate };
+      }
+    }
+    // Thirty lanes either way is far beyond any real canvas: keep the base
+    // wire rather than fail a draw, but it is already the last resort.
+    used.add(base.path);
+    return { ...entry, ...base };
+  });
+}
+
+/** The distance between neighbouring connector lanes at one endpoint. */
+export const CONNECTOR_LANE_PITCH = 16;
+
+/**
+ * Prepare connectors exactly as the canvas draws them: actual endpoint rects,
+ * a lane per bond at a shared endpoint, stacked-pair verticals, per-edge
+ * routing and the cut limit where that routing asks for one.
+ *
+ * Drawing and the arrangement's occlusion scorer both call this, so a score
+ * measures the wires the reader actually sees. The scorer supplies rects for
+ * its candidate positions; the canvas supplies the rects on screen.
+ *
+ * @param {Array<{from: string, to: string, kind?: string}>} connectors
+ * @param {object} options
+ * @param {(endpoint: string) => object|null} options.rectFor
+ * @param {object} [options.routing]
+ * @param {(from: string, to: string) => boolean} [options.isStacked]
+ * @param {(endpoint: string) => object|null} [options.proxyRectFor]
+ *   A rect for a hidden far end, used only by a wire that is cut. The wire
+ *   still points at the real card, so its diamond can reveal and fly there.
+ * @param {number} [options.lanePitch]
+ * @param {number} [options.cutSpan]
+ * @returns {Array<object>} entries carrying `from`, `to`, `vertical`, `elbow`, `limit` and the source edge
+ */
+export function prepareConnectorGeometry(connectors = [], {
+  rectFor,
+  routing = null,
+  isStacked = () => false,
+  proxyRectFor = null,
+  lanePitch = CONNECTOR_LANE_PITCH,
+  cutSpan = CONNECTOR_CUT_SPAN,
+} = {}) {
+  if (typeof rectFor !== 'function') return [];
+  // Normalise once: the scorer calls this many times per arrangement pass,
+  // and every edge used to re-normalise the whole routing record.
+  const normalizedRouting = normalizeRouting(routing);
+  const bonds = new Map();
+  for (const edge of connectors) {
+    bonds.set(edge.from, (bonds.get(edge.from) ?? 0) + 1);
+    bonds.set(edge.to, (bonds.get(edge.to) ?? 0) + 1);
+  }
+  const lanes = new Map();
+  const laneRect = (rect, endpoint) => {
+    const total = bonds.get(endpoint) ?? 1;
+    const taken = lanes.get(endpoint) ?? 0;
+    lanes.set(endpoint, taken + 1);
+    // Labels sit at wire midpoints, so neighbouring lanes can put their words
+    // only half a pitch apart. The label placer checks measured text boxes and
+    // tries other slots along each wire to keep a 14px gap; if none is free,
+    // the word stays at the midpoint.
+    const shift = (taken - (total - 1) / 2) * lanePitch;
+    return shift ? { ...rect, y: rect.y + shift } : rect;
+  };
+  const prepared = [];
+  for (const edge of connectors) {
+    const key = connectorKey(edge);
+    const override = normalizedRouting.edges[key] ?? {};
+    const eff = {
+      elbow: override.elbow ?? normalizedRouting.elbow,
+      arrows: override.arrows ?? normalizedRouting.arrows,
+      cut: override.cut ?? normalizedRouting.cut,
+    };
+    const stacked = edge.kind !== 'contains' && Boolean(isStacked(edge.from, edge.to));
+    // A long wire may be cut off at a marker instead of crossing the whole
+    // canvas; the outline spine and a stacked pair stay whole.
+    const wantsCut = eff.cut && !stacked && edge.kind !== 'contains';
+    const limit = wantsCut ? cutSpan : Infinity;
+    let from = rectFor(edge.from);
+    let to = rectFor(edge.to);
+    // A card hidden inside a collapsed group still has a real place. Give a
+    // cut wire that far end so it can end in a reachable diamond; a short
+    // hidden wire stays hidden with its card.
+    if (wantsCut && from && !to && typeof proxyRectFor === 'function') to = proxyRectFor(edge.to);
+    if (!from || !to) continue;
+    prepared.push({
+      edge,
+      key,
+      eff,
+      stacked,
+      from: stacked ? from : laneRect(from, edge.from),
+      to: stacked ? to : laneRect(to, edge.to),
+      vertical: stacked,
+      elbow: eff.elbow,
+      limit,
+    });
+  }
+  return prepared;
+}
+
+/**
+ * Sampled points along `connectorCurve(from, to, …)`, for callers and tests
+ * that want a point list rather than the `at` function. The arrangement scores
+ * prepared geometry directly, with the same real rects and routing; `cardSize`
+ * remains available for callers that deliberately want a substituted box.
  */
 export function sampleConnectorCurve(from, to, { vertical = false, elbow = false, steps = 16, cardSize = null } = {}) {
   const a = cardSize ? { ...from, width: cardSize.width, height: cardSize.height } : from;

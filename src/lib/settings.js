@@ -6,6 +6,7 @@
  *   settings.json  -> everything below (viewer behaviour, colours, graph)
  */
 import { normalizeColor, PALETTE } from './colors.js';
+import { normalizeUnit, UNIT_VOCABULARY_LIMIT } from './worldbuild.js';
 
 /** Every page, link and section starts white unless the vault says otherwise. */
 export const DEFAULT_COLOR = '#ffffff';
@@ -52,6 +53,15 @@ export const DEFAULT_SETTINGS = {
   editor: {
     enabled: true,
     livePreview: true,
+  },
+  worldbuild: {
+    // How tall a full card stands unless the node says otherwise: `fixed`
+    // keeps the 260px box with scrolling prose, `content` grows the card so
+    // the whole note shows. Per-node overrides live in the vein record.
+    cardSize: 'fixed',
+    // Units typed by hand into attribute cards. Kept outside the cards so
+    // clearing a unit or deleting its card does not erase the suggestion.
+    units: [],
   },
   updates: {
     // Checked automatically shortly after the vault opens; the user can turn
@@ -131,6 +141,13 @@ export function validateSettings(settings) {
   s.layout.sidebarWidth = clamp(Number(s.layout.sidebarWidth), 160, 640, DEFAULT_SETTINGS.layout.sidebarWidth);
   s.layout.graphWidth = clamp(Number(s.layout.graphWidth), 200, 900, DEFAULT_SETTINGS.layout.graphWidth);
   s.editor = { ...DEFAULT_SETTINGS.editor, ...(isPlainObject(s.editor) ? s.editor : {}) };
+  s.worldbuild = { ...DEFAULT_SETTINGS.worldbuild, ...(isPlainObject(s.worldbuild) ? s.worldbuild : {}) };
+  s.worldbuild.cardSize = s.worldbuild.cardSize === 'content' ? 'content' : DEFAULT_SETTINGS.worldbuild.cardSize;
+  s.worldbuild.units = (Array.isArray(s.worldbuild.units) ? s.worldbuild.units : [])
+    .filter((unit) => typeof unit === 'string')
+    .map((unit) => normalizeUnit(unit))
+    .filter(Boolean)
+    .slice(0, UNIT_VOCABULARY_LIMIT);
   s.updates = { ...DEFAULT_SETTINGS.updates, ...(isPlainObject(s.updates) ? s.updates : {}) };
   s.updates.autoCheck = s.updates.autoCheck !== false;
   return s;

@@ -134,6 +134,19 @@ export function createSettingsDialog({ app }) {
         ]),
 
         el('section', { class: 'settings-section' }, [
+          el('h3', { text: 'Worldbuilding' }),
+          el('div', { class: 'settings-grid' }, [
+            field('Card height', el('select', {
+              class: 'md-input',
+              onchange: (event) => app.updateSettings({ worldbuild: { cardSize: event.target.value } }),
+            }, [
+              el('option', { value: 'fixed', text: 'Fixed — prose scrolls in the card', selected: settings.worldbuild?.cardSize !== 'content' ? '' : null }),
+              el('option', { value: 'content', text: 'Fit to content — the card grows to the note', selected: settings.worldbuild?.cardSize === 'content' ? '' : null }),
+            ]), 'The default for every full card in this vault. Each node can override it from its right-click menu, or the Cards menu for a selection — overrides are kept with the vein.'),
+          ]),
+        ]),
+
+        el('section', { class: 'settings-section' }, [
           el('h3', { text: 'Concept graph' }),
           el('div', { class: 'settings-grid' }, [
             field('Depth', numberInput(settings.graph.depth, { min: 1, max: MAX_GRAPH_DEPTH, onchange: (v) => app.setGraphOption('depth', v) }), `Hops out from the open vein, 1–${MAX_GRAPH_DEPTH}. Nodes fade as they get further from the vein you are reading.`),

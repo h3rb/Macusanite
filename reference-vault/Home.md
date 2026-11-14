@@ -75,8 +75,8 @@ line in the graph towards the colour of their target.
 This page opens as a Worldbuilding canvas (the switch at the top right of the
 centre pane). Everything new lives here:
 
-* **Overview** folds every card and link section, then fits the whole graph to
-  the screen — a bird's-eye table of contents. **Fit**, **Fit selection** and
+* **Overview** folds every card, then fits the whole graph to the screen — a
+  bird's-eye table of contents. **Fit**, **Fit selection** and
   **Centre** find far-apart cards without panning.
 * Cards snap to guides while dragging; a Ctrl+click selection drags as a unit,
   then **Align** and **Distribute** tidy the set.

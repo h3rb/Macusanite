@@ -90,6 +90,14 @@ test('every colour default starts white', () => {
   assert.equal(DEFAULT_SETTINGS.defaultSectionColor, '#ffffff');
 });
 
+test('learned attribute units survive settings merge and validation', () => {
+  const merged = mergeSettings(DEFAULT_SETTINGS, {
+    worldbuild: { units: [' furlong ', '', 7, 'tokens  per  day'] },
+  });
+  assert.deepEqual(merged.worldbuild.units, ['furlong', 'tokens per day']);
+  assert.equal(merged.worldbuild.cardSize, DEFAULT_SETTINGS.worldbuild.cardSize);
+});
+
 test('validation clamps numbers and normalises colours in place', () => {
   const validated = validateSettings({
     ...DEFAULT_SETTINGS,

@@ -12,24 +12,28 @@ import { el, clear, appendAll, askText } from './dom.js';
 import { renderMarkdown, renderMermaidIn } from './markdown.js';
 import {
   parseNotes, serializeNotes, updateNote, updateIntro, addNote, removeNote,
-  noteEdges, hierarchyEdges, noteStats, countWords, DEFAULT_LEVEL,
+  noteEdges, noteStats, countWords, DEFAULT_LEVEL,
   normalizeTag, addNoteTags, removeNoteTag, tagRecord, tagTarget,
   RELATION_KINDS, DEFAULT_RELATION, relationOf, relationKind, relationKey, groupEndpoint,
-  groupRelationEdges, bondEdges,
+  bondEdges,
   NODE_TYPES, nodeType, nodeTypeOf, nodeFields, nodeFieldOf, fieldRangeHint, unitSuggestions,
   dropMembershipKind,
   clampView, zoomViewAt, fitView, centreView, snapDelta, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
-  normalizeRouting, elbowPoints, connectorCurve, sampleConnectorCurve, CONNECTOR_CUT_SPAN, cleanAnnotations, makeAnnotationId,
+  normalizeRouting, prepareConnectorGeometry, cleanAnnotations, makeAnnotationId,
+  placeConnectorLabels,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
   nodeImageMetaNames, referencedNodeImageMetaNames, orphanedNodeImageMetaNames,
   NODE_IMAGE_MAX_SIDE, NODE_IMAGE_QUALITY, nodeImageSize,
+  nodeFileRef, nodeFileMetaName, cleanNodeResources, normalizeWebUrl,
+  referencedNodeFileMetaNames, orphanedNodeFileMetaNames, NODE_FILE_MAX_BYTES, NODE_RESOURCE_LIMIT,
   canvasSnapshot as snapshotCanvas, renameHistoryAnchor, pruneHistoryStack,
   connectedAnchors, lineageAnchors, anchorsInRect, relationshipDepths, canvasSearch,
-  connectorList, connectorKey, pathAnchors, effectiveRouting, cleanCardModes, cleanCollapsedGroups, proseLinkBetween,
+  connectorList, connectorKey, pathAnchors, effectiveRouting, spreadConnectorCurves, cleanCardModes, cleanCardSizes, cleanCollapsedGroups, proseLinkBetween, unlinkProseBetween,
   progressionColumns,
   DEFAULT_STEP_NAME, cleanHistoryStack, historyJump, historyKey,
   restoreSnapshot, pushHistoryStep,
 } from '../lib/worldbuild.js';
+import { buildCanvasSvg, buildCanvasMermaid, canvasExportName } from '../lib/worldbuildExport.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -47,6 +51,14 @@ const INTRO_H = 150;
 const STACK_GAP = 8;
 // How unaligned a folded-above-a-link pair may be and still read as a stack.
 const STACK_TOLERANCE = 2;
+
+/** A file size as the card shows it: bytes, KB or MB, one decimal at most. */
+function formatBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function svgNode(tag, attrs = {}) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -159,11 +171,18 @@ export function createWorldbuildPanel({ app, root }) {
   // (id → {members, color}), and whether the vein is marked as a
   // worldbuilding graph — all from the saved record.
   let relations = {};
-  // Which parts of each card are folded, by anchor: `card` or `links`.
+  // Which cards are folded to their header, by anchor. A record may also
+  // still carry the retired `links` part beside it; nothing reads it.
   let folded = {};
   // Display mode per card (`compact`/`thumbnail`; full is absence) and each
   // group's collapse to a summary card, by id.
   let cardModes = {};
+  // Card heights: `fixed` (the vault default, an override when stored) or
+  // `content`, which grows a full card to its prose instead of scrolling it.
+  let cardSizes = {};
+  // The vault's default card height last built with, so a change in Settings
+  // rebuilds the canvas even though the vein's text did not change.
+  let lastVaultCardSize = null;
   let collapsedGroups = {};
   // Canvas edit history, per vein within the open vault, so switching veins
   // keeps each one's steps while identical paths in different vaults stay
@@ -188,6 +207,13 @@ export function createWorldbuildPanel({ app, root }) {
   // image's file is swept once no node — and no undo/redo snapshot — names
   // it any more, so undo still finds the file it restores.
   const seenNodeImageRefs = new Set();
+  // Files attached to a node and the web URLs beside them, by anchor. The
+  // files are references into `.macusanite/node-files/`; both are cleaned on
+  // the way in, so a record cannot point at a foreign path or a non-web URL.
+  let nodeResources = {};
+  // Every attachment file this session has seen referenced: removing or
+  // deleting a node sweeps the file once no record or snapshot names it.
+  const seenAttachmentRefs = new Set();
   // Notes pinned in place: Arrange must work around them, though a pinned
   // note can still be dragged by hand. Groups pin through their own flag.
   let pinned = {};
@@ -199,6 +225,11 @@ export function createWorldbuildPanel({ app, root }) {
   // Free-floating margin notes, keyed by annotation id and stored with the
   // vein — independent of the heading cards they sit beside.
   let annotations = {};
+  // The fold state to restore when the Overview button is clicked again.
+  // Transient and scoped to the current vein; normal canvas history remains
+  // the durable record of each Overview toggle.
+  let overviewFolded = null;
+  let overviewButton = null;
   // Connector display: bezier wires by default, optionally right-angle
   // elbows, and optionally arrowheads showing each wire's direction.
   let routing = normalizeRouting(null);
@@ -206,6 +237,9 @@ export function createWorldbuildPanel({ app, root }) {
   // The relationship the next link from each card asserts, by note index.
   let linkKinds = new Map();
   let cardEls = [];
+  // Watchers on content-sized cards: their height follows their prose (and
+  // any image or diagram inside it), so connectors and the canvas keep up.
+  let contentObservers = [];
   let layout = { cols: 1, top: PAD };
   let dragging = null;
   // The group a dragged card would join if released where it is — lit while
@@ -231,6 +265,7 @@ export function createWorldbuildPanel({ app, root }) {
   let selectedEdges = new Set();
   let arrangeButton = null;
   let menuEl = null;
+  let submenuEl = null;
   // The viewport's view of the canvas: a translate in px and a zoom scale.
   // Transient — saved card positions live in canvas coordinates, so zooming
   // never touches them. A new vein (or tidying the grid) starts at 1:1.
@@ -255,6 +290,8 @@ export function createWorldbuildPanel({ app, root }) {
       model = null;
       currentPath = null;
       lastText = null;
+      for (const observer of contentObservers) observer.disconnect();
+      contentObservers = [];
       clear(toolbar);
       clear(statsBar);
       clear(cards);
@@ -263,15 +300,19 @@ export function createWorldbuildPanel({ app, root }) {
     }
 
     const text = sourceText(doc);
-    if (mounted && currentPath === doc.path && text === lastText) return;
+    const vaultSize = vaultCardSize();
+    if (mounted && currentPath === doc.path && text === lastText && vaultSize === lastVaultCardSize) return;
+    lastVaultCardSize = vaultSize;
 
     if (currentPath !== doc.path) {
+      overviewFolded = null;
       selected = new Set();
       searchMatches = [];
       searchCurrent = -1;
       isolatedAnchors = null;
       searchInput.value = '';
     }
+    if (currentPath === doc.path && lastText !== null && text !== lastText) overviewFolded = null;
     currentPath = doc.path;
     lastText = text;
     model = parseNotes(text);
@@ -281,12 +322,17 @@ export function createWorldbuildPanel({ app, root }) {
     relations = record?.relations ?? {};
     folded = record?.folded ?? {};
     cardModes = cleanCardModes(record?.cardModes);
+    cardSizes = cleanCardSizes(record?.cardSizes);
     collapsedGroups = cleanCollapsedGroups(record?.collapsedGroups);
         nodeTypes = record?.types ?? {};
     fieldValues = record?.fields ?? {};
     nodeColors = record?.colors ?? {};
     nodeImages = record?.images ?? {};
     for (const ref of Object.values(nodeImages)) seenNodeImageRefs.add(ref);
+    nodeResources = cleanNodeResources(record?.resources);
+    for (const entry of Object.values(nodeResources)) {
+      for (const file of entry.files ?? []) seenAttachmentRefs.add(file.ref);
+    }
     pinned = record?.pinned ?? {};
     nodeLocked = record?.locked ?? {};
     groups = record?.groups ?? {};
@@ -302,6 +348,8 @@ export function createWorldbuildPanel({ app, root }) {
 
   function build() {
     renderToolbar();
+    for (const observer of contentObservers) observer.disconnect();
+    contentObservers = [];
     clear(cards);
     cardEls = [];
 
@@ -374,17 +422,19 @@ export function createWorldbuildPanel({ app, root }) {
         title: 'Arrange the selection, a group, a connected component, or one type — grid, rows, columns, cascade, layered, or progression columns. Pinned and locked cards stay put.',
         onclick: (event) => toggleArrangeMenu(event.currentTarget),
       }),
-      el('button', {
+      (overviewButton = el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: 'Overview',
-        title: 'Fold every card and link section, then zoom to fit — a bird’s-eye view of the vein',
+        title: overviewFolded
+          ? 'Restore the folding state from before Overview'
+          : 'Fold every card and link section, then zoom to fit — click again to restore the previous folding state',
         onclick: overview,
-      }),
+      })),
       el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: 'Cards ▾',
         'data-cards-toggle': '',
         'aria-haspopup': 'menu',
         'aria-expanded': 'false',
-        title: 'Card display modes for the selection — full, compact, or thumbnail',
+        title: 'Card display modes and heights for the selection — full, compact, thumbnail, fixed or content height',
         onclick: (event) => toggleCardsMenu(event.currentTarget),
       }),
       el('button', {
@@ -407,7 +457,7 @@ export function createWorldbuildPanel({ app, root }) {
       el('button', {
         class: `btn ${routing.cut ? 'btn-primary' : 'btn-ghost'} btn-mini`, type: 'button', text: 'Trim',
         'aria-pressed': routing.cut ? 'true' : 'false',
-        title: 'Cut off wires longer than a screen at a diamond — click the diamond to fly the camera to the far card',
+        title: 'Cut off wires longer than a screen at a diamond — click it to reveal the far card if it is inside a collapsed group, then centre the view there',
         onclick: () => toggleRouting('cut'),
       }),
       el('button', {
@@ -437,6 +487,14 @@ export function createWorldbuildPanel({ app, root }) {
         'aria-haspopup': 'dialog',
         'aria-expanded': 'false',
         onclick: (event) => toggleLegend(event.currentTarget),
+      }),
+      el('button', {
+        class: 'btn btn-ghost btn-mini', type: 'button', text: 'Export ▾',
+        'data-export-toggle': '',
+        'aria-haspopup': 'menu',
+        'aria-expanded': 'false',
+        title: 'Export this canvas as a standalone SVG, a PNG image, or Mermaid markdown',
+        onclick: (event) => toggleExportMenu(event.currentTarget),
       }),
       el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: '?',
@@ -610,11 +668,31 @@ export function createWorldbuildPanel({ app, root }) {
     return id;
   }
 
+  function setAnnotationColor(id, color) {
+    step(() => {
+      const annotation = annotations[id];
+      if (!annotation) return;
+      const next = { ...annotations, [id]: { ...annotation } };
+      if (color) next[id].color = color;
+      else delete next[id].color;
+      annotations = next;
+      saveAnnotations();
+      const note = annotationsLayer.querySelector(`[data-annotation-id="${id}"]`);
+      if (note) {
+        note.style.setProperty('--wb-annotation-color', color || '#fff3a6');
+        note.style.setProperty('--wb-annotation-border', color
+          ? `color-mix(in srgb, ${color} 70%, #000)`
+          : '#d8c94c');
+      }
+    }, 'Change annotation colour');
+    closeMenu();
+  }
+
   function buildAnnotation(annotation) {
     const note = el('div', {
       class: 'wb-annotation',
       dataset: { annotationId: annotation.id },
-      style: `left:${annotation.x}px; top:${annotation.y}px; width:${ANNOTATION_W}px;`,
+      style: `left:${annotation.x}px; top:${annotation.y}px; width:${ANNOTATION_W}px; --wb-annotation-color:${annotation.color || '#fff3a6'}; --wb-annotation-border:${annotation.color ? `color-mix(in srgb, ${annotation.color} 70%, #000)` : '#d8c94c'};`,
     });
     const head = el('div', { class: 'wb-annotation-head', title: 'Drag to move this annotation' }, [
       el('span', { class: 'wb-annotation-grip', text: '⠿' }),
@@ -680,38 +758,42 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
-   * A fold toggle for one part of a card. It shows the part's open/closed
-   * glyph and writes the state through, so the vein reopens as it was left.
+   * The card's fold toggle: it shows the card's open/closed glyph and writes
+   * the state through, so the vein reopens as it was left.
    */
-  function foldToggle(anchor, part, label) {
+  function foldToggle(anchor) {
     const button = el('button', { class: 'wb-fold-toggle', type: 'button' });
     const paint = () => {
-      const closed = isFolded(anchor, part);
-      button.textContent = `${closed ? '▸' : '▾'}${label ? ` ${label}` : ''}`;
-      button.title = `${closed ? 'Expand' : 'Fold'} ${label || 'section'} for ${endpointTitle(anchor)}`;
+      const closed = isFolded(anchor);
+      button.textContent = closed ? '▸' : '▾';
+      button.title = `${closed ? 'Expand' : 'Fold'} section for ${endpointTitle(anchor)}`;
       button.setAttribute('aria-label', button.title);
       button.setAttribute('aria-expanded', closed ? 'false' : 'true');
     };
     paint();
     button.addEventListener('click', (event) => {
       event.stopPropagation();
-      const name = `${!isFolded(anchor, part) ? 'Fold' : 'Expand'} ${part === 'card' ? `“${noteTitle(anchor)}”` : `links on “${noteTitle(anchor)}”`}`;
+      overviewFolded = null;
+      if (overviewButton) overviewButton.title = 'Fold every card and link section, then zoom to fit — click again to restore the previous folding state';
+      const closed = isFolded(anchor);
       step(() => {
-        folded = app.setWorldFold(currentPath, anchor, part, !isFolded(anchor, part)) ?? folded;
+        folded = app.setWorldFold(currentPath, anchor, !closed) ?? folded;
         paint();
         // A fold changes a card's height, and with it every edge that meets it.
         applyFolds();
-        // A card folded above a node it links to now stacks with it.
-        restackAll();
-      }, name);
+        // Only this folded card can cause a stack to move.
+        restackFoldedCards([anchor]);
+      }, `${closed ? 'Expand' : 'Fold'} “${noteTitle(anchor)}”`);
     });
     return button;
   }
 
-  function isFolded(anchor, part) {
+  /** Whether a card is folded to its header. */
+  function isFolded(anchor) {
     const entry = folded[anchor];
-    // `true` is the older shape, from when a card's own fold was the only one.
-    return entry === true ? part === 'card' : Boolean(entry?.[part]);
+    // `true` is the older shape, from when a card's own fold was the only one;
+    // a record may also still carry the retired `links` part, which is ignored.
+    return entry === true || Boolean(entry?.card);
   }
 
   /** Put every card's current fold classes on screen, then redraw to fit. */
@@ -719,7 +801,7 @@ export function createWorldbuildPanel({ app, root }) {
     (model?.notes ?? []).forEach((note, index) => {
       const card = cardEls[index];
       if (!card) return;
-      card.classList.toggle('is-folded', isFolded(note.anchor, 'card'));
+      card.classList.toggle('is-folded', isFolded(note.anchor));
     });
     sizeCanvas();
     drawEdges();
@@ -734,7 +816,6 @@ export function createWorldbuildPanel({ app, root }) {
    * the caller decides when the whole pass persists.
    */
   function restackAround(anchor) {
-    if (!anchor || !isFolded(anchor, 'card')) return false;
     const notes = model?.notes ?? [];
     const index = notes.findIndex((note) => note.anchor === anchor);
     if (index < 0) return false;
@@ -771,12 +852,12 @@ export function createWorldbuildPanel({ app, root }) {
     return moved;
   }
 
-  /** Stack every folded card that qualifies; one save and rebuild if any moved. */
-  function restackAll() {
+  /** Stack only folded cards involved in this change. */
+  function restackFoldedCards(anchors) {
     let moved = false;
-    (model?.notes ?? []).forEach((note) => {
-      if (restackAround(note.anchor)) moved = true;
-    });
+    for (const anchor of anchors) {
+      if (isFolded(anchor) && restackAround(anchor)) moved = true;
+    }
     if (moved) {
       savePositions();
       build();
@@ -799,9 +880,11 @@ export function createWorldbuildPanel({ app, root }) {
       fields: fieldValues,
       colors: nodeColors,
       images: nodeImages,
+      resources: nodeResources,
       pinned,
       locked: nodeLocked,
       cardModes,
+      cardSizes,
       collapsedGroups,
       annotations,
       view: { ...view },
@@ -855,9 +938,10 @@ export function createWorldbuildPanel({ app, root }) {
     syncHistoryButtons();
     // A pushed step may have dropped a snapshot (the limit, or the redo
     // branch a new step clears): if that was the last reference to an image
-    // file, the file goes now. Best-effort — a failed sweep never breaks
-    // the step that landed.
+    // or attachment file, the file goes now. Best-effort — a failed sweep
+    // never breaks the step that landed.
     void cleanupOrphanedNodeImages().catch(() => {});
+    void cleanupOrphanedAttachments().catch(() => {});
     return true;
   }
 
@@ -885,6 +969,30 @@ export function createWorldbuildPanel({ app, root }) {
       }
     }
     if (failed) app.toast(`Could not delete ${failed} orphaned node image${failed === 1 ? '' : 's'}`, 'warn', 2200);
+  }
+
+  /**
+   * Delete attachment files this session removed, once no node and no
+   * undo/redo snapshot — here or in any other vein — still names them, so an
+   * undo that brings an attachment back still finds its file.
+   */
+  async function cleanupOrphanedAttachments(candidates) {
+    const referenced = referencedNodeFileMetaNames({
+      resources: nodeResources,
+      history: historyFor(currentPath),
+      worlds: {},
+    });
+    for (const metaName of app.referencedNodeFileMetaNames?.() ?? []) referenced.add(metaName);
+    const orphans = orphanedNodeFileMetaNames(candidates ?? seenAttachmentRefs, referenced);
+    let failed = 0;
+    for (const metaName of orphans) {
+      try {
+        await app.deleteNodeAttachmentFile?.(metaName);
+      } catch {
+        failed += 1;
+      }
+    }
+    if (failed) app.toast(`Could not delete ${failed} orphaned attachment${failed === 1 ? '' : 's'}`, 'warn', 2200);
   }
 
   /** Run one canvas change as a single named undoable step. */
@@ -917,6 +1025,8 @@ export function createWorldbuildPanel({ app, root }) {
    * screen as well, for edits made outside it (deletions in edit mode, a
    * revert). */
   function restoreCanvas(snap) {
+    overviewFolded = null;
+    if (overviewButton) overviewButton.title = 'Fold every card and link section, then zoom to fit — click again to restore the previous folding state';
     // Types, fields and colours come with the rest — an undo of a type or
     // colour change puts the old one back. Snapshots written before they
     // existed leave them be, and the camera comes back with the rest too:
@@ -927,9 +1037,11 @@ export function createWorldbuildPanel({ app, root }) {
       fields: fieldValues,
       colors: nodeColors,
       images: nodeImages,
+      resources: nodeResources,
       pinned,
       locked: nodeLocked,
       cardModes,
+      cardSizes,
       collapsedGroups,
       annotations,
       view,
@@ -940,11 +1052,13 @@ export function createWorldbuildPanel({ app, root }) {
     relations = saved.relations;
     folded = saved.folded;
     cardModes = saved.cardModes ?? {};
+    cardSizes = saved.cardSizes ?? {};
     collapsedGroups = saved.collapsedGroups ?? {};
     nodeTypes = saved.types;
     fieldValues = saved.fields;
     nodeColors = saved.colors;
     nodeImages = saved.images;
+    nodeResources = saved.resources ?? {};
     annotations = saved.annotations ?? {};
     pinned = saved.pinned ?? {};
     nodeLocked = saved.locked ?? {};
@@ -960,9 +1074,11 @@ export function createWorldbuildPanel({ app, root }) {
       fields: fieldValues,
       colors: nodeColors,
       images: nodeImages,
+      resources: nodeResources,
       pinned,
       locked: nodeLocked,
       cardModes,
+      cardSizes,
       collapsedGroups,
       annotations,
       view: anchorOfView(view),
@@ -1099,6 +1215,21 @@ export function createWorldbuildPanel({ app, root }) {
     return cardModes[anchor] ?? 'full';
   }
 
+  /** The vault's default card height, from Settings → Worldbuilding. */
+  function vaultCardSize() {
+    return app.state?.settings?.worldbuild?.cardSize === 'content' ? 'content' : 'fixed';
+  }
+
+  /** A node's height: its own override, else the vault's default. */
+  function cardSizeOf(anchor) {
+    return cardSizes[anchor] ?? vaultCardSize();
+  }
+
+  /** Only a full card has prose to grow to; compact and thumbnails stay boxes. */
+  function isContentSized(anchor) {
+    return cardModeOf(anchor) === 'full' && cardSizeOf(anchor) === 'content';
+  }
+
   /** A card hidden inside a collapsed group's summary. */
   function isGroupHidden(anchor) {
     const group = groupOf(anchor);
@@ -1138,6 +1269,7 @@ export function createWorldbuildPanel({ app, root }) {
   function setCardMode(anchor, mode) {
     const targets = selected.size ? [...selected] : [anchor];
     if (!targets.length || !model) return;
+    const already = targets.every((target) => cardModeOf(target) === mode);
     step(() => {
       cardModes = app.setWorldCardMode(currentPath, anchor, mode) ?? cardModes;
       // setWorldCardMode writes one anchor; write the rest of the selection
@@ -1148,6 +1280,53 @@ export function createWorldbuildPanel({ app, root }) {
       applyCardModes();
       drawEdges();
     }, `${mode === 'full' ? 'Expand' : `Set ${mode} mode on`} ${targets.length === 1 ? `“${noteTitle(targets[0])}”` : `${targets.length} cards`}`);
+    // Nothing changed on screen (and so no undo step was recorded): say the
+    // mode was already in effect instead of letting the menu close silently.
+    if (already) {
+      app.toast(
+        targets.length === 1
+          ? `“${noteTitle(targets[0])}” is already ${mode === 'full' ? 'a full card' : mode}`
+          : `All ${targets.length} cards are already ${mode === 'full' ? 'full cards' : mode}`,
+        'info',
+        1800,
+      );
+    }
+  }
+
+  /**
+   * Fit one card's height to its prose — or back to the standard box — for
+   * the selection, as one undoable step. Content height needs full cards, so
+   * compact and thumbnail cards keep their designed boxes.
+   */
+  function setCardSize(anchor, size) {
+    const targets = selected.size ? [...selected] : [anchor];
+    if (!targets.length || !model) return;
+    const only = targets.length === 1;
+    const already = targets.every((target) => cardSizeOf(target) === size);
+    step(() => {
+      cardSizes = app.setWorldCardSize(currentPath, anchor, size) ?? cardSizes;
+      // setWorldCardSize writes one anchor; write the rest of the selection
+      // through it too, so the record matches the step.
+      for (const target of targets) {
+        if (target !== anchor) cardSizes = app.setWorldCardSize(currentPath, target, size) ?? cardSizes;
+      }
+      build();
+    }, `${size === 'content' ? 'Fit to content' : 'Fixed height on'} ${only ? `“${noteTitle(targets[0])}”` : `${targets.length} cards`}`);
+    // Content height is the only one that needs a full card; fixed height is
+    // what compact and thumbnail cards already are.
+    if (size === 'content' && targets.some((target) => cardModeOf(target) !== 'full')) {
+      app.toast('Content height applies to full cards', 'warn', 2000);
+      return;
+    }
+    if (already) {
+      app.toast(
+        only
+          ? `“${noteTitle(targets[0])}” is already ${size === 'content' ? 'fit to its content' : 'a fixed-height card'}`
+          : `All ${targets.length} cards are already ${size === 'content' ? 'fit to their content' : 'fixed-height'}`,
+        'info',
+        1800,
+      );
+    }
   }
 
   /** Sync mode classes and hidden members without rebuilding the cards. */
@@ -1179,15 +1358,16 @@ export function createWorldbuildPanel({ app, root }) {
     const type = nodeType(typeId);
     const row = el('div', { class: 'wb-fields' });
     const inputs = new Map();
-    // The unit autocomplete: predetermined units plus every unit already
-    // stored anywhere in this vault. Refreshed on focus and after each
-    // commit, so a unit typed by hand joins the list at once.
+    // The unit autocomplete: predetermined units, the vault's learned units,
+    // and every unit currently stored anywhere in this vault. Refreshed on
+    // focus and after each commit, so a hand-typed unit joins the list at once.
     let unitList = null;
     const refreshUnitList = () => {
       if (!unitList) return;
       const records = [fieldValues, ...Object.values(app.state?.world ?? {}).map((record) => record?.fields).filter(Boolean)];
       clear(unitList);
-      for (const unit of unitSuggestions(records)) unitList.append(el('option', { value: unit }));
+      const learned = app.state?.settings?.worldbuild?.units ?? [];
+      for (const unit of unitSuggestions(records, learned)) unitList.append(el('option', { value: unit }));
     };
     for (const field of schema) {
       // A numeric field's declared range reaches the input, so its spinners,
@@ -1198,6 +1378,11 @@ export function createWorldbuildPanel({ app, root }) {
         : {};
       const hint = fieldRangeHint(field);
       const isUnit = field.kind === 'unit';
+      const stored = nodeFieldOf(fieldValues, note.anchor, field.id);
+      let lastUnit = stored;
+      // Seed the vault vocabulary from units that were already on cards, so
+      // clearing one or deleting the card later cannot lose it.
+      if (isUnit) app.rememberWorldUnit?.(stored);
       if (isUnit && !unitList) {
         unitList = el('datalist', { id: `wb-units-${note.anchor}` });
         refreshUnitList();
@@ -1206,7 +1391,7 @@ export function createWorldbuildPanel({ app, root }) {
       const input = el('input', {
         class: `wb-field-input${isUnit ? ' wb-unit-input' : ''}`,
         type: isUnit ? 'text' : field.kind,
-        value: nodeFieldOf(fieldValues, note.anchor, field.id),
+        value: stored,
         placeholder: field.label,
         spellcheck: 'false',
         list: isUnit ? `wb-units-${note.anchor}` : undefined,
@@ -1222,6 +1407,11 @@ export function createWorldbuildPanel({ app, root }) {
       // bracketed by focus/blur so typing is one step, not one per key.
       inputs.set(field.id, input);
       const commit = () => {
+        if (isUnit) {
+          if (input.value.trim()) lastUnit = input.value;
+          // Clearing removes the only stored copy; keep the last value typed.
+          else app.rememberWorldUnit?.(lastUnit);
+        }
         fieldValues = app.setWorldNodeField(currentPath, note.anchor, type.id, field.id, input.value) ?? fieldValues;
         // Read back every box in the row: committing one end of a min/max
         // pair can move the other end with it.
@@ -1231,12 +1421,20 @@ export function createWorldbuildPanel({ app, root }) {
       const fieldName = `Set ${field.label.toLowerCase()} on “${note.title}”`;
       let fieldBefore = null;
       const finishFieldEdit = () => {
+        // Blur is the point a hand-typed unit is complete. Remembering it here
+        // keeps partial keystrokes out of the suggestions and still records
+        // the unit before a later clear or card deletion.
+        if (isUnit) app.rememberWorldUnit?.(input.value || lastUnit);
         if (fieldBefore === null) return;
         const before = fieldBefore;
         fieldBefore = null;
         pushStep(before, fieldName);
       };
       input.addEventListener('focus', () => {
+        if (isUnit) {
+          if (input.value.trim()) lastUnit = input.value;
+          app.rememberWorldUnit?.(lastUnit);
+        }
         refreshUnitList();
         fieldBefore = canvasSnapshot();
       });
@@ -1277,7 +1475,7 @@ export function createWorldbuildPanel({ app, root }) {
         : undefined;
     const mode = cardModeOf(note.anchor);
     const card = el('article', {
-      class: `wb-card wb-level-${note.level}${mode === 'compact' ? ' is-mode-compact' : ''}${mode === 'thumbnail' ? ' is-mode-thumbnail' : ''}${isGroupHidden(note.anchor) ? ' is-group-hidden' : ''}${selected.has(note.anchor) ? ' is-selected' : ''}${locked ? ' is-locked' : ''}${notePinned ? ' is-pinned' : ''}${isFolded(note.anchor, 'card') ? ' is-folded' : ''}${searchMatches.some((m) => m.anchor === note.anchor) ? ' is-search-hit' : ''}${searchMatches[searchCurrent]?.anchor === note.anchor ? ' is-search-current' : ''}${isolatedAnchors && !isolatedAnchors.has(note.anchor) ? ' is-dimmed' : ''}`,
+      class: `wb-card wb-level-${note.level}${mode === 'compact' ? ' is-mode-compact' : ''}${mode === 'thumbnail' ? ' is-mode-thumbnail' : ''}${isContentSized(note.anchor) ? ' is-content-sized' : ''}${isGroupHidden(note.anchor) ? ' is-group-hidden' : ''}${selected.has(note.anchor) ? ' is-selected' : ''}${locked ? ' is-locked' : ''}${notePinned ? ' is-pinned' : ''}${isFolded(note.anchor) ? ' is-folded' : ''}${searchMatches.some((m) => m.anchor === note.anchor) ? ' is-search-hit' : ''}${searchMatches[searchCurrent]?.anchor === note.anchor ? ' is-search-current' : ''}${isolatedAnchors && !isolatedAnchors.has(note.anchor) ? ' is-dimmed' : ''}`,
       style: `left:${pos.x}px; top:${pos.y}px; border-left-color:${accent};`,
       'data-note': String(index),
       title: mode === 'thumbnail' ? note.title : undefined,
@@ -1356,7 +1554,7 @@ export function createWorldbuildPanel({ app, root }) {
       'aria-label': `Note title: ${note.title}`,
       disabled: contentLocked ? true : undefined,
     });
-    const fold = foldToggle(note.anchor, 'card', '');
+    const fold = foldToggle(note.anchor);
     const remove = el('button', {
       class: 'wb-card-del', type: 'button', title: locked ? lockTitle : 'Delete this note', text: '✕',
       disabled: locked ? true : undefined,
@@ -1403,6 +1601,16 @@ export function createWorldbuildPanel({ app, root }) {
       renderMermaidIn(rendered, out.mermaid, app.mermaid);
     };
     paintRendered();
+    // A content-sized card has no fixed box: while its textarea is on screen
+    // it carries the prose, so it grows to its scroll height and the card
+    // follows. At rest the rendered prose sets the height instead.
+    const growBody = () => {
+      if (!isContentSized(note.anchor) || body.classList.contains('hidden')) return;
+      body.style.height = 'auto';
+      body.style.height = `${body.scrollHeight}px`;
+      sizeCanvas();
+      scheduleEdges();
+    };
     const editBody = () => {
       if (contentLocked) {
         contentLockedToast(note.anchor);
@@ -1411,8 +1619,10 @@ export function createWorldbuildPanel({ app, root }) {
       rendered.classList.add('hidden');
       body.classList.remove('hidden');
       body.focus();
+      growBody();
     };
     const doneEditing = () => {
+      body.style.height = '';
       paintRendered();
       body.classList.add('hidden');
       rendered.classList.remove('hidden');
@@ -1483,7 +1693,78 @@ export function createWorldbuildPanel({ app, root }) {
 
     // appendAll, not append: a note's fields row is null, and `append(null)`
     // inserts the literal text "null" (dom.js says so itself).
-    appendAll(card, [head, fieldsRow, metaLine, rendered, body, foot, thumb]);
+    // Attachments and URLs sit under the prose, above the tags, as part of
+    // the card's content: they open on click and are removed in place.
+    const resourceStrip = (() => {
+      const entry = nodeResources[note.anchor];
+      const files = entry?.files ?? [];
+      const urls = entry?.urls ?? [];
+      if (!files.length && !urls.length) return null;
+      const wrap = el('div', { class: 'wb-resources' });
+      for (const file of files) {
+        wrap.append(el('div', { class: 'wb-resource' }, [
+          el('button', {
+            class: 'wb-resource-link',
+            type: 'button',
+            title: `Open “${file.name}”${file.size ? ` (${formatBytes(file.size)})` : ''}`,
+            onclick: () => {
+              const metaName = nodeFileMetaName(file.ref);
+              if (!metaName) return;
+              void app.openNodeAttachmentFile?.(metaName, file.name)?.catch((error) => {
+                app.toast(`Could not open “${file.name}”: ${error.message}`, 'warn', 2400);
+              });
+            },
+          }, [
+            el('span', { class: 'wb-resource-icon', text: '📎' }),
+            el('span', { class: 'wb-resource-name', text: file.name }),
+          ]),
+          file.size ? el('span', { class: 'wb-resource-meta', text: formatBytes(file.size) }) : null,
+          contentLocked ? null : el('button', {
+            class: 'wb-resource-x',
+            type: 'button',
+            text: '✕',
+            title: 'Remove this attachment',
+            onclick: () => removeNodeResource(note.anchor, 'files', file.ref),
+          }),
+        ]));
+      }
+      for (const link of urls) {
+        wrap.append(el('div', { class: 'wb-resource' }, [
+          el('button', {
+            class: 'wb-resource-link',
+            type: 'button',
+            title: link.url,
+            onclick: () => app.openExternal(link.url),
+          }, [
+            el('span', { class: 'wb-resource-icon', text: '↗' }),
+            el('span', { class: 'wb-resource-name', text: link.label }),
+          ]),
+          contentLocked ? null : el('button', {
+            class: 'wb-resource-x',
+            type: 'button',
+            text: '✕',
+            title: 'Remove this URL',
+            onclick: () => removeNodeResource(note.anchor, 'urls', link.url),
+          }),
+        ]));
+      }
+      return wrap;
+    })();
+
+    appendAll(card, [head, fieldsRow, metaLine, rendered, body, resourceStrip, foot, thumb]);
+
+    // A content-sized card's height is whatever its prose makes it — a
+    // diagram, an image or a tag can change that after paint. Watch the card
+    // itself so the canvas edge and every connector follows.
+    if (isContentSized(note.anchor) && typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver(() => {
+        if (!card.isConnected) return;
+        sizeCanvas();
+        scheduleEdges();
+      });
+      observer.observe(card);
+      contentObservers.push(observer);
+    }
 
     title.addEventListener('input', () => {
       const before = model.notes[index]?.anchor;
@@ -1503,6 +1784,10 @@ export function createWorldbuildPanel({ app, root }) {
           nodeColors = moved.colors ?? nodeColors;
           nodeImages = moved.images ?? nodeImages;
           pinned = moved.pinned ?? pinned;
+          nodeLocked = moved.locked ?? nodeLocked;
+          cardModes = moved.cardModes ?? cardModes;
+          cardSizes = moved.cardSizes ?? cardSizes;
+          nodeResources = moved.resources ?? nodeResources;
           groups = moved.groups ?? groups;
         }
         savePositions();
@@ -1517,6 +1802,7 @@ export function createWorldbuildPanel({ app, root }) {
       commit();
       refreshWords();
       refreshTags();
+      growBody();
     });
 
     // Deleting a note deletes its prose from the file, so it asks once.
@@ -1542,11 +1828,15 @@ export function createWorldbuildPanel({ app, root }) {
       armed = 0;
       const gone = model.notes[index]?.anchor;
       if (gone && nodeImages[gone]) seenNodeImageRefs.add(nodeImages[gone]);
+      if (gone) {
+        for (const file of nodeResources[gone]?.files ?? []) seenAttachmentRefs.add(file.ref);
+      }
       model = removeNote(model, index);
       if (gone) {
         positions.delete(gone);
         relations = app.dropWorldRelations(currentPath, gone) ?? relations;
         fieldValues = app.dropWorldFields(currentPath, gone) ?? fieldValues;
+        delete nodeResources[gone];
         delete pinned[gone];
         nodeColors = app.setWorldNodeColor(currentPath, gone, null) ?? nodeColors;
         nodeImages = app.setWorldNodeImage(currentPath, gone, null) ?? nodeImages;
@@ -1556,9 +1846,10 @@ export function createWorldbuildPanel({ app, root }) {
       }
       commit();
       build();
-      // Deleting a note is not a canvas step, so it sweeps for itself: the
-      // file goes once no snapshot here or in another vein names it.
-      void cleanupOrphanedNodeImages().catch(() => {});
+              // Deleting a note is not a canvas step, so it sweeps for itself: the
+        // files go once no snapshot here or in another vein names them.
+        void cleanupOrphanedNodeImages().catch(() => {});
+        void cleanupOrphanedAttachments().catch(() => {});
     });
 
     head.addEventListener('pointerdown', (event) => {
@@ -1604,9 +1895,13 @@ export function createWorldbuildPanel({ app, root }) {
 
       for (const tag of live.tags ?? []) {
         // A tag that names a card is a way there: it can be screens away on
-        // the canvas, so clicking it flies the camera to that node.
+        // the canvas, so clicking it flies the camera to that node. A tag
+        // naming the card it sits on has nowhere to go — flying there would
+        // only re-centre the card under the reader's nose — so it stays
+        // plain text instead of becoming a door.
         const target = tagTarget(tag, model.notes ?? []);
-        const label = target
+        const here = Boolean(target && target.anchor === live.anchor);
+        const label = target && !here
           ? el('button', {
               class: 'wb-tag-link', type: 'button', text: `#${tag}`,
               title: `#${tag} names “${target.title || target.anchor}” — click to fly there`,
@@ -1617,8 +1912,8 @@ export function createWorldbuildPanel({ app, root }) {
             })
           : el('span', { text: `#${tag}` });
         tagsRow.append(el('span', {
-          class: `wb-tag${target ? ' is-node-link' : ''}`,
-          title: target ? undefined : `Tag: ${tag}`,
+          class: `wb-tag${target && !here ? ' is-node-link' : ''}`,
+          title: here ? `#${tag} names this card` : target ? undefined : `Tag: ${tag}`,
         }, [
           label,
           locked ? null : el('button', {
@@ -1769,6 +2064,17 @@ export function createWorldbuildPanel({ app, root }) {
       if (isGroupHidden(note.anchor)) return;
       expand(rectOf(index));
     });
+    // A trimmed wire can reach a card hidden in a collapsed group; size the
+    // canvas for that card's real place so its diamond is reachable, even
+    // though the card itself stays hidden.
+    if (routing.cut || Object.keys(routing.edges ?? {}).length) {
+      for (const edge of connectorList(model, groups, relations)) {
+        if (edge.kind === 'contains' || !isGroupHidden(edge.to)) continue;
+        if (!effectiveRouting(routing, connectorKey(edge)).cut) continue;
+        const index = model.notes.findIndex((note) => note.anchor === edge.to);
+        if (index >= 0) expand(rectOf(index));
+      }
+    }
     for (const group of summaryGroups()) expand(summaryRect(group));
     Object.values(annotations).forEach((annotation) => {
       maxX = Math.max(maxX, annotation.x + ANNOTATION_W);
@@ -1848,25 +2154,33 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
-   * Overview mode: use the existing card fold to shrink every note to its
-   * head, then fit the whole canvas. Rebuilding repaints every fold toggle and
-   * makes the new card heights available to the fit.
-   * The folds are a canvas change, so the whole action is one undo step;
-   * the snapshot also restores the view the canvas had before it.
+   * Overview toggles every note to its header, then fits the whole canvas.
+   * The prior fold state is kept so the next click restores it; each direction
+   * is also a normal canvas-history step.
    */
   function overview() {
     const notes = model?.notes ?? [];
     if (!notes.length) {
+      overviewFolded = null;
       zoomToFit();
       return;
     }
+    const restoreFolds = overviewFolded;
+    overviewFolded = restoreFolds ? null : { ...folded };
+    if (overviewButton) {
+      overviewButton.title = overviewFolded
+        ? 'Restore the folding state from before Overview'
+        : 'Fold every card and link section, then zoom to fit — click again to restore the previous folding state';
+    }
     step(() => {
       for (const note of notes) {
-        folded = app.setWorldFold(currentPath, note.anchor, 'card', true) ?? folded;
+        const saved = restoreFolds?.[note.anchor];
+        const shouldFold = restoreFolds ? (saved === true || Boolean(saved?.card)) : true;
+        folded = app.setWorldFold(currentPath, note.anchor, shouldFold) ?? folded;
       }
       build();
       zoomToFit();
-    }, 'Fold all cards — Overview');
+    }, restoreFolds ? 'Restore folds after Overview' : 'Fold all cards — Overview');
   }
 
   /**
@@ -1908,17 +2222,75 @@ export function createWorldbuildPanel({ app, root }) {
   /**
    * Fly the camera to one end of a relationship, keeping the zoom: the far
    * card of a cut-off wire can be screens away, so its diamond is a door to
-   * it. A group end lands on the group's box.
+   * it. A group end lands on the group's box. A card hidden inside a
+   * collapsed group is revealed first, and when it cannot be revealed the
+   * reason is said out loud rather than the click quietly doing nothing.
    */
   function focusEndpoint(endpoint) {
     if (!model || !endpoint) return;
+    if (!endpoint.startsWith('group:')) {
+      const index = model.notes.findIndex((note) => note.anchor === endpoint);
+      if (index < 0) {
+        app.toast(`“${endpointTitle(endpoint)}” is no longer on this canvas`, 'warn', 2400);
+        return;
+      }
+      const blocked = revealCard(endpoint);
+      if (blocked) {
+        app.toast(blocked, 'warn', 2800);
+        return;
+      }
+      centreOn(index);
+      return;
+    }
     const rect = endpointRect(endpoint);
-    if (!rect) return;
+    if (!rect) {
+      app.toast(`“${endpointTitle(endpoint)}” has no place on this canvas to fly to`, 'warn', 2400);
+      return;
+    }
     const centred = centreView(rect, stage.clientWidth, stage.clientHeight, view.s);
     if (!centred) return;
     view = centred;
     persistView();
     applyView();
+  }
+
+  /**
+   * Bring a card out of the collapsed groups hiding it — innermost first, as
+   * one undoable step — so the camera has somewhere to land. Returns why the
+   * card still cannot be flown to, or null when it can (it may already be
+   * on screen).
+   */
+  function revealCard(anchor) {
+    const collapsed = collapsedGroupChain(anchor);
+    if (collapsed.length) {
+      step(() => {
+        for (const id of collapsed) {
+          collapsedGroups = app.setWorldGroupCollapsed(currentPath, id, false) ?? collapsedGroups;
+        }
+        build();
+      }, `Reveal “${endpointTitle(anchor)}”`);
+    }
+    if (!isGroupHidden(anchor)) return null;
+    // Still hidden with nothing left to expand: say what is holding it rather
+    // than panning the camera to a card the reader cannot see.
+    const group = groupOf(anchor);
+    if (!group) return `“${endpointTitle(anchor)}” is hidden on this canvas, but no group holds it`;
+    return `“${endpointTitle(anchor)}” is still hidden inside “${group.name || 'Group'}” — expand that group to fly there`;
+  }
+
+  /** The collapsed groups hiding one card, innermost first. */
+  function collapsedGroupChain(anchor) {
+    const out = [];
+    const parents = parentOf();
+    const seen = new Set();
+    let group = groupOf(anchor);
+    while (group && !seen.has(group.id)) {
+      seen.add(group.id);
+      if (collapsedGroups[group.id]) out.push(group.id);
+      const parentId = parents.get(group.id);
+      group = parentId ? groups[parentId] : null;
+    }
+    return out;
   }
 
   /**
@@ -1978,7 +2350,7 @@ export function createWorldbuildPanel({ app, root }) {
         firstPos: first,
         fixed: unit.every((i) => fixedAnchors.has(notes[i].anchor)),
         width: Math.max(...members.map((m) => m.dx)) + CARD_W,
-        height: Math.max(...members.map((m) => m.dy)) + CARD_H,
+        height: Math.max(...members.map((m) => m.dy + m.height)),
       };
     });
     positions = new Map();
@@ -2032,41 +2404,21 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
-   * The connector curve and its sampler are the lib's (connectorCurve /
-   * sampleConnectorCurve in worldbuild.js) - the one implementation the
-   * drawing below and the occlusion scorer both go through, so the curve
-   * scored is the curve drawn. These wrappers only supply the panel's
-   * routing default and its plain-card yardstick.
-   */
-  function curveOf(from, to, vertical = false, elbow = routing.elbow, limit = Infinity) {
-    return connectorCurve(from, to, { vertical, elbow, limit });
-  }
-
-  /**
-   * Sampled points along a connector, so the untangling below scores the curve
-   * the reader actually sees. A plain card's box is the yardstick there, folds
-   * included, because that is the grid the arrangement is packed on.
-   */
-  function curvePoints(from, to, steps = 16) {
-    return sampleConnectorCurve(from, to, { steps, cardSize: { width: CARD_W, height: CARD_H } });
-  }
-
-  /**
    * Whether two ends form a stack: a folded card directly above the card it
    * links to, in the same column. Only prose/bond links count — the outline
    * spine stays sideways. Holds only as long as the pair stays stacked.
    */
-  function isStackedPair(from, to) {
+  function isStackedPair(from, to, boxAt = (index) => rectOf(index)) {
     if (from.startsWith('group:') || to.startsWith('group:')) return false;
     const notes = model?.notes ?? [];
     const fromIndex = notes.findIndex((note) => note.anchor === from);
     const toIndex = notes.findIndex((note) => note.anchor === to);
     if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return false;
-    const a = rectOf(fromIndex);
-    const b = rectOf(toIndex);
+    const a = boxAt(fromIndex);
+    const b = boxAt(toIndex);
     const upper = a.y <= b.y ? { index: fromIndex, box: a } : { index: toIndex, box: b };
     const lower = upper.index === fromIndex ? { index: toIndex, box: b } : { index: fromIndex, box: a };
-    if (!isFolded(notes[upper.index]?.anchor, 'card')) return false;
+    if (!isFolded(notes[upper.index]?.anchor)) return false;
     return Math.abs(upper.box.x - lower.box.x) <= STACK_TOLERANCE;
   }
 
@@ -2079,11 +2431,24 @@ export function createWorldbuildPanel({ app, root }) {
   function untangle(shapes, origins, fixedBefore = new Map()) {
     const notes = model.notes ?? [];
     if (shapes.length < 2 || notes.length < 2) return;
+    const indexOf = new Map(notes.map((note, index) => [note.anchor, index]));
+    const endpointIndex = (endpoint) => {
+      const value = String(endpoint ?? '');
+      if (value.startsWith('group:')) {
+        const group = groups[value.slice('group:'.length)];
+        for (const anchor of group?.members ?? []) {
+          const index = indexOf.get(anchor);
+          if (index !== undefined) return index;
+        }
+        return -1;
+      }
+      return indexOf.get(value) ?? -1;
+    };
     const unitOf = new Map();
     shapes.forEach((shape, unitIndex) => {
       shape.members.forEach((member) => {
-        const index = notes.findIndex((n) => n.anchor === member.anchor);
-        if (index >= 0) unitOf.set(index, unitIndex);
+        const index = indexOf.get(member.anchor);
+        if (index !== undefined) unitOf.set(index, unitIndex);
       });
     });
     const positionsByIndex = new Array(notes.length);
@@ -2094,42 +2459,91 @@ export function createWorldbuildPanel({ app, root }) {
     const place = (unitIndex) => {
       const origin = origins[unitIndex];
       for (const member of shapes[unitIndex].members) {
-        const index = notes.findIndex((n) => n.anchor === member.anchor);
-        if (index < 0) continue;
+        const index = indexOf.get(member.anchor);
+        if (index === undefined) continue;
         const fixed = fixedBefore.get(member.anchor);
         positionsByIndex[index] = fixed ?? { x: origin.x + member.dx, y: origin.y + member.dy };
       }
     };
     shapes.forEach((_, unitIndex) => place(unitIndex));
-    // Every drawn connector scores: the relationships, the canvas-stated
-    // bonds and the dotted outline spine alike, since all of them pass
-    // visibly behind cards.
-    const edges = [
-      ...noteEdges(model, relations),
-      ...hierarchyEdges(model),
-      ...bondEdges(model, relations).map((edge) => ({
-        from: edge.fromIndex,
-        to: edge.toIndex,
-      })),
-      ...groupRelationEdges(model, groups, relations).map((edge) => ({
-        from: edge.fromIndex,
-        to: edge.toIndex,
-      })),
-    ].filter((edge) => edge.from >= 0 && edge.to >= 0 && edge.from !== edge.to).map((edge) => ({
-      ...edge,
-      fromUnit: unitOf.get(edge.from) ?? -1,
-      toUnit: unitOf.get(edge.to) ?? -1,
-    }));
+    // Actual on-screen card boxes: width and height both come from the card,
+    // so a content-sized card's extra height counts. A candidate arrangement
+    // only moves these boxes; it never resizes them.
+    const widths = notes.map((_, index) => rectOf(index).width || CARD_W);
+    const heights = notes.map((_, index) => rectOf(index).height || CARD_H);
+    const box = (pos, index) => ({ ...pos, width: widths[index] ?? CARD_W, height: heights[index] ?? CARD_H });
+    const cardBox = (lookup, index) => box(lookup(index), index);
+    const endpointBox = (endpoint, lookup) => {
+      const value = String(endpoint ?? '');
+      if (value.startsWith('group:')) {
+        const id = value.slice('group:'.length);
+        const group = groups?.[id];
+        if (!group) return null;
+        const members = [...effectiveMembers(group)]
+          .map((anchor) => indexOf.get(anchor))
+          .filter((index) => index !== undefined)
+          .map((index) => cardBox(lookup, index));
+        if (members.length < 2) return null;
+        const minX = Math.min(...members.map((rect) => rect.x));
+        const minY = Math.min(...members.map((rect) => rect.y));
+        const maxX = Math.max(...members.map((rect) => rect.x + rect.width));
+        const maxY = Math.max(...members.map((rect) => rect.y + rect.height));
+        const extent = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+        // A collapsed group is represented by the summary card at its corner.
+        return collapsedGroups[id]
+          ? { x: extent.x - 12, y: extent.y - 12, width: 280, height: 120 }
+          : extent;
+      }
+      if (isGroupHidden(value)) return null;
+      const index = indexOf.get(value);
+      return index === undefined ? null : cardBox(lookup, index);
+    };
+    const isStackedAt = (from, to, lookup) => isStackedPair(
+      from,
+      to,
+      (index) => cardBox(lookup, index),
+    );
+    // Every connector the canvas draws, in drawing order: the relationships,
+    // the outline spine and group bonds alike. Keeping `kind` and both
+    // endpoints lets the scorer use each edge's own routing and lanes.
+    const edges = connectorList(model, groups, relations)
+      .map((edge) => ({
+        ...edge,
+        fromIndex: endpointIndex(edge.from),
+        toIndex: endpointIndex(edge.to),
+      }))
+      .filter((edge) => edge.fromIndex >= 0 && edge.toIndex >= 0 && edge.fromIndex !== edge.toIndex);
     if (!edges.length) return;
-    // Occlusion of some edges under a candidate set of positions.
+    for (const edge of edges) {
+      edge.fromUnit = unitOf.get(edge.fromIndex) ?? -1;
+      edge.toUnit = unitOf.get(edge.toIndex) ?? -1;
+    }
+    // Occlusion under a candidate set of positions, using the very same
+    // preparation and spread pass as the canvas: actual rects, lanes, stacked
+    // verticals, cut limits and per-edge elbow routing all included.
     const score = (subset, lookup) => {
+      const prepared = prepareConnectorGeometry(edges, {
+        rectFor: (endpoint) => endpointBox(endpoint, lookup),
+        routing,
+        isStacked: (from, to) => isStackedAt(from, to, lookup),
+        proxyRectFor: (endpoint) => {
+          if (!endpoint || endpoint.startsWith('group:') || !isGroupHidden(endpoint)) return null;
+          const index = indexOf.get(endpoint);
+          return index === undefined ? null : cardBox(lookup, index);
+        },
+      });
+      const wires = spreadConnectorCurves(prepared);
+      const wanted = new Set(subset);
       let total = 0;
-      for (const edge of subset) {
-        for (const point of curvePoints(lookup(edge.from), lookup(edge.to))) {
+      for (const wire of wires) {
+        const edge = wire.edge;
+        if (!wanted.has(edge)) continue;
+        for (let step = 0; step <= 16; step += 1) {
+          const point = wire.at(step / 16);
           for (let j = 0; j < positionsByIndex.length; j += 1) {
-            if (j === edge.from || j === edge.to) continue;
-            const rect = lookup(j);
-            if (point.x >= rect.x && point.x <= rect.x + CARD_W && point.y >= rect.y && point.y <= rect.y + CARD_H) {
+            if (j === edge.fromIndex || j === edge.toIndex) continue;
+            const rect = cardBox(lookup, j);
+            if (point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height) {
               total += 1;
               break;
             }
@@ -2245,6 +2659,21 @@ export function createWorldbuildPanel({ app, root }) {
     return map;
   }
 
+  /** The nearest ancestor group carrying a pin or lock for this group. */
+  function restrictingParentGroup(id, property) {
+    const parents = parentOf();
+    const seen = new Set();
+    let parentId = parents.get(id);
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = groups[parentId];
+      if (!parent) return null;
+      if (parent[property]) return parent;
+      parentId = parents.get(parentId);
+    }
+    return null;
+  }
+
   /**
    * A group is locked when it — or any group it is nested inside — carries
    * the lock. Locking guards the group's contents, not its relationships,
@@ -2312,12 +2741,17 @@ export function createWorldbuildPanel({ app, root }) {
     );
   }
 
+  /** The pinned group holding a note in place, if one does. */
+  function pinnedGroupOf(anchor) {
+    return Object.values(groups ?? {}).find(
+      (group) => group.pinned && effectiveMembers(group).has(anchor),
+    ) ?? null;
+  }
+
   /** A note is pinned when it is pinned itself or sits in a pinned group. */
   function isAnchorPinned(anchor) {
     if (pinned[anchor]) return true;
-    return Object.values(groups ?? {}).some(
-      (group) => group.pinned && effectiveMembers(group).has(anchor),
-    );
+    return Boolean(pinnedGroupOf(anchor));
   }
 
   /** Every note a group contains: its own cards plus all descendants'. */
@@ -2520,11 +2954,27 @@ export function createWorldbuildPanel({ app, root }) {
   /** The Select menu: quick picks, seeded by the current selection. */
   let cardsMenuEl = null;
 
+  function cardsEscape(event) {
+    if (event.key !== 'Escape' || !cardsMenuEl) return;
+    event.stopPropagation();
+    closeCardsMenu({ returnFocus: true });
+  }
+
+  /** Close the Cards menu; a keyboard dismissal or choice hands focus back. */
+  function closeCardsMenu({ returnFocus = 'auto' } = {}) {
+    if (!cardsMenuEl) return;
+    const trigger = cardsMenuEl._trigger ?? null;
+    const hadFocus = cardsMenuEl.contains(document.activeElement);
+    cardsMenuEl.remove();
+    cardsMenuEl = null;
+    toolbar.querySelector('[data-cards-toggle]')?.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('keydown', cardsEscape);
+    if (returnFocus === true || (returnFocus === 'auto' && hadFocus)) focusMenuTrigger(trigger);
+  }
+
   function toggleCardsMenu(button) {
     if (cardsMenuEl) {
-      cardsMenuEl.remove();
-      cardsMenuEl = null;
-      button.setAttribute('aria-expanded', 'false');
+      closeCardsMenu({ returnFocus: false });
       return;
     }
     const targets = selected.size ? [...selected] : null;
@@ -2544,41 +2994,78 @@ export function createWorldbuildPanel({ app, root }) {
         }
         const anchor = targets[0];
         setCardMode(anchor, mode);
-        cardsMenuEl?.remove();
-        cardsMenuEl = null;
-        button.setAttribute('aria-expanded', 'false');
+        closeCardsMenu();
       },
     }));
+    items.push(el('span', { class: 'wb-menu-label', text: 'Card height' }));
+    for (const [label, size, hint] of [
+      ['Fit cards to content', 'content', 'Grow each card to its prose so the whole note shows'],
+      ['Fixed card height', 'fixed', 'Keep the standard box; prose scrolls'],
+    ]) {
+      items.push(el('button', {
+        class: 'wb-menu-item',
+        type: 'button',
+        text: label,
+        title: targets ? hint : `${hint} — select cards first`,
+        onclick: () => {
+          if (!targets) {
+            app.toast('Select cards first to set their height', 'warn', 1800);
+            return;
+          }
+          setCardSize(targets[0], size);
+          closeCardsMenu();
+        },
+      }));
+    }
     items.push(el('span', { class: 'wb-menu-label', text: 'Groups' }));
     items.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: 'Collapse all groups to summaries',
       title: 'Every group becomes one summary card',
       onclick: () => {
-        step(() => {
-          for (const group of Object.values(groups ?? {})) {
-            collapsedGroups = app.setWorldGroupCollapsed(currentPath, group.id, true) ?? collapsedGroups;
+        const all = Object.values(groups ?? {});
+        if (!all.length) {
+          app.toast('This canvas has no groups to collapse', 'info', 1800);
+        } else {
+          step(() => {
+            for (const group of all) {
+              collapsedGroups = app.setWorldGroupCollapsed(currentPath, group.id, true) ?? collapsedGroups;
+            }
+            build();
+          }, 'Collapse all groups');
+          if (all.every((group) => collapsedGroups[group.id])) {
+            app.toast('Every group is already collapsed', 'info', 1800);
           }
-          build();
-        }, 'Collapse all groups');
-        cardsMenuEl?.remove(); cardsMenuEl = null; button.setAttribute('aria-expanded', 'false');
+        }
+        closeCardsMenu();
       },
     }));
     items.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: 'Expand all groups',
       title: 'Show every group’s cards again',
       onclick: () => {
-        step(() => {
-          for (const group of Object.values(groups ?? {})) {
-            collapsedGroups = app.setWorldGroupCollapsed(currentPath, group.id, false) ?? collapsedGroups;
+        const all = Object.values(groups ?? {});
+        if (!all.length) {
+          app.toast('This canvas has no groups to expand', 'info', 1800);
+        } else {
+          step(() => {
+            for (const group of all) {
+              collapsedGroups = app.setWorldGroupCollapsed(currentPath, group.id, false) ?? collapsedGroups;
+            }
+            build();
+          }, 'Expand all groups');
+          if (all.every((group) => !collapsedGroups[group.id])) {
+            app.toast('Every group is already expanded', 'info', 1800);
           }
-          build();
-        }, 'Expand all groups');
-        cardsMenuEl?.remove(); cardsMenuEl = null; button.setAttribute('aria-expanded', 'false');
+        }
+        closeCardsMenu();
       },
     }));
     cardsMenuEl = el('div', { class: 'wb-menu', role: 'menu' }, items);
+    cardsMenuEl._trigger = button;
     button.setAttribute('aria-expanded', 'true');
     button.after(cardsMenuEl);
+    document.addEventListener('keydown', cardsEscape);
+    focusMenuStart(cardsMenuEl);
   }
 
   function toggleSelectMenu(anchorButton) {
@@ -2612,24 +3099,39 @@ export function createWorldbuildPanel({ app, root }) {
       },
     }));
     selectMenuEl = el('div', { class: 'wb-menu wb-select-menu', role: 'menu' }, items);
+    selectMenuEl._trigger = anchorButton;
     document.body.append(selectMenuEl);
     const rect = anchorButton.getBoundingClientRect();
     selectMenuEl.style.left = `${Math.max(8, rect.left)}px`;
     selectMenuEl.style.top = `${rect.bottom + 6}px`;
     anchorButton.setAttribute('aria-expanded', 'true');
     const dismiss = (event) => {
-      if (!selectMenuEl?.contains(event.target) && event.target !== anchorButton) closeSelectMenu();
+      if (!selectMenuEl?.contains(event.target) && event.target !== anchorButton) closeSelectMenu({ returnFocus: false });
     };
     document.addEventListener('pointerdown', dismiss, true);
     selectMenuEl.addEventListener('pointerdown', (event) => event.stopPropagation());
     selectMenuEl._dismiss = dismiss;
+    document.addEventListener('keydown', selectEscape);
+    focusMenuStart(selectMenuEl);
   }
 
-  function closeSelectMenu() {
-    if (selectMenuEl?._dismiss) document.removeEventListener('pointerdown', selectMenuEl._dismiss, true);
-    selectMenuEl?.remove();
+  function selectEscape(event) {
+    if (event.key !== 'Escape' || !selectMenuEl) return;
+    event.stopPropagation();
+    closeSelectMenu({ returnFocus: true });
+  }
+
+  /** Close the Select menu; a keyboard dismissal or choice hands focus back. */
+  function closeSelectMenu({ returnFocus = 'auto' } = {}) {
+    if (!selectMenuEl) return;
+    const trigger = selectMenuEl._trigger ?? null;
+    const hadFocus = selectMenuEl.contains(document.activeElement);
+    if (selectMenuEl._dismiss) document.removeEventListener('pointerdown', selectMenuEl._dismiss, true);
+    document.removeEventListener('keydown', selectEscape);
+    selectMenuEl.remove();
     selectMenuEl = null;
     toolbar.querySelector('[data-select-toggle]')?.setAttribute('aria-expanded', 'false');
+    if (returnFocus === true || (returnFocus === 'auto' && hadFocus)) focusMenuTrigger(trigger);
   }
 
   /**
@@ -2801,10 +3303,13 @@ export function createWorldbuildPanel({ app, root }) {
       freeShapes.sort((a, b) => a.minIndex - b.minIndex);
     }
     const cols = Math.max(1, Math.ceil(Math.sqrt(Math.max(1, freeShapes.length))));
+    // Rows are spaced by the tallest target, so a content-sized card is not
+    // walked into by the next row's candidate.
+    const stepY = Math.max(CARD_H, ...targetRects.map((rect) => rect.height)) + GAP_Y;
     const candidatesFor = (shape) => arrangeCandidateOrigins(layout, origin, {
       columns: cols,
       stepX: CARD_W + GAP_X,
-      stepY: CARD_H + GAP_Y,
+      stepY,
       layer: shape.layer ?? 0,
       column: shape.column ?? 0,
     });
@@ -2908,7 +3413,7 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   function arrangeMenuShell(button, children) {
-    closeArrangeMenu();
+    closeArrangeMenu({ returnFocus: false });
     arrangeButton = button;
     arrangeMenuEl = el('div', { class: 'wb-menu wb-arrange-menu', role: 'menu' }, children);
     document.body.append(arrangeMenuEl);
@@ -2917,11 +3422,20 @@ export function createWorldbuildPanel({ app, root }) {
     arrangeMenuEl.style.top = `${rect.bottom + 6}px`;
     button.setAttribute('aria-expanded', 'true');
     const dismiss = (event) => {
-      if (!arrangeMenuEl?.contains(event.target) && event.target !== button) closeArrangeMenu();
+      if (!arrangeMenuEl?.contains(event.target) && event.target !== button) closeArrangeMenu({ returnFocus: false });
     };
     document.addEventListener('pointerdown', dismiss, true);
     arrangeMenuEl.addEventListener('pointerdown', (event) => event.stopPropagation());
     arrangeMenuEl._dismiss = dismiss;
+    arrangeMenuEl._trigger = button;
+    document.addEventListener('keydown', arrangeEscape);
+    focusMenuStart(arrangeMenuEl);
+  }
+
+  function arrangeEscape(event) {
+    if (event.key !== 'Escape' || !arrangeMenuEl) return;
+    event.stopPropagation();
+    closeArrangeMenu({ returnFocus: true });
   }
 
   function showArrangeScopes(button) {
@@ -2984,12 +3498,18 @@ export function createWorldbuildPanel({ app, root }) {
     arrangeMenuShell(button, items);
   }
 
-  function closeArrangeMenu() {
-    if (arrangeMenuEl?._dismiss) document.removeEventListener('pointerdown', arrangeMenuEl._dismiss, true);
-    arrangeMenuEl?.remove();
+  /** Close the Arrange menu; a keyboard dismissal or layout choice hands focus back. */
+  function closeArrangeMenu({ returnFocus = 'auto' } = {}) {
+    if (!arrangeMenuEl) return;
+    const trigger = arrangeButton ?? arrangeMenuEl._trigger ?? null;
+    const hadFocus = arrangeMenuEl.contains(document.activeElement);
+    if (arrangeMenuEl._dismiss) document.removeEventListener('pointerdown', arrangeMenuEl._dismiss, true);
+    document.removeEventListener('keydown', arrangeEscape);
+    arrangeMenuEl.remove();
     arrangeMenuEl = null;
     arrangeButton?.setAttribute('aria-expanded', 'false');
     arrangeButton = null;
+    if (returnFocus === true || (returnFocus === 'auto' && hadFocus)) focusMenuTrigger(trigger);
   }
 
   /** The note indexes in the current Ctrl-click selection, in card order. */
@@ -3084,8 +3604,10 @@ export function createWorldbuildPanel({ app, root }) {
       // A flat group of loose cards stacks them into a column from the first
       // pick, so a fresh group reads as one column like a card's field list.
       const origin = positionOf(picked[0].index);
-      picked.forEach((note, i) => {
-        positions.set(note.anchor, { x: origin.x, y: origin.y + i * (CARD_H + GAP_Y) });
+      let stackY = origin.y;
+      picked.forEach((note) => {
+        positions.set(note.anchor, { x: origin.x, y: stackY });
+        stackY += (rectOf(note.index).height || CARD_H) + GAP_Y;
       });
       const next = {};
       for (const [id, group] of Object.entries(groups)) {
@@ -3163,15 +3685,109 @@ export function createWorldbuildPanel({ app, root }) {
     }, `Rename group to “${trimmed}”`);
   }
 
-  function closeMenu() {
+  /**
+   * The first control a menu offers, so opening it by keyboard or click puts
+   * focus inside. A menu with no control takes focus itself rather than
+   * leaving it on the page behind.
+   */
+  function focusMenuStart(menu) {
+    if (!menu) return;
+    const first = menu.querySelector('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])');
+    if (first) {
+      first.focus();
+      return;
+    }
+    menu.tabIndex = -1;
+    menu.focus();
+  }
+
+  /** Hand focus back to the control that opened a menu, if it still exists. */
+  function focusMenuTrigger(trigger) {
+    if (trigger?.isConnected) trigger.focus();
+  }
+
+  /**
+   * Close the shared dropdown. `returnFocus: 'auto'` hands focus back to the
+   * toggle when the keyboard (or a menu choice) was in the menu, while an
+   * outside press leaves focus to whatever the pointer lands on.
+   */
+  function closeMenu({ returnFocus = 'auto' } = {}) {
     if (!menuEl) return;
+    const trigger = menuEl._trigger ?? null;
+    const hadFocus = menuEl.contains(document.activeElement);
+    closeSubmenu();
     menuEl.remove();
     menuEl = null;
     // A toggle may have been rebuilt since it opened; clear every one.
-    document.querySelectorAll('[data-legend-toggle], [data-help-toggle], [data-history-toggle], [data-health-toggle]')
+    document.querySelectorAll('[data-legend-toggle], [data-export-toggle], [data-help-toggle], [data-history-toggle], [data-health-toggle]')
       .forEach((button) => button.setAttribute('aria-expanded', 'false'));
     document.removeEventListener('pointerdown', dismissMenu, true);
     document.removeEventListener('keydown', escapeMenu);
+    if (returnFocus === true || (returnFocus === 'auto' && hadFocus)) focusMenuTrigger(trigger);
+  }
+
+  function closeSubmenu() {
+    if (!submenuEl) return;
+    const trigger = submenuEl._trigger;
+    trigger?.setAttribute('aria-expanded', 'false');
+    submenuEl.remove();
+    submenuEl = null;
+  }
+
+  function positionSubmenu(trigger, panel) {
+    const rect = trigger.getBoundingClientRect();
+    const width = panel.offsetWidth;
+    const height = panel.offsetHeight;
+    const left = rect.right + width + 8 <= window.innerWidth
+      ? rect.right + 4
+      : rect.left - width - 4;
+    panel.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, left))}px`;
+    panel.style.top = `${Math.max(8, Math.min(window.innerHeight - height - 8, rect.top))}px`;
+  }
+
+  function openSubmenu(trigger, label, children) {
+    if (submenuEl?._trigger === trigger) {
+      closeSubmenu();
+      return;
+    }
+    closeSubmenu();
+    const panel = el('div', {
+      class: 'wb-menu wb-submenu-panel',
+      role: 'menu',
+      'aria-label': label,
+    }, children);
+    panel._trigger = trigger;
+    document.body.append(panel);
+    submenuEl = panel;
+    trigger.setAttribute('aria-expanded', 'true');
+    positionSubmenu(trigger, panel);
+    focusMenuStart(panel);
+  }
+
+  function submenuItem(label, children, value = '') {
+    const button = el('button', {
+      class: 'wb-menu-item wb-submenu-trigger',
+      type: 'button',
+      'aria-haspopup': 'menu',
+      'aria-expanded': 'false',
+      title: value ? `${label}: ${value}` : label,
+      'aria-label': value ? `${label}: ${value}` : label,
+      onclick: () => openSubmenu(button, label, children),
+      onkeydown: (event) => {
+        if (event.key === 'ArrowRight') {
+          event.preventDefault();
+          if (submenuEl?._trigger !== button) openSubmenu(button, label, children);
+        } else if (event.key === 'ArrowLeft' && submenuEl?._trigger === button) {
+          event.preventDefault();
+          closeSubmenu();
+        }
+      },
+    }, [
+      el('span', { class: 'wb-submenu-label', text: label }),
+      value ? el('span', { class: 'wb-submenu-value', text: value }) : null,
+      el('span', { class: 'wb-submenu-arrow', 'aria-hidden': 'true', text: '›' }),
+    ]);
+    return button;
   }
 
   /** Show a right-click menu at the cursor and keep it until dismissed. */
@@ -3191,12 +3807,20 @@ export function createWorldbuildPanel({ app, root }) {
     if (event.target.closest?.('.wb-menu')) return;
     // The dropdown buttons toggle, so their press must reach the handler;
     // dismissing here would close and reopen the menu at once.
-    if (event.target.closest?.('[data-legend-toggle], [data-help-toggle], [data-history-toggle], [data-health-toggle]')) return;
-    closeMenu();
+    if (event.target.closest?.('[data-legend-toggle], [data-export-toggle], [data-help-toggle], [data-history-toggle], [data-health-toggle]')) return;
+    // The pointer, not the menu, decides where focus goes next.
+    closeMenu({ returnFocus: false });
   }
 
   function escapeMenu(event) {
-    if (event.key === 'Escape') closeMenu();
+    if (event.key !== 'Escape') return;
+    if (submenuEl) {
+      const trigger = submenuEl._trigger;
+      closeSubmenu();
+      trigger?.focus();
+    } else {
+      closeMenu({ returnFocus: true });
+    }
   }
 
   /** A small drawn sample of one line style, so the legend shows the wire. */
@@ -3238,11 +3862,15 @@ export function createWorldbuildPanel({ app, root }) {
   /** One toolbar dropdown: open its rows below `button`, or close it. It opens
    * below, scrolling in the room left, and closes on an outside press or Escape. */
   function toggleDropdown(button, name, label, rows) {
-    const open = menuEl?.classList.contains(name) ?? false;
+    const open = button.getAttribute('aria-expanded') === 'true';
     closeMenu();
-    if (open) return;
+    if (open) {
+      button.setAttribute('aria-expanded', 'false');
+      return;
+    }
     button.setAttribute('aria-expanded', 'true');
     menuEl = el('div', { class: `wb-menu ${name}`, role: 'dialog', 'aria-label': label }, rows);
+    menuEl._trigger = button;
     document.body.append(menuEl);
     const rect = button.getBoundingClientRect();
     menuEl.style.maxHeight = `${Math.max(0, window.innerHeight - rect.bottom - 14)}px`;
@@ -3250,6 +3878,7 @@ export function createWorldbuildPanel({ app, root }) {
     menuEl.style.top = `${rect.bottom + 6}px`;
     document.addEventListener('pointerdown', dismissMenu, true);
     document.addEventListener('keydown', escapeMenu);
+    focusMenuStart(menuEl);
   }
 
   /** The legend as a drop-down below the toolbar; it toggles from its button. */
@@ -3268,15 +3897,292 @@ export function createWorldbuildPanel({ app, root }) {
       legendRow('2× click', 'A group’s tab', 'renames the group in place.'),
       el('div', { class: 'wb-menu-label', text: 'Connectors' }),
       legendRow('Click', 'The word on a line', 'steps its relationship to the next kind — associate, member of, template, parent, child, contains, controls, affects, ally, foe.'),
-      legendRow('◇', 'A cut-off wire', 'a wire longer than a screen ends in a diamond; click it to fly the camera to the card at the far end. Trim on the toolbar switches this on.'),
+      legendRow('◇', 'A cut-off wire', 'a wire longer than a screen ends in a diamond; click it to reveal the far card if it is inside a collapsed group, then centre the view on it. Otherwise the view centres on the card directly. Trim on the toolbar switches this on.'),
       el('div', { class: 'wb-menu-label', text: 'Fold' }),
       legendRow('▾', 'A card’s Fold chevron', 'collapses the card to its header. Overview folds every card, then zooms to fit.'),
+      el('div', { class: 'wb-menu-label', text: 'History' }),
+      legendRow('↶ ↷', 'Undo and redo', 'one canvas step, named in the tooltip; Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) work too, History lists every step to jump between them, each vein keeps its own stack, and typing in a card’s text boxes keeps the field’s own undo.'),
     ];
   }
 
   /** The gesture cheatsheet, on the legend's terms. */
   function toggleHelp(button) {
     toggleDropdown(button, 'wb-help', 'Canvas gestures', helpRows());
+  }
+
+  /* --------------------------------------------------------------- export -- */
+
+  function toggleExportMenu(button) {
+    toggleDropdown(button, 'wb-export', 'Export canvas', [
+      el('div', { class: 'wb-menu-label', text: 'Export this canvas' }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'SVG — vector file',
+        title: 'Download a standalone .svg of every card, wire, group and annotation',
+        onclick: () => { closeMenu(); exportCanvasSvg(); },
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'SVG — Inkscape layers',
+        title: 'Download a layered .svg that opens in Inkscape with Groups, Connectors, Cards and Annotations as separate editable layers',
+        onclick: () => { closeMenu(); exportCanvasSvg({ inkscape: true }); },
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'PNG — image file',
+        title: 'Download a PNG of the whole canvas at twice its size',
+        onclick: () => { closeMenu(); void exportCanvasPng(); },
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Mermaid — markdown file',
+        title: 'Download a .md file holding the graph as a Mermaid flowchart',
+        onclick: () => { closeMenu(); exportCanvasMermaid(); },
+      }),
+    ]);
+  }
+
+  /** The colours and fonts the canvas is wearing right now. */
+  function exportTheme() {
+    const styles = getComputedStyle(document.documentElement);
+    const read = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
+    return {
+      bg: read('--bg', '#0d1117'),
+      raised: read('--bg-raised', '#131a22'),
+      border: read('--border-strong', '#2f4257'),
+      text: read('--text', '#e6edf3'),
+      textDim: read('--text-dim', '#9fb0c0'),
+      textFaint: read('--text-faint', '#6f8296'),
+      accent: read('--accent', '#58a6ff'),
+      ok: read('--ok', '#56d364'),
+      error: read('--error', '#ff6b6b'),
+      sans: read('--sans', 'system-ui, sans-serif'),
+    };
+  }
+
+  /**
+   * The canvas as a plain scene: live card boxes, group frames, connector
+   * paths and annotations, with the theme they are drawn in. Both exports read
+   * this, so the file matches the screen instead of a second renderer.
+   */
+  function exportScene() {
+    const theme = exportTheme();
+    const notes = model?.notes ?? [];
+    const cards = notes.map((note, index) => {
+      const type = nodeTypeOf(nodeTypes, note.anchor);
+      const links = note.links?.length ?? 0;
+      const words = countWords(note.title) + countWords(note.body);
+      return {
+        anchor: note.anchor,
+        title: note.title || note.anchor,
+        typeLabel: type.label,
+        typeIcon: type.icon,
+        color: nodeColors[note.anchor] ?? type.color,
+        mode: cardModeOf(note.anchor),
+        folded: isFolded(note.anchor),
+        meta: `${links} link${links === 1 ? '' : 's'} · ${words} words`,
+        fields: nodeFields(type.id)
+          .map((field) => ({ label: field.label, value: nodeFieldOf(fieldValues, note.anchor, field.id) }))
+          .filter((field) => field.value),
+        body: note.body,
+        hidden: isGroupHidden(note.anchor),
+        groupId: groupOf(note.anchor)?.id ?? null,
+        ...rectOf(index),
+      };
+    });
+
+    const groupsForExport = Object.values(groups ?? {}).map((group) => {
+      const hidden = hasCollapsedAncestor(group.id);
+      const summary = Boolean(collapsedGroups[group.id]) && !hidden;
+      const members = [...effectiveMembers(group)];
+      const links = members.reduce(
+        (sum, anchor) => sum + (notes.find((note) => note.anchor === anchor)?.links?.length ?? 0),
+        0,
+      );
+      let rect = null;
+      if (summary) rect = summaryRect(group);
+      else {
+        const box = groupBox(group);
+        if (box) {
+          const pad = 12;
+          const topPad = group.layout === 'progression' ? 30 : pad;
+          rect = { x: box.x - pad, y: box.y - topPad, width: box.width + pad * 2, height: box.height + topPad + pad };
+        }
+      }
+      return {
+        id: group.id,
+        name: group.name || 'Group',
+        icon: group.icon,
+        color: group.color,
+        children: group.children ?? [],
+        locked: isGroupLocked(group),
+        hidden,
+        summary,
+        meta: `${members.length} card${members.length === 1 ? '' : 's'} · ${links} link${links === 1 ? '' : 's'}`,
+        ...(rect ?? { x: 0, y: 0, width: 0, height: 0 }),
+      };
+    });
+
+    const connectors = [];
+    if (model) {
+      const list = connectorList(model, groups, relations);
+      // Fan several bonds at one end into lanes, exactly as the canvas does.
+      const bonds = new Map();
+      for (const edge of list) {
+        bonds.set(edge.from, (bonds.get(edge.from) ?? 0) + 1);
+        bonds.set(edge.to, (bonds.get(edge.to) ?? 0) + 1);
+      }
+      const lanes = new Map();
+      const laneRect = (rect, endpoint) => {
+        const total = bonds.get(endpoint) ?? 1;
+        const taken = lanes.get(endpoint) ?? 0;
+        lanes.set(endpoint, taken + 1);
+        const shift = (taken - (total - 1) / 2) * LANE_PITCH;
+        return shift ? { ...rect, y: rect.y + shift } : rect;
+      };
+      // The same spread pass the canvas uses: an export must not stack two
+      // different relationships on one line either.
+      const prepared = [];
+      for (const edge of list) {
+        const from = endpointRect(edge.from);
+        const to = endpointRect(edge.to);
+        if (!from || !to) continue;
+        const key = connectorKey(edge);
+        const eff = effectiveRouting(routing, key);
+        const stacked = edge.kind !== 'contains' && isStackedPair(edge.from, edge.to);
+        prepared.push({
+          edge,
+          eff,
+          stacked,
+          from: stacked ? from : laneRect(from, edge.from),
+          to: stacked ? to : laneRect(to, edge.to),
+          vertical: stacked,
+          elbow: eff.elbow,
+        });
+      }
+      for (const { edge, eff, stacked, path, at, head, headDir } of spreadConnectorCurves(prepared)) {
+        const relation = edge.relation ? relationKind(edge.relation) : null;
+        let color = theme.accent;
+        let width = relation ? 1.6 + relation.rank * 0.22 : 1.6;
+        let opacity = 0.55;
+        let dashed = false;
+        if (edge.kind === 'contains') {
+          color = theme.textFaint;
+          width = 1.2;
+          dashed = true;
+        } else if (edge.kind === 'mention') {
+          color = theme.ok;
+          opacity = 0.42;
+        } else if (relation?.id === 'ally') color = theme.ok;
+        else if (relation?.id === 'foe') color = theme.error;
+        if (edge.kind === 'bond') opacity = 0.62;
+        if (edge.kind === 'group') { width *= 2; opacity = 0.62; }
+        const showLabel = relation && relation.id !== DEFAULT_RELATION && !stacked;
+        connectors.push({
+          from: edge.from,
+          to: edge.to,
+          kind: edge.kind,
+          label: showLabel ? relation.label.toLowerCase() : '',
+          labelAt: at(0.5),
+          color,
+          width,
+          opacity,
+          dashed,
+          arrow: eff.arrows ? { x: head.x, y: head.y, angle: (Math.atan2(headDir.y, headDir.x) * 180) / Math.PI } : null,
+          d: path,
+        });
+      }
+    }
+
+    const annotationsForExport = Object.values(annotations).map((annotation) => ({
+      x: annotation.x,
+      y: annotation.y,
+      width: ANNOTATION_W,
+      height: ANNOTATION_H,
+      text: annotation.text,
+    }));
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const include = (rect) => {
+      if (!rect || !rect.width || !rect.height) return;
+      minX = Math.min(minX, rect.x);
+      minY = Math.min(minY, rect.y);
+      maxX = Math.max(maxX, rect.x + rect.width);
+      maxY = Math.max(maxY, rect.y + rect.height);
+    };
+    cards.filter((card) => !card.hidden).forEach(include);
+    // A group frame's tab straddles its top edge.
+    groupsForExport.filter((group) => !group.hidden).forEach((group) => include({
+      ...group,
+      y: group.y - 12,
+      height: group.height + 12,
+    }));
+    annotationsForExport.forEach(include);
+    const padding = 28;
+    const bounds = Number.isFinite(minX)
+      ? { x: minX - padding, y: minY - padding, width: maxX - minX + padding * 2, height: maxY - minY + padding * 2 }
+      : { x: 0, y: 0, width: 800, height: 600 };
+
+    return {
+      title: `${String(currentPath ?? 'Vein').split('/').pop().replace(/\.md$/i, '')} — Worldbuilding canvas`,
+      bounds,
+      theme,
+      cards,
+      groups: groupsForExport,
+      connectors,
+      annotations: annotationsForExport,
+    };
+  }
+
+  function downloadFile(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const link = el('a', { href: url, download: name });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  function exportCanvasSvg({ inkscape = false } = {}) {
+    if (!model) return;
+    const scene = exportScene();
+    const name = `${canvasExportName(currentPath, inkscape ? 'inkscape' : 'canvas')}.svg`;
+    downloadFile(new Blob([buildCanvasSvg(scene, { inkscape })], { type: 'image/svg+xml' }), name);
+    app.toast(inkscape ? 'Canvas exported as an Inkscape SVG' : 'Canvas exported as SVG', 'ok', 1600);
+  }
+
+  async function exportCanvasPng() {
+    if (!model) return;
+    const scene = exportScene();
+    const url = URL.createObjectURL(new Blob([buildCanvasSvg(scene)], { type: 'image/svg+xml' }));
+    try {
+      const image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('the SVG could not be drawn'));
+        img.src = url;
+      });
+      const scale = Math.min(2, 8192 / Math.max(scene.bounds.width, scene.bounds.height));
+      const target = document.createElement('canvas');
+      target.width = Math.max(1, Math.round(scene.bounds.width * scale));
+      target.height = Math.max(1, Math.round(scene.bounds.height * scale));
+      target.getContext('2d').drawImage(image, 0, 0, target.width, target.height);
+      const blob = await new Promise((resolve) => target.toBlob(resolve, 'image/png'));
+      if (!blob) throw new Error('the PNG encoder returned nothing');
+      downloadFile(blob, `${canvasExportName(currentPath)}.png`);
+      app.toast('Canvas exported as PNG', 'ok', 1600);
+    } catch (error) {
+      app.toast(`Could not export PNG: ${error.message}`, 'warn', 2600);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  function exportCanvasMermaid() {
+    if (!model) return;
+    const scene = exportScene();
+    const markdown = `# ${scene.title}\n\n\`\`\`mermaid\n${buildCanvasMermaid(scene)}\`\`\`\n`;
+    downloadFile(new Blob([markdown], { type: 'text/markdown' }), `${canvasExportName(currentPath, 'graph')}.md`);
+    app.toast('Canvas exported as Mermaid markdown', 'ok', 1600);
   }
   /** One history entry, as a jump target. */
   function historyRow(entry, kind, glyph, steps) {
@@ -3531,6 +4437,133 @@ export function createWorldbuildPanel({ app, root }) {
     closeMenu();
   }
 
+  /** Read any file as a data URL, for storage beside node images. */
+  function readFileDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+      reader.onerror = () => reject(reader.error ?? new Error('the file could not be read'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /** A unique name for one attached file, keeping the original extension. */
+  function attachmentFileName(anchor, original) {
+    const ext = (/\.[A-Za-z0-9]{1,12}$/.exec(String(original ?? ''))?.[0] ?? '').toLowerCase().replace(/[^a-z0-9.]/g, '');
+    const base = String(anchor || 'node').replace(/[^a-z0-9]+/gi, '-').slice(0, 40) || 'node';
+    const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    return `${base}-${stamp}${ext}`;
+  }
+
+  /** Record one node's resources as one undoable canvas step. */
+  function setNodeResourcesEntry(anchor, entry, name) {
+    step(() => {
+      nodeResources = app.setWorldNodeResources(currentPath, anchor, entry) ?? nodeResources;
+      // The strip is part of the card's content: a rebuild carries its height
+      // and every connector with it.
+      build();
+    }, name);
+  }
+
+  /** Pick a file for a node: copy it into the vault and attach the reference. */
+  function attachFileToNode(anchor) {
+    closeMenu();
+    const current = nodeResources[anchor] ?? {};
+    if ((current.files ?? []).length >= NODE_RESOURCE_LIMIT) {
+      app.toast(`A node can hold ${NODE_RESOURCE_LIMIT} attachments`, 'warn', 2000);
+      return;
+    }
+    const input = el('input', { type: 'file' });
+    input.style.display = 'none';
+    document.body.append(input);
+    input.addEventListener('change', async () => {
+      const file = input.files?.[0];
+      input.remove();
+      if (!file) return;
+      if (file.size > NODE_FILE_MAX_BYTES) {
+        app.toast(`“${file.name}” is larger than ${formatBytes(NODE_FILE_MAX_BYTES)}`, 'warn', 2600);
+        return;
+      }
+      let dataUrl;
+      try {
+        dataUrl = await readFileDataUrl(file);
+      } catch (error) {
+        app.toast(`Could not read “${file.name}”: ${error.message}`, 'warn', 2400);
+        return;
+      }
+      if (!dataUrl) {
+        app.toast(`Could not read “${file.name}”`, 'warn', 2000);
+        return;
+      }
+      const fileName = attachmentFileName(anchor, file.name);
+      try {
+        await app.writeNodeAttachmentFile(`node-files/${fileName}`, dataUrl);
+      } catch (error) {
+        app.toast(`Could not store “${file.name}”: ${error.message}`, 'warn', 2600);
+        return;
+      }
+      const ref = nodeFileRef(fileName);
+      seenAttachmentRefs.add(ref);
+      const latest = nodeResources[anchor] ?? {};
+      setNodeResourcesEntry(anchor, {
+        files: [...(latest.files ?? []), { name: file.name, ref, size: file.size, type: file.type }],
+        urls: latest.urls ?? [],
+      }, `Attach “${file.name}” to “${noteTitle(anchor)}”`);
+      app.toast(`Attached “${file.name}”`, 'ok', 1600);
+    });
+    input.click();
+  }
+
+  /** Ask for a web address and attach it to the node, opening externally. */
+  async function addNodeUrl(anchor) {
+    closeMenu();
+    const current = nodeResources[anchor] ?? {};
+    if ((current.urls ?? []).length >= NODE_RESOURCE_LIMIT) {
+      app.toast(`A node can hold ${NODE_RESOURCE_LIMIT} URLs`, 'warn', 2000);
+      return;
+    }
+    const raw = await askText({
+      title: 'Attach a web URL',
+      label: 'URL',
+      hint: 'An http:// or https:// address — it opens in your browser.',
+      confirmLabel: 'Attach',
+    });
+    if (!raw) return;
+    const url = normalizeWebUrl(raw);
+    if (!url) {
+      app.toast('Only http:// and https:// web addresses can be attached', 'warn', 2400);
+      return;
+    }
+    if ((current.urls ?? []).some((link) => link.url === url)) {
+      app.toast('That URL is already attached', 'warn', 2000);
+      return;
+    }
+    let label = url;
+    try {
+      label = new URL(url).hostname.replace(/^www\./i, '') || url;
+    } catch {
+      // normalizeWebUrl already parsed it; the fallback is the URL itself.
+    }
+    const latest = nodeResources[anchor] ?? {};
+    setNodeResourcesEntry(anchor, {
+      files: latest.files ?? [],
+      urls: [...(latest.urls ?? []), { label: label.slice(0, 120), url }],
+    }, `Attach a URL to “${noteTitle(anchor)}”`);
+    app.toast(`Attached ${label}`, 'ok', 1600);
+  }
+
+  /** Remove one attachment or URL from a node, sweeping the file when free. */
+  function removeNodeResource(anchor, kind, key) {
+    const entry = nodeResources[anchor] ?? {};
+    const files = (entry.files ?? []).filter((file) => file.ref !== key);
+    const urls = (entry.urls ?? []).filter((link) => link.url !== key);
+    if (kind === 'files') seenAttachmentRefs.add(key);
+    setNodeResourcesEntry(anchor, { files, urls }, kind === 'files'
+      ? `Remove attachment from “${noteTitle(anchor)}”`
+      : `Remove URL from “${noteTitle(anchor)}”`);
+    if (kind === 'files') void cleanupOrphanedAttachments().catch(() => {});
+  }
+
   /**
    * Ungroup: a nested group detaches into the world on its own; a top-level
    * group dissolves back into its cards, orphaning any children it had.
@@ -3551,12 +4584,22 @@ export function createWorldbuildPanel({ app, root }) {
     const group = groups[id];
     if (!group) return;
     const nextLocked = !group.locked;
+    const parent = restrictingParentGroup(id, 'locked');
     step(() => {
       const next = { ...groups, [id]: { ...group, locked: nextLocked } };
       groups = app.saveWorldGroups(currentPath, next) ?? next;
       build();
     }, nextLocked ? `Lock “${group.name || 'group'}”` : `Unlock “${group.name || 'group'}”`);
     closeMenu();
+    if (parent) {
+      app.toast(
+        nextLocked
+          ? `“${group.name || 'Group'}” is already read-only inside locked group “${parent.name || 'Group'}” — locked on its own too`
+          : `“${group.name || 'Group'}” is still read-only — locked group “${parent.name || 'Group'}” holds it`,
+        'info',
+        2600,
+      );
+    }
   }
 
   /**
@@ -3566,21 +4609,45 @@ export function createWorldbuildPanel({ app, root }) {
    */
   function toggleNodeLock(anchor) {
     const nextLocked = !nodeLocked[anchor];
+    const group = lockedGroupOf(anchor);
     step(() => {
       nodeLocked = app.setWorldNodeLock(currentPath, anchor, nextLocked) ?? nodeLocked;
       build();
     }, nextLocked ? `Lock “${noteTitle(anchor)}” content` : `Unlock “${noteTitle(anchor)}” content`);
     closeMenu();
+    // A lock a group already holds leaves the card looking exactly the same:
+    // say which lock is doing the work, so the click does not read as ignored.
+    if (group) {
+      app.toast(
+        nextLocked
+          ? `“${noteTitle(anchor)}” is already read-only inside locked group “${group.name || 'Group'}” — locked on its own too`
+          : `“${noteTitle(anchor)}” is still read-only — locked group “${group.name || 'Group'}” holds it`,
+        'info',
+        2600,
+      );
+    }
   }
 
   /** Pin one note where it stands, or unpin it again. */
   function toggleNodePin(anchor) {
     const nextPinned = !pinned[anchor];
+    const group = pinnedGroupOf(anchor);
     step(() => {
       pinned = app.setWorldNodePin(currentPath, anchor, nextPinned) ?? pinned;
       build();
     }, nextPinned ? `Pin “${noteTitle(anchor)}”` : `Unpin “${noteTitle(anchor)}”`);
     closeMenu();
+    // A pinned group already holds this card, so its own pin changes nothing
+    // on screen: name the group rather than let the click look ignored.
+    if (group) {
+      app.toast(
+        nextPinned
+          ? `“${noteTitle(anchor)}” is already pinned by group “${group.name || 'Group'}” — pinned on its own too`
+          : `“${noteTitle(anchor)}” is still pinned by group “${group.name || 'Group'}”`,
+        'info',
+        2600,
+      );
+    }
   }
 
   /** Pin a whole group where it stands, or unpin it again. */
@@ -3588,12 +4655,22 @@ export function createWorldbuildPanel({ app, root }) {
     const group = groups[id];
     if (!group) return;
     const nextPinned = !group.pinned;
+    const parent = restrictingParentGroup(id, 'pinned');
     step(() => {
       const next = { ...groups, [id]: { ...group, pinned: nextPinned } };
       groups = app.saveWorldGroups(currentPath, next) ?? next;
       build();
     }, nextPinned ? `Pin “${group.name || 'group'}”` : `Unpin “${group.name || 'group'}”`);
     closeMenu();
+    if (parent) {
+      app.toast(
+        nextPinned
+          ? `“${group.name || 'Group'}” is already pinned by group “${parent.name || 'Group'}” — pinned on its own too`
+          : `“${group.name || 'Group'}” is still pinned by group “${parent.name || 'Group'}”`,
+        'info',
+        2600,
+      );
+    }
   }
 
   function ungroupNow(id) {
@@ -4176,18 +5253,44 @@ export function createWorldbuildPanel({ app, root }) {
   /**
    * Say what removing a stated bond left behind. When the prose links the same
    * two notes, the wire is drawn from that markdown link and stays put — and a
-   * silent click would read as one that did nothing, so it says so plainly.
+   * silent click would read as one that did nothing, so it says so plainly,
+   * and offers to take that link out too.
    */
   function announceBondRemoved(from, to, label) {
-    if (proseLinkBetween(model, from, to)) {
-      app.toast(
-        `Removed the “${label.toLowerCase()}” bond — “${endpointTitle(from)}” and “${endpointTitle(to)}” are still joined by a markdown link in the prose, so the line stays. Edit the prose to remove it.`,
-        'info',
-        5200,
-      );
+    if (!proseLinkBetween(model, from, to)) {
+      app.toast(`Removed the “${label.toLowerCase()}” bond between “${endpointTitle(from)}” and “${endpointTitle(to)}”`, 'ok', 1800);
       return;
     }
-    app.toast(`Removed the “${label.toLowerCase()}” bond between “${endpointTitle(from)}” and “${endpointTitle(to)}”`, 'ok', 1800);
+    app.toast(
+      `Removed the “${label.toLowerCase()}” bond — “${endpointTitle(from)}” and “${endpointTitle(to)}” are still joined by a markdown link in the prose, so the line stays.`,
+      'info',
+      6000,
+      { label: 'Remove the link', onClick: () => unlinkBondProse(from, to) },
+    );
+  }
+
+  /**
+   * Take the markdown link between two cards out of the prose, keeping the
+   * words the reader saw. That is a prose edit, not a canvas change: it
+   * commits the way a title, body or tag edit does, so it takes no canvas undo
+   * step and the vein's own undo brings the links back.
+   */
+  function unlinkBondProse(from, to) {
+    if (!model) return;
+    const { model: next, removed } = unlinkProseBetween(model, from, to);
+    if (!removed) {
+      app.toast(`No markdown link is left between “${endpointTitle(from)}” and “${endpointTitle(to)}”`, 'info', 2200);
+      return;
+    }
+    model = next;
+    commit();
+    // The cards show the unlinked prose and their new word counts.
+    build();
+    app.toast(
+      `Unlinked “${endpointTitle(from)}” and “${endpointTitle(to)}”${removed > 1 ? ` (${removed} links)` : ''} — the words stay, the line goes`,
+      'ok',
+      2600,
+    );
   }
 
   function reverseConnectorRelation(edge) {
@@ -4247,17 +5350,20 @@ export function createWorldbuildPanel({ app, root }) {
 
     if (edge.kind !== 'contains') {
       const current = edge.relation ? relationKind(edge.relation) : relationOf(relations, edge.from, edge.to);
-      items.push(el('span', { class: 'wb-menu-label', text: 'Relationship' }));
+      const relationshipItems = [];
       for (const kind of RELATION_KINDS) {
-        items.push(el('button', {
-          class: `wb-menu-item${current?.id === kind.id ? ' is-current' : ''}`,
+        relationshipItems.push(el('button', {
+          class: `wb-menu-item wb-submenu-choice${current?.id === kind.id ? ' is-current' : ''}`,
           type: 'button',
-          text: kind.label,
+          'aria-current': current?.id === kind.id ? 'true' : undefined,
           title: `Assert “${fromTitle}” ${kind.label.toLowerCase()} “${toTitle}”`,
           onclick: () => { setConnectorRelation(edge, kind.id); closeMenu(); },
-        }));
+        }, [
+          el('span', { class: 'wb-submenu-choice-label', text: kind.label }),
+          el('span', { class: 'wb-menu-check', 'aria-hidden': 'true', text: current?.id === kind.id ? '✓' : '' }),
+        ]));
       }
-      items.push(el('button', {
+      relationshipItems.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Cycle relationship',
         title: 'Step this relationship to the next kind in the strength scale',
         onclick: () => { cycleRelation(edge); closeMenu(); },
@@ -4266,7 +5372,7 @@ export function createWorldbuildPanel({ app, root }) {
       const stored = relationKeyValue in (relations ?? {});
       const inverse = current?.inverse ? relationKind(current.inverse) : null;
       if (stored && inverse) {
-        items.push(el('button', {
+        relationshipItems.push(el('button', {
           class: 'wb-menu-item', type: 'button', text: 'Reverse relationship',
           title: `Assert “${toTitle}” ${inverse.label.toLowerCase()} “${fromTitle}” instead`,
           onclick: () => { reverseConnectorRelation(edge); closeMenu(); },
@@ -4280,29 +5386,30 @@ export function createWorldbuildPanel({ app, root }) {
         disabled: stored ? undefined : true,
         onclick: () => { removeConnectorRelation(edge); closeMenu(); },
       });
-      items.push(removeButton);
+      relationshipItems.push(removeButton);
+      items.push(submenuItem('Relationship', relationshipItems, current?.label ?? 'Associate'));
     }
 
     const eff = effectiveRouting(routing, key);
     const selectedCount = selectedEdges.size;
     const selectedSuffix = selectedCount > 1 ? ` (${selectedCount} selected)` : '';
-    items.push(el('span', { class: 'wb-menu-label', text: `Curve${selectedSuffix}` }));
-    items.push(el('button', {
+    const curveItems = [];
+    curveItems.push(el('button', {
       class: `wb-menu-item${eff.elbow ? ' is-current' : ''}`, type: 'button', text: 'Elbow curve',
       title: 'Route as right-angle elbows',
       onclick: () => { setSelectedConnectorRouting('elbow', true); closeMenu(); },
     }));
-    items.push(el('button', {
+    curveItems.push(el('button', {
       class: `wb-menu-item${!eff.elbow ? ' is-current' : ''}`, type: 'button', text: 'Smooth curve',
       title: 'Route as a smooth bezier curve',
       onclick: () => { setSelectedConnectorRouting('elbow', false); closeMenu(); },
     }));
-    items.push(el('button', {
+    curveItems.push(el('button', {
       class: `wb-menu-item${eff.arrows ? ' is-current' : ''}`, type: 'button', text: eff.arrows ? 'Hide arrowhead' : 'Show arrowhead',
       title: 'Toggle the arrowhead on the selected connectors',
       onclick: () => { setSelectedConnectorRouting('arrows', !eff.arrows); closeMenu(); },
     }));
-    items.push(el('button', {
+    curveItems.push(el('button', {
       class: `wb-menu-item${eff.cut ? ' is-current' : ''}`, type: 'button',
       text: eff.cut ? 'Draw long wires full length' : 'Cut off long wires',
       title: eff.cut
@@ -4310,7 +5417,7 @@ export function createWorldbuildPanel({ app, root }) {
         : 'When its ends are far apart, draw only part of this connector and end it in a diamond that flies to the other card',
       onclick: () => { setSelectedConnectorRouting('cut', !eff.cut); closeMenu(); },
     }));
-    items.push(el('button', {
+    curveItems.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: 'Use vein default routing',
       title: 'Drop this connector’s routing override and follow the vein-wide Elbow/Arrows settings',
       onclick: () => {
@@ -4319,17 +5426,18 @@ export function createWorldbuildPanel({ app, root }) {
         closeMenu();
       },
     }));
+    items.push(submenuItem(`Curve${selectedSuffix}`, curveItems));
 
-    items.push(el('span', { class: 'wb-menu-label', text: 'Ends & paths' }));
-    items.push(el('button', {
+    const pathItems = [];
+    pathItems.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: `Select “${fromTitle}”`,
       onclick: () => { selectConnectorEndpoint(edge.from); closeMenu(); },
     }));
-    items.push(el('button', {
+    pathItems.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: `Select “${toTitle}”`,
       onclick: () => { selectConnectorEndpoint(edge.to); closeMenu(); },
     }));
-    items.push(el('button', {
+    pathItems.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: 'Select both ends',
       onclick: () => {
         const endpoints = [];
@@ -4345,17 +5453,17 @@ export function createWorldbuildPanel({ app, root }) {
         closeMenu();
       },
     }));
-    items.push(el('button', {
+    pathItems.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: 'Trace upstream',
       title: 'Select every card that feeds into the selected connectors',
       onclick: () => { traceSelectedConnectors('upstream'); closeMenu(); },
     }));
-    items.push(el('button', {
+    pathItems.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: 'Trace downstream',
       title: 'Select every card the selected connectors lead to',
       onclick: () => { traceSelectedConnectors('downstream'); closeMenu(); },
     }));
-    items.push(el('button', {
+    pathItems.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: 'Select all connectors',
       title: 'Select every connector on this canvas',
       onclick: () => {
@@ -4365,25 +5473,26 @@ export function createWorldbuildPanel({ app, root }) {
         closeMenu();
       },
     }));
+    items.push(submenuItem('Ends & Paths', pathItems));
     return items;
   }
 
-  // A right-press focuses the field under it before the browser fires
+  // A context-menu press focuses the field under it before the browser fires
   // contextmenu, so by then document.activeElement cannot say whether the
-  // writer was already editing that field. Keep the focus from before the
-  // press: that is the difference between a word being edited and a node.
-  let rightPressSeen = false;
-  let rightPressField = null;
+  // writer was already editing that field. macOS Ctrl+click arrives as a left
+  // pointerdown, so remember it alongside a normal right-press.
+  let contextMenuPressSeen = false;
+  let contextMenuPressField = null;
   stage.addEventListener('pointerdown', (event) => {
-    if (event.button !== 2) {
-      // A press that never became a right-click must not colour the next one.
-      rightPressSeen = false;
-      rightPressField = null;
+    const contextMenuPress = event.button === 2 || (event.button === 0 && event.ctrlKey);
+    if (!contextMenuPress) {
+      contextMenuPressSeen = false;
+      contextMenuPressField = null;
       return;
     }
-    rightPressSeen = true;
+    contextMenuPressSeen = true;
     const field = event.target.closest?.('input, textarea');
-    rightPressField = field && field === document.activeElement ? field : null;
+    contextMenuPressField = field && field === document.activeElement ? field : null;
   }, true);
 
   /**
@@ -4397,10 +5506,10 @@ export function createWorldbuildPanel({ app, root }) {
   function openMenu(event) {
     // The press that led here, if any: a keyboard menu key has no pointerdown
     // and keeps the old activeElement rule.
-    const pressed = rightPressSeen;
-    const pressedField = rightPressField;
-    rightPressSeen = false;
-    rightPressField = null;
+    const pressed = contextMenuPressSeen;
+    const pressedField = contextMenuPressField;
+    contextMenuPressSeen = false;
+    contextMenuPressField = null;
     if (event.target.closest?.('select')) return;
     const field = event.target.closest?.('input, textarea');
     const editing = pressed ? field === pressedField : field === document.activeElement;
@@ -4475,6 +5584,19 @@ export function createWorldbuildPanel({ app, root }) {
           onclick: () => setNodeImage(anchor, null),
         }));
       }
+      items.push(el('span', { class: 'wb-menu-label', text: 'Attachments' }));
+      items.push(el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Attach file…',
+        title: anchorLocked ? lockNote : 'Copy a file into this vault and attach it to this node',
+        disabled: anchorLocked ? true : undefined,
+        onclick: () => attachFileToNode(anchor),
+      }));
+      items.push(el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Add web URL…',
+        title: anchorLocked ? lockNote : 'Attach an http(s) address to this node',
+        disabled: anchorLocked ? true : undefined,
+        onclick: () => addNodeUrl(anchor),
+      }));
       items.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Rename node',
         title: anchorLocked ? 'Locked group contents cannot be renamed' : 'Edit this note’s title in place',
@@ -4496,6 +5618,19 @@ export function createWorldbuildPanel({ app, root }) {
           text: label,
           title: mode === 'full' ? 'The whole node — prose, fields and links' : mode === 'compact' ? 'Title, type, link and word counts only' : 'Just the node’s image (or its initial)',
           onclick: () => { setCardMode(anchor, mode); closeMenu(); },
+        }));
+      }
+      items.push(el('span', { class: 'wb-menu-label', text: 'Card height' }));
+      for (const [label, size, hint] of [
+        ['Fit to content', 'content', 'Grow this card to its prose — the whole note shows, no scrolling'],
+        ['Fixed height', 'fixed', 'Keep the standard card box; its prose scrolls'],
+      ]) {
+        items.push(el('button', {
+          class: `wb-menu-item${cardSizeOf(anchor) === size ? ' is-current' : ''}`,
+          type: 'button',
+          text: label,
+          title: cardModeOf(anchor) === 'full' ? hint : `${hint} — full cards only`,
+          onclick: () => { setCardSize(anchor, size); closeMenu(); },
         }));
       }
       items.push(el('button', {
@@ -4664,7 +5799,100 @@ export function createWorldbuildPanel({ app, root }) {
     toggleConnectorSelection(key, event.ctrlKey || event.metaKey);
   });
 
-  stage.addEventListener('contextmenu', openMenu);
+      stage.addEventListener('contextmenu', (event) => {
+      const annotation = event.target.closest?.('[data-annotation-id]');
+      if (annotation) {
+        const pressed = contextMenuPressSeen;
+        const pressedField = contextMenuPressField;
+        contextMenuPressSeen = false;
+        contextMenuPressField = null;
+        const field = event.target.closest?.('input, textarea');
+        const editing = pressed ? field === pressedField : field === document.activeElement;
+        if (field && editing) return;
+        const id = annotation.getAttribute('data-annotation-id');
+        const current = annotations[id];
+        if (!current) return;
+        event.preventDefault();
+        closeMenu();
+        const items = [
+          el('span', { class: 'wb-menu-label', text: 'Annotation colour' }),
+          el('div', { class: 'wb-menu-swatches' }, GROUP_COLORS.map((color) => el('button', {
+            class: `wb-menu-swatch${current.color === color ? ' is-current' : ''}`,
+            type: 'button',
+            style: `background:${color}`,
+            'aria-label': `Annotation colour ${color}`,
+            onclick: () => setAnnotationColor(id, color),
+          }))),
+        ];
+        if (current.color) {
+          items.push(el('button', {
+            class: 'wb-menu-item', type: 'button', text: 'Use default colour',
+            title: 'Return this annotation to its default yellow',
+            onclick: () => setAnnotationColor(id, null),
+          }));
+        }
+        showMenu(event, items);
+        return;
+      }
+      openMenu(event);
+    });
+
+
+  /** A DOM element's box in canvas coordinates, for the label clearance pass. */
+  function canvasRectOf(element) {
+    if (!element) return null;
+    const stageBox = stage.getBoundingClientRect();
+    const box = element.getBoundingClientRect();
+    if (!box.width || !box.height) return null;
+    return {
+      x: (box.left - stageBox.left - view.x) / view.s,
+      y: (box.top - stageBox.top - view.y) / view.s,
+      width: box.width / view.s,
+      height: box.height / view.s,
+    };
+  }
+
+  /**
+   * The surfaces a connector word must not cover: every visible card, a
+   * collapsed group's summary, a group's border stroke (its fill is only a
+   * backdrop, so a word may sit inside the box), and a group's title tab.
+   * Built once per draw and shared by every label.
+   */
+  function labelSurfaceRects() {
+    const rects = [];
+    if (model?.intro) rects.push({ x: PAD, y: PAD, width: CARD_W + 160, height: INTRO_H });
+    (model?.notes ?? []).forEach((note, index) => {
+      if (!isGroupHidden(note.anchor)) rects.push(rectOf(index));
+    });
+    const stroke = 4;
+    for (const group of Object.values(groups ?? {})) {
+      if (hasCollapsedAncestor(group.id)) continue;
+      if (collapsedGroups[group.id]) {
+        const summary = summaryRect(group);
+        if (summary) rects.push(summary);
+        continue;
+      }
+      const box = groupBox(group);
+      if (!box) continue;
+      const pad = 12;
+      const topPad = group.layout === 'progression' ? 30 : pad;
+      const x = box.x - pad;
+      const y = box.y - topPad;
+      const width = box.width + pad * 2;
+      const height = box.height + topPad + pad;
+      rects.push(
+        { x, y: y - stroke, width, height: stroke * 2 },
+        { x, y: y + height - stroke, width, height: stroke * 2 },
+        { x: x - stroke, y, width: stroke * 2, height },
+        { x: x + width - stroke, y, width: stroke * 2, height },
+      );
+    }
+    cards.querySelectorAll('.wb-group-tab').forEach((tab) => {
+      const rect = canvasRectOf(tab);
+      if (rect) rects.push(rect);
+    });
+    return rects;
+  }
 
   /** The smallest rectangle around a group's cards, plus those cards' indexes. */
   function groupBox(group) {
@@ -4688,6 +5916,18 @@ export function createWorldbuildPanel({ app, root }) {
       return collapsedGroups[group.id] ? summaryRect(group) : groupBox(group);
     }
     if (isGroupHidden(endpoint)) return null;
+    const index = model.notes.findIndex((note) => note.anchor === endpoint);
+    return index < 0 ? null : rectOf(index);
+  }
+
+  /**
+   * A hidden card's real place, for a trimmed wire: the card is inside a
+   * collapsed group, but its diamond must still point the way to it and be
+   * clickable. Ordinary (short) wires keep the collapsed group clean and are
+   * not drawn at all.
+   */
+  function hiddenCardRect(endpoint) {
+    if (!endpoint || endpoint.startsWith('group:') || !isGroupHidden(endpoint)) return null;
     const index = model.notes.findIndex((note) => note.anchor === endpoint);
     return index < 0 ? null : rectOf(index);
   }
@@ -4917,51 +6157,30 @@ export function createWorldbuildPanel({ app, root }) {
       selectedEdges = new Set([...selectedEdges].filter((key) => live.has(key)));
     }
 
-    // Where one end carries several bonds, fan them out so no two lie on top
-    // of each other: each takes its own lane, centred on the box's middle.
-    const bonds = new Map();
-    for (const edge of connectors) {
-      bonds.set(edge.from, (bonds.get(edge.from) ?? 0) + 1);
-      bonds.set(edge.to, (bonds.get(edge.to) ?? 0) + 1);
-    }
-    const lanes = new Map();
-    const laneRect = (rect, endpoint) => {
-      const total = bonds.get(endpoint) ?? 1;
-      const taken = lanes.get(endpoint) ?? 0;
-      lanes.set(endpoint, taken + 1);
-      // A lane's pitch is wider than a label is tall (10px mono plus its halo),
-      // so two words on neighbouring wires are never stacked on each other.
-      const shift = (taken - (total - 1) / 2) * LANE_PITCH;
-      return shift ? { ...rect, y: rect.y + shift } : rect;
-    };
+    // Every connector keeps its own geometry: the shared preparation fans
+    // bonds that share an end into lanes, keeps stacked pairs vertical, and
+    // applies each edge's routing; the spread pass then separates whole wires
+    // that would still land on one path. The scorer calls the same preparation
+    // against its candidate boxes, so it scores what is drawn.
+    const prepared = prepareConnectorGeometry(connectors, {
+      rectFor: endpointRect,
+      routing,
+      isStacked: (from, to) => isStackedPair(from, to),
+      proxyRectFor: hiddenCardRect,
+    });
 
-    // Words are placed once every wire is drawn: each sits on its own lane's
-    // wire, and neighbours that would collide slide apart along it.
+    // Words are placed once every wire is drawn: each sits on its own wire,
+    // and moves along it to avoid neighbours, crossing wires, cards and group
+    // borders.
     const labels = [];
-    for (const edge of connectors) {
-      const from = endpointRect(edge.from);
-      const to = endpointRect(edge.to);
-      if (!from || !to) continue;
+    const surfaceRects = labelSurfaceRects();
+    const drawnConnectors = spreadConnectorCurves(prepared);
+    for (const { edge, key, eff, stacked, path, at, headAtStart, cut } of drawnConnectors) {
       const isGroup = edge.from.startsWith('group:') || edge.to.startsWith('group:');
       const relation = edge.relation ? relationKind(edge.relation) : null;
-      const key = connectorKey(edge);
-      const eff = effectiveRouting(routing, key);
-      // A stacked pair's wire runs bottom-to-top on its own column; the lane
-      // fan-out (which offsets boxes vertically) would move its endpoints
-      // onto the cards, so stacked pairs skip the lanes.
-      const stacked = edge.kind !== 'contains' && isStackedPair(edge.from, edge.to);
-      // A long wire may be cut off at a marker instead of crossing the whole
-      // canvas; the outline spine and a stacked pair stay whole.
-      const cutLimit = eff.cut && !stacked && edge.kind !== 'contains' ? CONNECTOR_CUT_SPAN : Infinity;
-      const { path, at, headAtStart, cut } = curveOf(
-        stacked ? from : laneRect(from, edge.from),
-        stacked ? to : laneRect(to, edge.to),
-        stacked,
-        eff.elbow,
-        cutLimit,
-      );
+      const kindClass = `wb-edge-${isGroup ? 'group' : edge.kind}`;
       const line = svgNode('path', {
-        class: `wb-edge wb-edge-${isGroup ? 'group' : edge.kind}${relation ? ` wb-rel-${relation.id}` : ''}${selectedEdges.has(key) ? ' is-selected' : ''}`,
+        class: `wb-edge ${kindClass}${relation ? ` wb-rel-${relation.id}` : ''}${selectedEdges.has(key) ? ' is-selected' : ''}`,
         d: path,
         fill: 'none',
         'data-from': edge.from,
@@ -4986,7 +6205,7 @@ export function createWorldbuildPanel({ app, root }) {
         'data-edge-key': key,
       });
       edgeSvg.append(hit);
-      if (cut) edgeSvg.append(cutMarker(edge, key, cut, relation));
+      if (cut) edgeSvg.append(cutMarker(edge, key, cut, relation, isGroup ? '' : kindClass));
       // The asserted kind, read right on the line; Associate stays unlabelled
       // because it is the default every plain link already has. A stacked
       // pair's wire is only STACK_GAP long — the word would sit on the cards
@@ -5011,7 +6230,24 @@ export function createWorldbuildPanel({ app, root }) {
         cycleRelation(edge);
       });
       edgeSvg.append(text);
-      labels.push({ text, at });
+      let box = null;
+      try {
+        box = text.getBBox();
+      } catch {
+        // A not-yet-laid-out SVG can refuse measurement; the helper falls
+        // back to a conservative word-sized box in that case.
+      }
+      labels.push({
+        text,
+        at,
+        label: relation.label.toLowerCase(),
+        width: box?.width,
+        height: box?.height,
+        obstacles: drawnConnectors
+          .filter((connector) => connector.key !== key)
+          .map((connector) => connector.at),
+        rects: surfaceRects,
+      });
     }
     placeLabels(labels);
     syncConnectorUi();
@@ -5022,10 +6258,10 @@ export function createWorldbuildPanel({ app, root }) {
    * a chevron inside it. That card can be screens away, so the diamond is
    * also the way there — a click flies the camera to it.
    */
-  function cutMarker(edge, key, cut, relation) {
+  function cutMarker(edge, key, cut, relation, kindClass = '') {
     const angle = (Math.atan2(cut.dir.y, cut.dir.x) * 180) / Math.PI;
     const marker = svgNode('g', {
-      class: `wb-edge-cut${relation ? ` wb-rel-${relation.id}` : ''}${selectedEdges.has(key) ? ' is-selected' : ''}`,
+      class: `wb-edge-cut${kindClass ? ` ${kindClass}` : ''}${relation ? ` wb-rel-${relation.id}` : ''}${selectedEdges.has(key) ? ' is-selected' : ''}`,
       transform: `translate(${cut.x} ${cut.y}) rotate(${angle})`,
       'data-cut-to': edge.to,
     });
@@ -5042,40 +6278,32 @@ export function createWorldbuildPanel({ app, root }) {
   // word walks outwards in small steps instead of settling on a neighbour,
   // which is what keeps a hub's fan of kinds readable. The far ends are left
   // alone — a word nearer than a fifth of the way sits on the card it leaves.
-  const LABEL_SLOTS = [0.5, 0.44, 0.56, 0.38, 0.62, 0.32, 0.68, 0.26, 0.74, 0.2, 0.8];
-  // The least daylight between two words: enough for the halo each one's stroke
-  // paints around its glyphs. Neighbouring wires run a LABEL_PITCH apart —
-  // wider than a word is tall — so two words on one end stagger along their
-  // wires rather than stack on each other.
-  const LABEL_GAP = 14;
+  // The least daylight between two words, enough for the halo around each
+  // one's glyphs. Connector lanes are only 16px apart, so words on neighbouring
+  // wires often need to stagger along the wire to stay separate.
   const LANE_PITCH = 16;
 
-  /**
-   * Lay each label on its own wire: the nearest slot to its middle whose word
-   * is at least LABEL_GAP clear of every word already laid, or the middle
-   * when no slot is. Words never leave their own wire.
-   */
+  /** Lay labels at clear wire slots, or with a short leader when crowded. */
   function placeLabels(labels) {
-    const placed = [];
-    for (const { text, at } of labels) {
-      const { width, height } = text.getBBox();
-      let spot = at(0.5);
-      for (const t of LABEL_SLOTS) {
-        const candidate = at(t);
-        const clear = placed.every((other) => {
-          const apartX = Math.abs(candidate.x - other.x) - (width + other.width) / 2;
-          const apartY = Math.abs(candidate.y - other.y) - (height + other.height) / 2;
-          return apartX >= LABEL_GAP || apartY >= LABEL_GAP;
-        });
-        if (clear) {
-          spot = candidate;
-          break;
-        }
+    const positions = placeConnectorLabels(labels);
+    labels.forEach(({ text }, index) => {
+      const spot = positions[index];
+      if (!spot) {
+        text.remove();
+        return;
       }
-      placed.push({ x: spot.x, y: spot.y, width, height });
+      if (spot.leader) {
+        const leader = svgNode('path', {
+          class: 'wb-edge-label-leader',
+          d: `M ${spot.leader.x} ${spot.leader.y} L ${spot.x} ${spot.y}`,
+          fill: 'none',
+          'aria-hidden': 'true',
+        });
+        edgeSvg.insertBefore(leader, text);
+      }
       text.setAttribute('x', spot.x);
       text.setAttribute('y', spot.y);
-    }
+    });
   }
 
   function scheduleEdges() {
@@ -5259,7 +6487,7 @@ export function createWorldbuildPanel({ app, root }) {
     // card back where it came from and out of the group again. A folded card
     // dropped above a node it links to stacks with it, in the same step.
     const dropName = dropMembership(drop);
-    if (!drop.groupId && drop.joinable) restackAll();
+    restackFoldedCards(drop.members.map((member) => member.anchor));
     commitStep(dropName ?? (drop.groupId ? 'Move group' : drop.selection ? `Move ${drop.members.length} cards` : 'Move card'));
   });
 
