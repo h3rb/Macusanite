@@ -543,7 +543,12 @@ fn read_archive_file(path: String) -> Result<Vec<u8>, String> {
 /// vault, which is exactly when someone reads it. One window only: asking again
 /// brings the existing one forward instead of stacking copies. The theme is
 /// passed in the URL, because the help window has no vault to read settings from.
-#[tauri::command]
+// `async` is load-bearing: a sync Tauri command runs on the main thread, and
+// `build()` waits for the event loop to create the window — on the main thread
+// that is a deadlock. The window then appears with an `about:blank` page that
+// never navigates, and it cannot be closed either, because closing needs the
+// same blocked event loop.
+#[tauri::command(async)]
 fn open_help_window(app: AppHandle, theme: Option<String>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("help") {
         let _ = window.set_focus();
