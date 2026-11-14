@@ -542,7 +542,7 @@ test('node types default to note and validate on the way in', () => {
   assert.equal(DEFAULT_NODE_TYPE, 'note');
   assert.deepEqual(
     NODE_TYPES.map((t) => t.id),
-    ['note', 'stat', 'skill', 'ability', 'attribute', 'property', 'rating', 'place', 'person', 'thing', 'location', 'scene', 'locale', 'biome', 'perk', 'effect', 'condition'],
+    ['note', 'stat', 'skill', 'ability', 'attribute', 'property', 'rating', 'place', 'person', 'thing', 'prop', 'location', 'scene', 'sound', 'image', 'animation', 'mode', 'actor', 'voiceover', 'dialog', 'line', 'action', 'locale', 'biome', 'perk', 'effect', 'condition'],
   );
   // Every typed node reads at a glance in its own colour; notes stay plain.
   const colors = NODE_TYPES.filter((t) => t.id !== 'note').map((t) => t.color);
@@ -555,6 +555,9 @@ test('node types default to note and validate on the way in', () => {
   // Place-like types are prose cards, like notes.
   assert.deepEqual(nodeFields('place'), []);
   assert.deepEqual(nodeFields('person'), []);
+  for (const type of ['sound', 'image', 'animation', 'mode', 'prop', 'actor', 'voiceover', 'dialog', 'line', 'action']) {
+    assert.deepEqual(nodeFields(type), []);
+  }
   assert.deepEqual(nodeFields('biome'), []);
   assert.deepEqual(nodeFields('perk'), []);
   assert.deepEqual(nodeFields('effect'), []);

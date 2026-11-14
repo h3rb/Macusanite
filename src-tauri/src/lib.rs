@@ -172,14 +172,18 @@ struct VaultScan {
 }
 
 #[tauri::command]
-fn vault_scan(state: State<'_, VaultState>) -> Result<VaultScan, String> {
+async fn vault_scan(state: State<'_, VaultState>) -> Result<VaultScan, String> {
     let root = state.root()?;
-    let scan = vault::scan(&root).map_err(|e| e.to_string())?;
-    Ok(VaultScan {
-        tree: vault::build_tree(&scan),
-        veins: scan.veins.clone(),
-        stats: scan.stats.clone(),
+    tauri::async_runtime::spawn_blocking(move || {
+        let scan = vault::scan(&root).map_err(|e| e.to_string())?;
+        Ok(VaultScan {
+            tree: vault::build_tree(&scan),
+            veins: scan.veins,
+            stats: scan.stats,
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -206,9 +210,11 @@ fn list_veins(state: State<'_, VaultState>) -> Result<Vec<String>, String> {
 /// Every vault file for Export vault: the archive carries what the folder
 /// holds, not only veins and metadata, matching `macusanite vault export`.
 #[tauri::command]
-fn list_vault_files(state: State<'_, VaultState>) -> Result<Vec<vault::FileStat>, String> {
+async fn list_vault_files(state: State<'_, VaultState>) -> Result<Vec<vault::FileStat>, String> {
     let root = state.root()?;
-    vault::all_files(&root).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || vault::all_files(&root).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Read one vault file byte-for-byte, for Export vault. A missing file is
@@ -444,33 +450,51 @@ fn history_redo(
 
 /* ── shell integration ─────────────────────────────────────────────────── */
 
-#[tauri::command]
+const DIALOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+fn wait_for_dialog<T>(
+    rx: std::sync::mpsc::Receiver<T>,
+    name: &str,
+    timeout: std::time::Duration,
+) -> Result<T, String> {
+    rx.recv_timeout(timeout)
+        .map_err(|error| match error {
+            std::sync::mpsc::RecvTimeoutError::Timeout => format!(
+                "Timed out after 10 minutes waiting for the {name} dialog. The native dialog may still be open; close it manually before trying again."
+            ),
+            std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                format!("The {name} dialog closed without returning a result.")
+            }
+        })
+}
+
+#[tauri::command(async)]
 fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog().file().pick_folder(move |folder| {
         let _ = tx.send(folder);
     });
-    let picked = rx.recv_timeout(std::time::Duration::from_secs(600)).map_err(|e| e.to_string())?;
+    let picked = wait_for_dialog(rx, "folder picker", DIALOG_TIMEOUT)?;
     Ok(picked
         .and_then(|f| f.into_path().ok())
         .map(|p| p.to_string_lossy().to_string()))
 }
 
 /// Pick one file — the private key for an SSH backup.
-#[tauri::command]
+#[tauri::command(async)]
 fn pick_file(app: AppHandle) -> Result<Option<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog().file().pick_file(move |file| {
         let _ = tx.send(file);
     });
-    let picked = rx.recv_timeout(std::time::Duration::from_secs(600)).map_err(|e| e.to_string())?;
+    let picked = wait_for_dialog(rx, "file picker", DIALOG_TIMEOUT)?;
     Ok(picked
         .and_then(|f| f.into_path().ok())
         .map(|p| p.to_string_lossy().to_string()))
 }
 
 /// Save dialog: the archive Export vault writes to.
-#[tauri::command]
+#[tauri::command(async)]
 fn pick_save_archive(app: AppHandle, default_name: String) -> Result<Option<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog()
@@ -480,14 +504,14 @@ fn pick_save_archive(app: AppHandle, default_name: String) -> Result<Option<Stri
         .save_file(move |file| {
             let _ = tx.send(file);
         });
-    let picked = rx.recv_timeout(std::time::Duration::from_secs(600)).map_err(|e| e.to_string())?;
+    let picked = wait_for_dialog(rx, "save archive picker", DIALOG_TIMEOUT)?;
     Ok(picked
         .and_then(|f| f.into_path().ok())
         .map(|p| p.to_string_lossy().to_string()))
 }
 
 /// Open dialog: the archive Import vault reads from.
-#[tauri::command]
+#[tauri::command(async)]
 fn pick_open_archive(app: AppHandle) -> Result<Option<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog()
@@ -496,7 +520,7 @@ fn pick_open_archive(app: AppHandle) -> Result<Option<String>, String> {
         .pick_file(move |file| {
             let _ = tx.send(file);
         });
-    let picked = rx.recv_timeout(std::time::Duration::from_secs(600)).map_err(|e| e.to_string())?;
+    let picked = wait_for_dialog(rx, "open archive picker", DIALOG_TIMEOUT)?;
     Ok(picked
         .and_then(|f| f.into_path().ok())
         .map(|p| p.to_string_lossy().to_string()))
@@ -511,29 +535,42 @@ fn quit_app(app: AppHandle) {
 /// must already exist — the save dialog chooses a real folder. Used by the
 /// window's Export vault only; nothing else writes outside the vault.
 #[tauri::command]
-fn write_archive_file(path: String, bytes: Vec<u8>) -> Result<usize, String> {
-    let target = std::path::PathBuf::from(&path);
-    if !target.is_absolute() {
-        return Err(format!("archive path must be absolute: {path}"));
-    }
-    match target.parent() {
-        Some(parent) if parent.is_dir() => {}
-        _ => return Err(format!("archive folder does not exist: {}", target.parent().map(|p| p.display().to_string()).unwrap_or_default())),
-    }
-    std::fs::write(&target, &bytes).map_err(|e| format!("{path}: {e}"))?;
-    Ok(bytes.len())
+async fn write_archive_file(path: String, bytes: Vec<u8>) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = std::path::PathBuf::from(&path);
+        if !target.is_absolute() {
+            return Err(format!("archive path must be absolute: {path}"));
+        }
+        match target.parent() {
+            Some(parent) if parent.is_dir() => {}
+            _ => {
+                return Err(format!(
+                    "archive folder does not exist: {}",
+                    target.parent().map(|p| p.display().to_string()).unwrap_or_default()
+                ));
+            }
+        }
+        std::fs::write(&target, &bytes).map_err(|e| format!("{path}: {e}"))?;
+        Ok(bytes.len())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Read one binary file (a vault archive) at an absolute path. Used by the
 /// window's Import vault only; the vault itself is read through `read_vein`
 /// and `read_meta`.
 #[tauri::command]
-fn read_archive_file(path: String) -> Result<Vec<u8>, String> {
-    let target = std::path::PathBuf::from(&path);
-    if !target.is_absolute() {
-        return Err(format!("archive path must be absolute: {path}"));
-    }
-    std::fs::read(&target).map_err(|e| format!("{path}: {e}"))
+async fn read_archive_file(path: String) -> Result<Vec<u8>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = std::path::PathBuf::from(&path);
+        if !target.is_absolute() {
+            return Err(format!("archive path must be absolute: {path}"));
+        }
+        std::fs::read(&target).map_err(|e| format!("{path}: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Open the manual in its own window.
@@ -773,5 +810,33 @@ mod tests {
         assert!(!is_web_url("https://example.com & calc"));
         assert!(!is_web_url("https://example.com\"quoted"));
         assert!(!is_web_url("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn dialog_timeout_warns_that_the_native_dialog_may_still_be_open() {
+        let (_tx, rx) = std::sync::mpsc::channel::<()>();
+        let error = super::wait_for_dialog(
+            rx,
+            "folder picker",
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert!(error.contains("Timed out after 10 minutes"));
+        assert!(error.contains("folder picker"));
+        assert!(error.contains("may still be open"));
+        assert!(error.contains("close it manually"));
+    }
+
+    #[test]
+    fn disconnected_dialog_callback_has_a_distinct_error() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        drop(tx);
+        let error = super::wait_for_dialog(
+            rx,
+            "file picker",
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(error, "The file picker dialog closed without returning a result.");
     }
 }
