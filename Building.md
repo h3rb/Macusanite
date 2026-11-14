@@ -464,6 +464,7 @@ or a CI runner per platform). The exceptions worth knowing:
 | `tauri:build` errors that no bundle target applies (macOS/Linux) | `bundle.targets` is `["nsis"]` in this repo | pass `--bundles app,dmg` or `--bundles deb,appimage` |
 | The AppImage will not start | FUSE missing, or not executable | `chmod +x`, install `libfuse2`/`libfuse2t64`, or run with `--appimage-extract` |
 | Blank window straight after a hard `taskkill` (Windows) | WebView2 profile residue from the force-kill | close gracefully; the next launch is clean |
+| The Help window (`F1`) opens blank and will not close | a sync Tauri command builds it, so `build()` blocks the event loop that has to navigate it — the page stays `about:blank` | mark the command `#[tauri::command(async)]`, which runs it off the main thread |
 | `docs:check` fails after editing the manual | `docs/Help.md` is generated, not hand-written | `npm run docs` and commit the result |
 | `npm install` fails behind a proxy | npm cannot reach the registry | set `npm_config_proxy` / `npm_config_https_proxy`, or use a registry mirror |
 
