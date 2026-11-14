@@ -1,6 +1,6 @@
 [package]
 name = "macusanite"
-version = "0.1.1"
+version = "0.1.2"
 description = "Macusanite — a vault viewer for markdown chambers, veins and concept graphs"
 authors = ["Macusanite"]
 edition = "2021"
