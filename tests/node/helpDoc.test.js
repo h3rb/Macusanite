@@ -31,6 +31,7 @@ import {
   DOC_TITLE,
   DEFAULT_DOC_SECTIONS,
   FEATURES,
+  HELP_TOPICS,
 } from '../../src/lib/helpDoc.js';
 import { splitManual } from '../../src/lib/helpSearch.js';
 import { createVaultApi, ApiError } from '../../src/lib/api.js';
@@ -49,6 +50,14 @@ test('the manual has a section for every feature it claims to document', () => {
   for (const section of helpSections()) {
     assert.ok(manual.includes(`* [${section.title}](#${section.slug})`), `the contents list omits ${section.title}`);
   }
+});
+
+test('every manual section has exactly one home in the sidebar topics', () => {
+  const placed = HELP_TOPICS.flatMap((topic) => topic.sections);
+  const wanted = helpSections().map((section) => section.slug);
+  assert.deepEqual([...placed].sort(), [...wanted].sort(), 'the topics and the manual disagree');
+  assert.equal(new Set(placed).size, placed.length, 'a section is listed under two topics');
+  assert.ok(HELP_TOPICS.every((topic) => topic.title && topic.sections.length), 'a topic is empty');
 });
 
 test('the manual documents the interfaces this task added', () => {

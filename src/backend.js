@@ -124,6 +124,24 @@ class VirtualVault {
   writeMeta(name, text, label) {
     return this.write(join(META_DIR, name), text, label ?? `update ${name}`);
   }
+
+  /** Store text without a history entry — archive import's unrecorded path. */
+  writeRaw(rel, text) {
+    const path = normalize(rel);
+    this.files.set(path, text);
+    this.mtimes = { ...(this.mtimes ?? {}), [path]: Date.now() };
+    this.persist();
+    return { path };
+  }
+
+  /** Delete a file without recording it — Import vault's Replace option. */
+  removeRaw(rel) {
+    const path = normalize(rel);
+    const existed = this.files.delete(path);
+    if (existed && this.mtimes) delete this.mtimes[path];
+    this.persist();
+    return existed;
+  }
 }
 
 const virtual = new VirtualVault();
@@ -169,6 +187,22 @@ const fallbackCommands = {
   },
   async list_veins() {
     return veinPaths();
+  },
+  async list_vault_files() {
+    return [...virtual.files.keys()]
+      .filter((path) => path !== '.git' && !path.startsWith('.git/'))
+      .sort()
+      .map((path) => virtual.stat(path));
+  },
+  async read_vault_file_bytes({ rel }) {
+    const text = virtual.read(rel);
+    return text === null ? null : Array.from(new TextEncoder().encode(text));
+  },
+  async write_vault_file({ rel, contents }) {
+    return virtual.writeRaw(rel, String(contents ?? ''));
+  },
+  async remove_vault_file({ rel }) {
+    return virtual.removeRaw(rel);
   },
   async read_vein({ rel }) {
     const text = virtual.read(rel);
@@ -374,6 +408,15 @@ export const backend = {
   scan: () => invoke('vault_scan', {}),
   tree: () => invoke('vault_tree', {}),
   veins: () => invoke('list_veins', {}),
+  /** Every vault file for Export vault, `.git` excepted. */
+  listVaultFiles: () => invoke('list_vault_files', {}),
+  readVaultFileBytes: (rel) => invoke('read_vault_file_bytes', { rel }),
+  /** Write one vault file unrecorded, for Import vault. */
+  writeVaultFileBytes: (rel, bytes) => invoke('write_vault_file_bytes', { rel, bytes }),
+  /** Browser-only raw text writer for the same import path. */
+  writeVaultFile: (rel, contents) => invoke('write_vault_file', { rel, contents }),
+  /** Delete one vault file unrecorded, for Import vault's Replace option. */
+  removeVaultFile: (rel) => invoke('remove_vault_file', { rel }),
   stat: (rel) => invoke('vault_stat', { rel }),
   readVein: (rel) => invoke('read_vein', { rel }),
   writeVein: (rel, contents, label) => invoke('write_vein', { rel, contents, label: label ?? null }),
@@ -406,6 +449,14 @@ export const backend = {
   pickFolder: () => invoke('pick_folder', {}),
   /** One file, e.g. an SSH private key. Desktop only; the dialog hides its button in a browser. */
   pickFile: () => invoke('pick_file', {}),
+  /** Save dialog for Export vault: the archive path the user chose. */
+  pickSaveArchive: (defaultName) => invoke('pick_save_archive', { defaultName }),
+  /** Open dialog for Import vault: the archive path the user chose. */
+  pickOpenArchive: () => invoke('pick_open_archive', {}),
+  /** Write one binary file (a vault archive) outside the vault. */
+  writeArchiveFile: (path, bytes) => invoke('write_archive_file', { path, bytes }),
+  /** Read one binary file (a vault archive) outside the vault. */
+  readArchiveFile: (path) => invoke('read_archive_file', { path }),
   quit: () => invoke('quit_app', {}),
   onVaultChange,
   log,

@@ -125,6 +125,35 @@ function platformFor(name) {
   return null;
 }
 
+// A stale setup exe left in the bundle dir by an earlier build must not win
+// candidate selection: its URL would be paired with the new build's
+// signature, and the updater would reject the artifact. Keep only the
+// newest installer (and its .sig) per arch, before anything else reads
+// `copied`.
+function artifactVersion(name) {
+  const match = /_(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?_/.exec(name);
+  return match ? [+match[1], +match[2], +match[3], match[4] ?? ''] : null;
+}
+function compareVersion(a, b) {
+  if (!a || !b) return 0;
+  for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
+  return String(a[3]).localeCompare(String(b[3]));
+}
+for (const name of [...copied]) {
+  if (!/-setup\.exe$/i.test(name)) continue;
+  const version = artifactVersion(name);
+  const newer = copied.find(
+    (other) => other !== name && /-setup\.exe$/i.test(other)
+      && (other.toLowerCase().includes('aarch64') === name.toLowerCase().includes('aarch64'))
+      && compareVersion(artifactVersion(other), version) > 0,
+  );
+  if (newer) {
+    rmSync(join(to, name), { force: true });
+    rmSync(join(to, `${name}.sig`), { force: true });
+    copied.splice(copied.indexOf(name), 1);
+  }
+}
+
 // Prefer the NSIS installer over the MSI when a Windows build made both.
 const PLATFORM_PREFERENCE = [/setup\.exe$/i, /\.app\.tar\.gz$/i, /\.appimage$/i, /\.msi$/i];
 const candidates = {};

@@ -8,7 +8,7 @@
 import mermaid from 'mermaid';
 import wikiDoc from '../Wiki.md?raw';
 
-import { backend, isDesktop, META, onVaultChange, helpWindowUrl, HELP_WINDOW_FEATURES } from './backend.js';
+import { backend, isDesktop, META, onVaultChange, helpWindowUrl, HELP_WINDOW_FEATURES, virtualVault } from './backend.js';
 import { NavHistory } from './lib/history.js';
 import { LIVE_META, isWatched, isLiveMeta, metaChanges, metaPlan, planRefresh, currentOutcome, describeRefresh, describeMeta, staleBodies } from './lib/watch.js';
 import { mergeVein, hasMergeMarkers, countConflicts, describeMerge } from './lib/merge.js';
@@ -39,6 +39,9 @@ import { createBackupDialog } from './ui/backupDialog.js';
 import { createHistoryLog } from './ui/historyLog.js';
 import { askMerge } from './ui/mergeDialog.js';
 import { createSearchPanel } from './ui/searchPanel.js';
+import { createWindowArchiveStore } from './lib/windowArchive.js';
+import { collectVaultArchiveFiles, createVaultArchive, parseVaultArchive, planVaultImport, isBinaryBytes } from './lib/vaultArchive.js';
+import { confirmImport } from './ui/importConfirm.js';
 import { createResizers } from './ui/resizer.js';
 import { isAutoCheckEnabled, checkForUpdates, downloadInstallAndRestart, summarizeUpdate } from './lib/updater.js';
 import { createUpdateDialog } from './ui/updateDialog.js';
@@ -1754,6 +1757,142 @@ const app = {
     historyLog.open();
   },
 
+  /*
+   * Export / import vault through one portable archive — the desktop twin of
+   * `macusanite vault export|import`. The store used for both is a
+   * `createVaultStore` over the whole vault: Export walks every file (hidden
+   * folders included, `.git` excepted) and reads bytes, while Import writes
+   * unrecorded so the archive's own history is the only history that lands.
+   * The CLI commands stay as they are — same archive format, same conflicts.
+   */
+  async exportVault() {
+    if (!state.vault) {
+      app.toast('Open a vault first', 'warn');
+      return;
+    }
+    const stem = String(state.vault.name || 'vault').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'vault';
+    const defaultName = `${stem}.tar.gz`;
+    try {
+      // The archive carries what is on disk, not what the window has cached:
+      // flush the debounced state persist first so state.json is current.
+      await app.scheduleStatePersist();
+      const store = archiveStore();
+      // The shared collector reads every file as bytes, so images, PDFs and
+      // other non-text files travel exactly as the CLI exports them.
+      const files = await collectVaultArchiveFiles(store);
+      const bytes = await createVaultArchive(files, { vaultName: state.vault.name });
+      if (isDesktop) {
+        const target = await backend.pickSaveArchive(defaultName);
+        if (!target) return;
+        await backend.writeArchiveFile(target, bytes);
+        app.toast(`Exported “${state.vault.name}” to ${basename(target)} — ${files.length} files`, 'ok', 3200);
+      } else {
+        downloadBytes(bytes, defaultName);
+        app.toast(`Exported “${state.vault.name}” — ${files.length} files (${defaultName})`, 'ok', 3200);
+      }
+      await backend.log('info', `exported vault to archive: ${files.length} files, ${bytes.length} bytes`);
+    } catch (error) {
+      app.toast(`Could not export the vault: ${error.message}`, 'error');
+    }
+  },
+
+  async importVault() {
+    if (!state.vault) {
+      app.toast('Open a vault first', 'warn');
+      return;
+    }
+    try {
+      let bytes;
+      let sourceName;
+      if (isDesktop) {
+        const target = await backend.pickOpenArchive();
+        if (!target) return;
+        sourceName = basename(target);
+        bytes = await backend.readArchiveFile(target);
+      } else {
+        const picked = await pickBrowserArchive();
+        if (!picked) return;
+        sourceName = picked.name;
+        bytes = picked.bytes;
+      }
+      // Validate and plan before anything is written: a malformed archive is
+      // refused here, and the conflict list is what the dialog confirms.
+      let archive;
+      try {
+        archive = await parseVaultArchive(bytes);
+      } catch (error) {
+        app.toast(`Not a valid vault archive: ${error.message}`, 'error', 4200);
+        return;
+      }
+      const store = archiveStore();
+      // Binary safety: a text-only store (the browser fallback) refuses an
+      // archive carrying non-text files — naming them — instead of importing
+      // them as mangled text. The desktop and the CLI handle them byte-for-byte.
+      const binary = archive.files.filter((file) => isBinaryBytes(file.data)).map((file) => file.path);
+      if (binary.length && store.canWriteFileBytes !== true) {
+        app.toast(`Not imported: ${sourceName} contains non-text file(s): ${binary.join(', ')} — this browser session can only write text files, so importing them would corrupt the data. Use the desktop app or \`macusanite vault import\` from the CLI.`, 'error', 6000);
+        return;
+      }
+      const existing = [];
+      for (const file of archive.files) {
+        const data = await store.readFileBytes(file.path);
+        if (data !== null) existing.push({ path: file.path, bytes: data });
+      }
+      if (isDesktop) {
+        // Replace also needs the local files the archive does not carry, so
+        // the checkbox can name exactly what it would delete. Extra entries
+        // never affect the update-only preview's added/conflicting lists.
+        const known = new Set(existing.map((entry) => entry.path));
+        for (const file of await store.listFiles()) {
+          if (file.path === '.git' || file.path.startsWith('.git/')) continue;
+          if (known.has(file.path)) continue;
+          try {
+            const data = await store.readFileBytes(file.path);
+            if (data !== null) existing.push({ path: file.path, bytes: data });
+          } catch {
+            // Unreadable files cannot be compared or safely deleted; leave
+            // them out of the Replace plan rather than failing the import.
+          }
+        }
+      }
+      const preview = planVaultImport(existing, archive.files);
+      // The Replace preview is planned from the same snapshot, so the dialog
+      // can show exactly what would disappear before the user chooses it.
+      const replacePreview = isDesktop
+        ? planVaultImport(existing, archive.files, { replace: true })
+        : null;
+      const choice = await confirmImport({
+        archive,
+        preview,
+        replacePreview,
+        sourceName,
+        canReplace: isDesktop,
+      });
+      if (!choice) return;
+      const chosen = choice.replace && replacePreview ? replacePreview : preview;
+      for (const file of archive.files) {
+        const current = await store.readFileBytes(file.path);
+        if (current === null || current.length !== file.data.length || current.some((byte, i) => byte !== file.data[i])) {
+          await store.writeFileBytes(file.path, file.data);
+        }
+      }
+      // Replace removes only what the archive does not carry, after every write
+      // has landed. The dialog named these files and the user confirmed them.
+      let deleted = 0;
+      for (const path of chosen.deletions) {
+        await store.removeFile(path);
+        deleted += 1;
+      }
+      await store.dropIndexCache().catch(() => {});
+      await app.openVault(state.vault.path);
+      const deletedNote = deleted ? `, ${deleted} deleted` : '';
+      app.toast(`Imported ${sourceName} — ${chosen.added.length} added, ${chosen.conflicts.length} overwritten${deletedNote}`, 'ok', 3600);
+      await backend.log('info', `imported vault archive ${sourceName}: ${chosen.added.length} added, ${chosen.conflicts.length} overwritten, ${chosen.unchanged.length} unchanged${deletedNote}`);
+    } catch (error) {
+      app.toast(`Could not import the vault: ${error.message}`, 'error');
+    }
+  },
+
   /** The S3 backup dialog; the CLI has the same command as `vault backup`. */
   openBackup() {
     if (!state.vault) {
@@ -2789,6 +2928,40 @@ function writeLastVault(path) {
   } catch {
     /* storage disabled — auto-open simply won't happen next launch */
   }
+}
+
+/* ── vault archives in the window ─────────────────────────────────── */
+
+/** The window's byte-backed vault store for Export and Import vault. */
+function archiveStore() {
+  return createWindowArchiveStore({ backend, isDesktop, root: state.vault?.path ?? '' });
+}
+
+/** Browser Export: hand the archive back as a download. */
+function downloadBytes(bytes, name) {
+  const blob = new Blob([bytes], { type: 'application/gzip' });
+  const url = URL.createObjectURL(blob);
+  const link = el('a', { href: url, download: name });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+/** Browser Import: pick an archive file; resolves null when cancelled. */
+function pickBrowserArchive() {
+  return new Promise((resolve) => {
+    const input = el('input', { type: 'file', accept: '.tar.gz,application/gzip' });
+    input.style.display = 'none';
+    document.body.append(input);
+    input.addEventListener('change', async () => {
+      const file = input.files?.[0];
+      input.remove();
+      if (!file) return resolve(null);
+      resolve({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+    });
+    input.click();
+  });
 }
 
 /* ── go ───────────────────────────────────────────────────────────────── */

@@ -59,6 +59,8 @@ export function createChrome({ app, root }) {
       menuItem('Load Vault…', () => app.chooseAndOpenVault()),
       menuItem('Save', () => app.saveCurrent(), { class: 'menu-primary' }),
       menuItem('Back up to S3…', () => app.openBackup()),
+      menuItem('Export vault…', () => app.exportVault()),
+      menuItem('Import vault…', () => app.importVault()),
       el('div', { class: 'menu-sep' }),
       menuItem(`Undo${canUndo ? ` — ${app.state.undoStack[0].label}` : ''}`, () => app.undo(), { disabled: !canUndo }),
       menuItem(`Redo${canRedo ? ` — ${app.state.redoStack[0].label}` : ''}`, () => app.redo(), { disabled: !canRedo }),

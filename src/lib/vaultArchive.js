@@ -82,6 +82,29 @@ export function createVaultArchiveManifest({ vaultName = null, exportedAt = null
   };
 }
 
+/**
+ * Collect every file an archive should carry, read as bytes.
+ *
+ * This is the one walk used by both the CLI's `vault.export` and the window's
+ * Export vault. It keeps non-text files (images, PDFs, attachments) intact
+ * byte-for-byte, skips `.git`, and never decodes a file as UTF-8. A file that
+ * disappears mid-walk is left out; a file that cannot be read still throws, so
+ * an export cannot quietly turn into a partial archive.
+ *
+ * @param {object} vault a store with `listFiles` and `readFileBytes`
+ * @returns {Promise<Array<{path: string, data: Uint8Array, mtime: number}>>}
+ */
+export async function collectVaultArchiveFiles(vault) {
+  const files = [];
+  for (const file of await vault.listFiles()) {
+    if (file.path === '.git' || String(file.path ?? '').startsWith('.git/')) continue;
+    const data = await vault.readFileBytes(file.path);
+    if (data !== null) files.push({ path: file.path, data, mtime: file.mtime ?? 0 });
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return files;
+}
+
 export function validateVaultArchiveEntries(entries) {
   if (!Array.isArray(entries) || !entries.length) throw new VaultArchiveError('archive is empty');
   const byPath = new Map();
@@ -181,35 +204,71 @@ export async function parseVaultArchive(bytes) {
 /**
  * Compare an archive with the files a vault already has.
  *
- * Existing entries are `{path, text}`; archive entries are the validated
- * `{path, data}` files. Nothing is deleted: import updates the files the
- * archive carries, and `conflicts` names existing files whose text would
- * change — the caller asks before overwriting those.
+ * Existing entries are `{path, bytes}` (or `{path, data}`, or legacy
+ * `{path, text}`); archive entries are the validated `{path, data}` files.
+ * Comparison is byte-for-byte, so a binary file that decodes lossily as text
+ * is still recognised as changed — import writes `bytes`, never re-encoded
+ * text, so non-text files survive the round trip. `conflicts` names existing
+ * files whose bytes would change — the caller asks before overwriting those.
+ * With `replace`, existing files the archive does not carry are deleted too,
+ * except `.git` internals, which are never listed here.
+ *
+ * @returns {{writes: Array<{path, bytes, text?: string}>, …}} `text` is the
+ *   strict UTF-8 decoding when there is one; binary writes carry no `text`.
  */
-export function planVaultImport(existingFiles, archiveFiles) {
+export function planVaultImport(existingFiles, archiveFiles, { replace = false } = {}) {
   const existing = new Map();
   for (const file of existingFiles ?? []) {
+    if (file.path === '.git' || String(file.path ?? '').startsWith('.git/')) continue;
     const path = safeArchivePath(file.path);
-    existing.set(path, String(file.text ?? ''));
+    existing.set(path, file.bytes != null || file.data != null
+      ? toBytes(file.bytes ?? file.data)
+      : encoder.encode(String(file.text ?? '')));
   }
   const writes = [];
   const conflicts = [];
   const added = [];
   const updated = [];
   const unchanged = [];
+  const carried = new Set();
   for (const file of archiveFiles ?? []) {
     const path = safeArchivePath(file.path);
-    const text = decoder.decode(toBytes(file.data));
+    carried.add(path);
+    const bytes = toBytes(file.data);
+    const write = { path, bytes, text: strictText(bytes) };
     if (!existing.has(path)) {
-      writes.push({ path, text });
+      writes.push(write);
       added.push(path);
-    } else if (existing.get(path) !== text) {
-      writes.push({ path, text });
+    } else if (!sameBytes(existing.get(path), bytes)) {
+      writes.push(write);
       conflicts.push(path);
       updated.push(path);
     } else {
       unchanged.push(path);
     }
   }
-  return { writes, conflicts, added, updated, unchanged };
+  const deletions = replace
+    ? [...existing.keys()].filter((path) => !carried.has(path)).sort()
+    : [];
+  return { writes, conflicts, added, updated, unchanged, deletions };
+}
+
+/** The strict UTF-8 decoding of `bytes`, or undefined when it is not text. */
+export function strictText(bytes) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(toBytes(bytes));
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when `bytes` are not valid UTF-8 text (an image, a PDF, …). */
+export function isBinaryBytes(bytes) {
+  return strictText(bytes) === undefined;
+}
+
+function sameBytes(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
 }

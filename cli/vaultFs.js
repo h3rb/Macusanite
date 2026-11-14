@@ -86,6 +86,20 @@ export function createNodeVaultFs(root) {
       fs.mkdirSync(path.dirname(absolute), { recursive: true });
       fs.writeFileSync(absolute, String(text ?? ''), 'utf8');
     },
+    async readBytes(rel) {
+      const absolute = resolveInVault(base, rel);
+      try {
+        return new Uint8Array(fs.readFileSync(absolute));
+      } catch (error) {
+        if (error.code === 'ENOENT' || error.code === 'EISDIR') return null;
+        throw error;
+      }
+    },
+    async writeBytes(rel, bytes) {
+      const absolute = resolveInVault(base, rel);
+      fs.mkdirSync(path.dirname(absolute), { recursive: true });
+      fs.writeFileSync(absolute, bytes);
+    },
     async append(rel, text) {
       const absolute = resolveInVault(base, rel);
       fs.mkdirSync(path.dirname(absolute), { recursive: true });

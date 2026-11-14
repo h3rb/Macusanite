@@ -25,6 +25,7 @@ Everything Macusanite does — the window, the vault format, the CLI, the API an
 * [Bonds, groups and annotations](#worldbuilding-bonds)
 * [Arranging and navigating](#worldbuilding-arrange)
 * [Canvas history, exports and health](#worldbuilding-history)
+* [Signed self-updates](#updates)
 * [This manual](#this-manual)
 * [Command reference](#commands)
 * [Limitations](#limitations)
@@ -296,6 +297,16 @@ defaults to `us-east-1`. `--endpoint` sends the upload to an S3-compatible servi
 gateway), addressed path-style; AWS itself is virtual-host addressed. `--dry-run` builds the archive
 and prints where it would go, without uploading. The secret is never written to the vault or to the
 session log.
+
+The same folder can travel without a bucket: **☰ → Export vault…** writes one
+`.tar.gz` of the vault and its undo stacks, and **☰ → Import vault…** previews and merges one back.
+The CLI equivalents are `macusanite vault export` and `vault import` (`vault import plan` is the
+dry run); with `--replace`, import also deletes local files the archive does not carry. The window
+exports the same whole folder — every file, hidden folders included — and imports without recording
+the files as changes. The desktop carries binary files byte-for-byte, and its Replace checkbox names
+the local files the archive does not carry before deleting them. The browser fallback stores text
+only, so it refuses a binary archive with `binary-unsupported` instead of corrupting it — use the
+desktop app or the CLI for images and other non-text files.
 
 ## Keyboard
 
@@ -612,6 +623,20 @@ than two cards) appear as jumpable rows, with the counts beside the button. The 
 for card height sits in **Settings → Worldbuilding**, and every node can override it from its own
 menu.
 
+## Signed self-updates
+
+The desktop app updates itself from signed GitHub releases. A few seconds after a vault opens
+— unless you turned it off in **Settings → Updates** — it fetches the release's static
+`latest.json`, and if it names a newer version a dialog offers it with the release notes.
+Nothing installs itself: **Download & restart** downloads with progress, verifies the installer
+against the public key embedded in the app, installs it and restarts into the new version.
+
+On Windows the installed version is the NSIS setup exe, installed per user into
+`%LOCALAPPDATA%\Macusanite` (AppData, never Program Files, no admin), and the update replaces
+`macusanite.exe` in place in that same folder — the same way the portable exe is replaced.
+Signing keys live outside the repo (`~/.tauri/macusanite.key`); see `docs/Updates.md` for the
+publish flow.
+
 ## This manual
 
 This document is generated from the same declarations the program runs on, so
@@ -624,9 +649,11 @@ it cannot drift: the commands come from `src/lib/catalogue.js` and the prose her
 | The **CLI** | `macusanite docs` prints it, `macusanite docs <section>` prints one section, `macusanite docs --sections` lists the slugs, and `macusanite docs --out docs/Help.md` writes it to a file (that is exactly what `npm run docs` does) |
 | An **MCP client** | the `docs` tool, or the `macusanite://manual` resource, which every agent should read before guessing how something works |
 
-The sections below are the windows into the manual's own structure: `search`, `colours`,
-`graph`, `undo`, `watching`, `lazy-index`, `keyboard`, `agents`, `commands`,
-`limitations`.
+The sections are the manual's own structure, grouped in the help window's sidebar by topic:
+`worldbuilding` and its five deeper sections, `search`, `colours`, `graph`, `undo`,
+`watching`, `lazy-index`, `backups`, `updates`, `keyboard`, `agents`, `commands`,
+`limitations`, and the rest. Each feature section also carries a small animated figure,
+generated from the same declarations — see `src/lib/helpDemos.js`.
 
 ## Command reference
 
@@ -647,6 +674,7 @@ The sections below are the windows into the manual's own structure: `search`, `c
 | [`vault.backup`](#vault-backup) | Upload the whole vault to an S3 bucket as one timestamped tar.gz, directly or over SSH. | upload |
 | [`vault.export`](#vault-export) | Export the open vault to one portable compressed file. | upload |
 | [`vault.import`](#vault-import) | Import a portable vault archive into the open vault. | write |
+| [`vault.import.plan`](#vault-import-plan) | Preview a portable vault archive import without writing anything. | read |
 | [`vault.autobackup`](#vault-autobackup) | Arm this vault to upload itself after every write — window, CLI and MCP — or change where it uploads. | write |
 | [`vault.state`](#vault-state) | Read the viewer state: the last vein read, expanded chambers, panel widths. | read |
 | [`vault.state.set`](#vault-state-set) | Write viewer state. | write |
@@ -879,7 +907,7 @@ macusanite vault backup my-notes-backups --ssh-host backup@notes.example --ssh-k
 
 Export the open vault to one portable compressed file.
 
-Write a single `.tar.gz` archive holding every vault file, including `.macusanite/history.json`, so the vault with its undo/redo history can be shared and imported elsewhere. The archive carries a manifest (`macusanite-archive.json`) listing every file. `.git` internals and symlinks are left out, exactly as for `vault backup`.
+Write a single `.tar.gz` archive holding every vault file, including `.macusanite/history.json`, so the vault with its undo/redo history can be shared and imported elsewhere. The archive carries a manifest (`macusanite-archive.json`) listing every file. `.git` internals and symlinks are left out, exactly as for `vault backup`. Non-text files are carried byte-for-byte, so images and other binary files survive the round trip unchanged.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -898,20 +926,42 @@ macusanite vault export notes.tar.gz
 
 Import a portable vault archive into the open vault.
 
-Read a `.tar.gz` archive written by `vault.export` and update the open vault with its files, including its undo/redo history. Files the archive carries are overwritten in place; files it does not carry are left alone. If existing files would change, the import refuses with an `overwrite-required` error naming them until `--overwrite` confirms it. A malformed archive, an archive whose manifest does not match its contents, or one without history is refused before anything is written.
+Read a `.tar.gz` archive written by `vault.export` and update the open vault with its files, including its undo/redo history. Files the archive carries are overwritten in place; files it does not carry are left alone, unless `--replace` is given, which also deletes local files missing from the archive (except `.git`) so the vault becomes the archive's copy. If existing files would change or be deleted, the import refuses with an `overwrite-required` error naming them until `--overwrite` confirms it. A malformed archive, an archive whose manifest does not match its contents, or one without history is refused before anything is written. Files are compared and written as bytes, so non-text files survive unchanged. A session that can only write text (the desktop window, the browser) refuses an archive carrying non-text files — naming them, with a `binary-unsupported` error — instead of importing them as corrupted text; use the CLI for those.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
 | `path` | string | yes | The archive to read, for example `notes.tar.gz`. Relative to the working directory. |
-| `overwrite` | boolean | no | Confirm overwriting existing files whose contents would change. Required when the import conflicts. |
+| `overwrite` | boolean | no | Confirm overwriting existing files whose contents would change, and deleting the files `--replace` would drop. Required when the import conflicts or deletes. |
+| `replace` | boolean | no | Also delete local files missing from the archive (except `.git`), so the vault fully becomes the archive's copy. Off by default: update-only. |
 
-**Returns** `{ path, files, written, added, updated, unchanged, conflicts, history: { undo, redo } }`
+**Returns** `{ path, files, written, added, updated, unchanged, conflicts, deletions, deleted, history: { undo, redo } }`
 
 **Kind** writes to the vault · CLI only, not exposed over MCP
 
 ```bash
 macusanite vault import notes.tar.gz
 macusanite vault import notes.tar.gz --overwrite
+macusanite vault import notes.tar.gz --replace --overwrite
+```
+
+
+### `vault.import.plan`
+
+Preview a portable vault archive import without writing anything.
+
+Read-only preflight for `vault.import`: validates the `.tar.gz` and names the files it would add, the existing files it would overwrite, the files that would not change, and — with `--replace` — the local files it would delete (except `.git`). The window's Import vault dialog shows this list before anything is written; a CLI caller can use it to decide whether `--overwrite` is needed.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The archive to read, for example `notes.tar.gz`. Relative to the working directory. |
+| `replace` | boolean | no | Also list the local files missing from the archive (except `.git`) that the import would delete. |
+
+**Returns** `{ path, vaultName, files, added[], conflicts[], unchanged[], deletions[], history: { undo, redo } }`
+
+**Kind** reads only · CLI only, not exposed over MCP
+
+```bash
+macusanite vault import plan notes.tar.gz
 ```
 
 
@@ -1657,4 +1707,4 @@ macusanite docs --sections
 
 ---
 
-48 commands · generated 2026-11-14
+49 commands · generated 2026-11-14

@@ -158,6 +158,45 @@ fn walk(root: &Path, dir: &Path, scan: &mut Scan, depth: usize) -> io::Result<()
     Ok(())
 }
 
+/// Every file in the vault, hidden folders included, for archive export.
+///
+/// The CLI's archive walks the whole folder and skips only `.git`, so this walk
+/// matches it: dot-folders such as `.macusanite` are carried, symlinks are not
+/// followed, and paths come back sorted and vault-relative.
+pub fn all_files(root: &Path) -> io::Result<Vec<FileStat>> {
+    let mut files = Vec::new();
+    walk_all(root, root, &mut files, 0)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.dedup_by(|a, b| a.path == b.path);
+    Ok(files)
+}
+
+fn walk_all(root: &Path, dir: &Path, files: &mut Vec<FileStat>, depth: usize) -> io::Result<()> {
+    if depth > MAX_DEPTH {
+        return Ok(());
+    }
+    let mut entries: Vec<fs::DirEntry> = fs::read_dir(dir)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let file_type = entry.file_type()?;
+        // Archive paths may not contain `.git`, and symlinks are skipped so a
+        // link cannot pull files from outside the vault into the archive.
+        if name == ".git" || file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            walk_all(root, &path, files, depth + 1)?;
+        } else if file_type.is_file() {
+            if let Ok(stat) = FileStat::of(root, &path) {
+                files.push(stat);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Assemble chambers and veins into a sorted tree (chambers first, then names).
 pub fn build_tree(scan: &Scan) -> Vec<TreeNode> {
     let mut nodes: BTreeMap<String, TreeNode> = BTreeMap::new();
@@ -329,6 +368,33 @@ mod tests {
         let scan = scan(&root).unwrap();
         assert_eq!(scan.veins, vec!["Chambers/Fieldwork/Notes.md", "Home.md"]);
         assert_eq!(scan.chambers, vec!["Chambers", "Chambers/Fieldwork"]);
+    }
+
+    #[test]
+    fn all_files_carries_meta_and_other_files_but_not_git() {
+        let root = temp_vault("archive-files");
+        stdfs::create_dir_all(root.join(".macusanite/node-files")).unwrap();
+        stdfs::create_dir_all(root.join(".git/objects")).unwrap();
+        stdfs::create_dir_all(root.join("Chambers")).unwrap();
+        stdfs::write(root.join("Home.md"), "# Home").unwrap();
+        stdfs::write(root.join("Chambers/photo.png"), [0x89, 0x50, 0x4e, 0x47]).unwrap();
+        stdfs::write(root.join(".macusanite/vault.json"), "{}").unwrap();
+        stdfs::write(root.join(".macusanite/node-files/brief.pdf"), [0x25, 0x50, 0x44, 0x46]).unwrap();
+        stdfs::write(root.join(".git/config"), "gitdir").unwrap();
+
+        let files = all_files(&root).unwrap();
+        let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                ".macusanite/node-files/brief.pdf",
+                ".macusanite/vault.json",
+                "Chambers/photo.png",
+                "Home.md",
+            ]
+        );
+        assert_eq!(files[0].size, 4);
+        assert!(!paths.iter().any(|path| path.starts_with(".git")));
     }
 
     #[test]

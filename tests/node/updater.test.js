@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   isAutoCheckEnabled,
   summarizeUpdate,
@@ -7,6 +10,27 @@ import {
   buildUpdateManifest,
 } from '../../src/lib/updater.js';
 import { DEFAULT_SETTINGS, mergeSettings } from '../../src/lib/settings.js';
+
+test('the Windows build is an NSIS per-user install updated in place from AppData', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const config = JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
+  // NSIS only — no MSI, so the installed version is the same setup exe the
+  // updater downloads, not a per-machine Windows Installer package.
+  assert.deepEqual(config.bundle.targets, ['nsis']);
+  assert.equal(config.bundle.createUpdaterArtifacts, true);
+  // Per-user, never per-machine: the app lives in
+  // %LOCALAPPDATA%\Macusanite (AppData), not Program Files, so it needs no
+  // admin rights and the updater can replace macusanite.exe in place there
+  // the same way the portable exe is replaced.
+  assert.equal(config.bundle.windows.nsis.installMode, 'currentUser');
+  // In-place update: the updater runs the NSIS installer in passive mode
+  // (progress bar, no interaction, no elevation) against the same folder.
+  assert.equal(config.plugins.updater.windows.installMode, 'passive');
+  assert.ok(config.plugins.updater.pubkey, 'updater public key is embedded');
+  assert.deepEqual(config.plugins.updater.endpoints, [
+    'https://github.com/h3rb/Macusanite/releases/latest/download/latest.json',
+  ]);
+});
 
 test('automatic update checks default to on and can be turned off', () => {
   assert.equal(isAutoCheckEnabled(DEFAULT_SETTINGS), true);

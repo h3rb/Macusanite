@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildHelpMarkdown, helpSections } from '../../src/lib/helpDoc.js';
-import { splitManual, planSearch } from '../../src/lib/helpSearch.js';
+import { splitManual, planSearch, manualTree, sectionHeadings } from '../../src/lib/helpSearch.js';
 import { tokenize } from '../../src/lib/search.js';
 
 const manual = buildHelpMarkdown();
@@ -31,6 +31,36 @@ test('the manual splits into its sections, in order, with no contents list', () 
     assert.ok(section.body.trim().length > 0, `${section.slug} is empty`);
     assert.ok(!section.body.startsWith('## '), `${section.slug} kept its heading out of the body`);
   }
+});
+
+test('the sidebar tree covers every section exactly once, grouped by topic', () => {
+  const tree = manualTree(sections);
+  const flat = tree.flatMap((topic) => topic.sections.map((section) => section.slug));
+  assert.deepEqual([...flat].sort(), sections.map((section) => section.slug).sort());
+  assert.equal(new Set(flat).size, flat.length, 'a section appears in two topics');
+  assert.ok(tree.every((topic) => topic.sections.length > 0), 'an empty topic is rendered');
+
+  const worldbuilding = tree.find((topic) => topic.id === 'worldbuilding');
+  assert.deepEqual(worldbuilding.sections.map((section) => section.slug), [
+    'worldbuilding', 'worldbuilding-cards', 'worldbuilding-types',
+    'worldbuilding-bonds', 'worldbuilding-arrange', 'worldbuilding-history',
+  ]);
+
+  // A section the topics do not name still reaches the sidebar.
+  const extra = manualTree([...sections, { slug: 'new-feature', title: 'New feature', body: '### Bit\n\nText.' }]);
+  assert.equal(extra.at(-1).id, 'more');
+  assert.equal(extra.at(-1).sections[0].slug, 'new-feature');
+});
+
+test('a section’s ### headings become the tree’s third tier', () => {
+  const tree = manualTree(sections);
+  const cards = tree.flatMap((topic) => topic.sections).find((section) => section.slug === 'worldbuilding-cards');
+  assert.deepEqual(cards.headings, ['Modes', 'Height', 'Folding, tags and locks']);
+  // Fenced code and heading backticks are handled, not guessed at.
+  assert.deepEqual(
+    sectionHeadings('### One\n```\n### not a heading\n```\n### `Two`\n'),
+    ['One', 'Two'],
+  );
 });
 
 test('an empty query shows everything and counts nothing', () => {

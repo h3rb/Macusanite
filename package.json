@@ -19,6 +19,7 @@
     "tauri:build": "tauri build",
     "posttauri:build": "node scripts/collect-release.mjs",
     "vault:sample": "node scripts/make-reference-vault.mjs",
+    "vault:sample-archive": "node scripts/make-sample-archive.mjs",
     "icons": "node scripts/make-icons.mjs",
     "setup": "bash scripts/setup-toolchain.sh"
   },

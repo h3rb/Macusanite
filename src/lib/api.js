@@ -21,7 +21,7 @@
 import { prepareArgs, applyAssignments, commandNames, COMMANDS } from './catalogue.js';
 import { buildHelpMarkdown, commandPage, helpSections, DEFAULT_DOC_SECTIONS } from './helpDoc.js';
 import { assertBucket } from './backup.js';
-import { createVaultArchive, parseVaultArchive, planVaultImport } from './vaultArchive.js';
+import { collectVaultArchiveFiles, createVaultArchive, parseVaultArchive, planVaultImport, isBinaryBytes } from './vaultArchive.js';
 import {
   AUTO_BACKUP_FILE,
   AUTO_BACKUP_PATH,
@@ -118,22 +118,72 @@ export function createVaultApi({
   }
 
   /**
-   * Every vault file an archive carries, sorted, without `.git` internals.
-   *
-   * @param {object} vault the store to collect from
-   * @returns {Promise<Array<{path: string, data: string, mtime: number}>>}
+   * Import's preflight: read and validate the archive once, compare it with
+   * the open vault, and return both the public preview and the parsed archive.
+   * `vault.import.plan` exposes only the preview; `vault.import` reuses the
+   * same parse for its writes, so validation and writing can never disagree.
    */
-  async function collectArchiveFiles(vault) {
-    const listed = await vault.listFiles();
-    const files = [];
-    for (const file of listed) {
-      if (file.path === '.git' || file.path.startsWith('.git/')) continue;
-      const text = await vault.readFile(file.path);
-      if (text === null) continue;
-      files.push({ path: file.path, data: text, mtime: file.mtime ?? 0 });
+  async function prepareVaultArchiveImport(args) {
+    const vault = inVault();
+    if (!readBinaryFile) {
+      throw new ApiError('this session cannot read binary files, so vault import is unavailable', {
+        code: 'unsupported',
+      });
     }
-    files.sort((a, b) => a.path.localeCompare(b.path));
-    return files;
+    let bytes;
+    try {
+      bytes = await readBinaryFile(args.path);
+    } catch (error) {
+      throw new ApiError(`could not read ${args.path}: ${error.message}`, { code: 'bad-args' });
+    }
+    let archive;
+    try {
+      archive = await parseVaultArchive(bytes);
+    } catch (error) {
+      throw new ApiError(`invalid vault archive ${args.path}: ${error.message}`, { code: 'bad-args' });
+    }
+    const existing = [];
+    for (const file of archive.files) {
+      const bytes = await vault.readFileBytes(file.path);
+      if (bytes !== null) existing.push({ path: file.path, bytes });
+    }
+    if (args.replace === true) {
+      // Replace also deletes local files the archive does not carry (except
+      // `.git`), so the preflight has to see them — `planVaultImport` names
+      // them `deletions` and never lists `.git`.
+      for (const file of await vault.listFiles()) {
+        if (file.path === '.git' || file.path.startsWith('.git/')) continue;
+        if (existing.some((entry) => entry.path === file.path)) continue;
+        const bytes = await vault.readFileBytes(file.path);
+        if (bytes !== null) existing.push({ path: file.path, bytes });
+      }
+    }
+    // Binary safety, decided before anything is written: a text-only session
+    // (the browser) cannot store non-text bytes without corrupting them, so an
+    // archive carrying them is refused here, naming the files, instead of
+    // imported as mangled text.
+    const binary = archive.files.filter((file) => isBinaryBytes(file.data)).map((file) => file.path);
+    if (binary.length && vault.canWriteFileBytes !== true) {
+      throw new ApiError(
+        `archive ${args.path} contains non-text file(s): ${binary.join(', ')} — this session can only write text files, so importing them would corrupt the data; refusing instead`,
+        { code: 'binary-unsupported' },
+      );
+    }
+    const plan = planVaultImport(existing, archive.files, { replace: args.replace === true });
+    return {
+      archive,
+      preview: {
+        path: args.path,
+        vaultName: archive.manifest.vaultName ?? null,
+        files: archive.files.length,
+        added: plan.added,
+        conflicts: plan.conflicts,
+        unchanged: plan.unchanged,
+        deletions: plan.deletions,
+        binary,
+        history: archive.manifest.history,
+      },
+    };
   }
 
   /* ── vault ───────────────────────────────────────────────────────────── */
@@ -232,7 +282,7 @@ export function createVaultApi({
         });
       }
       const info = await vault.info();
-      const files = await collectArchiveFiles(vault);
+      const files = await collectVaultArchiveFiles(vault);
       const bytes = await createVaultArchive(files, { vaultName: info.name });
       let written;
       try {
@@ -249,48 +299,57 @@ export function createVaultApi({
       };
     },
 
+    async 'vault.import.plan'(args) {
+      const { preview } = await prepareVaultArchiveImport(args);
+      return preview;
+    },
+
     async 'vault.import'(args) {
       const vault = inVault();
-      if (!readBinaryFile) {
-        throw new ApiError('this session cannot read binary files, so vault import is unavailable', {
-          code: 'unsupported',
-        });
-      }
-      let bytes;
-      try {
-        bytes = await readBinaryFile(args.path);
-      } catch (error) {
-        throw new ApiError(`could not read ${args.path}: ${error.message}`, { code: 'bad-args' });
-      }
-      let archive;
-      try {
-        archive = await parseVaultArchive(bytes);
-      } catch (error) {
-        throw new ApiError(`invalid vault archive ${args.path}: ${error.message}`, { code: 'bad-args' });
-      }
-      const existing = [];
-      for (const file of archive.files) {
-        const text = await vault.readFile(file.path);
-        if (text !== null) existing.push({ path: file.path, text });
-      }
-      const plan = planVaultImport(existing, archive.files);
-      if (plan.conflicts.length && args.overwrite !== true) {
+      // The whole archive is validated and planned before anything is written
+      // (the same preflight `vault.import.plan` returns), so a malformed
+      // archive or an unconfirmed conflict never leaves a half-imported vault.
+      // The parsed archive is reused below: one read, one parse.
+      const { preview, archive } = await prepareVaultArchiveImport(args);
+      if ((preview.conflicts.length || preview.deletions.length) && args.overwrite !== true) {
+        const named = [
+          ...(preview.conflicts.length ? [`overwrite ${preview.conflicts.length} file(s): ${preview.conflicts.join(', ')}`] : []),
+          ...(preview.deletions.length ? [`delete ${preview.deletions.length} file(s): ${preview.deletions.join(', ')}`] : []),
+        ].join('; ');
         throw new ApiError(
-          `importing ${args.path} would overwrite ${plan.conflicts.length} existing file(s): ${plan.conflicts.join(', ')} — rerun with --overwrite to confirm`,
+          `importing ${args.path} would ${named} — rerun with --overwrite to confirm`,
           { code: 'overwrite-required' },
         );
       }
-      for (const write of plan.writes) await vault.writeFile(write.path, write.text);
+      let written = 0;
+      for (const file of archive.files) {
+        const existing = await vault.readFileBytes(file.path);
+        if (existing === null || existing.length !== file.data.length || existing.some((byte, i) => byte !== file.data[i])) {
+          try {
+            await vault.writeFileBytes(file.path, file.data);
+          } catch (error) {
+            throw new ApiError(`could not write ${file.path} from archive ${args.path}: ${error.message}`, { code: 'binary-unsupported' });
+          }
+          written += 1;
+        }
+      }
+      let deleted = 0;
+      for (const path of preview.deletions) {
+        await vault.removeFile(path);
+        deleted += 1;
+      }
       await vault.dropIndexCache().catch(() => {});
       return {
         path: args.path,
         files: archive.files.length,
-        written: plan.writes.length,
-        added: plan.added,
-        updated: plan.updated,
-        unchanged: plan.unchanged,
-        conflicts: plan.conflicts,
-        history: archive.manifest.history,
+        written,
+        added: preview.added,
+        updated: preview.conflicts,
+        unchanged: preview.unchanged,
+        conflicts: preview.conflicts,
+        deletions: preview.deletions,
+        deleted,
+        history: preview.history,
       };
     },
 

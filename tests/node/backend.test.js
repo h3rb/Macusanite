@@ -148,6 +148,30 @@ test('deleting a meta file is unrecorded and a missing file is not an error', as
   assert.equal(after.undo.length, before.undo.length, 'node image and attachment deletes never enter the stack');
 });
 
+test('vault files list every file and import writes stay out of history', async () => {
+  virtualVault.reset();
+  await backend.openVault('/sample-vault');
+  const before = await backend.history();
+
+  await backend.writeVaultFile('Chambers/field-notes.txt', 'not a vein');
+  await backend.writeVaultFile('.macusanite/custom.json', '{"kept":true}');
+
+  const files = await backend.listVaultFiles();
+  const paths = files.map((file) => file.path);
+  assert.ok(paths.includes('Chambers/field-notes.txt'));
+  assert.ok(paths.includes('.macusanite/custom.json'));
+  assert.ok(paths.includes('Home.md'));
+  assert.deepEqual(
+    await backend.readVaultFileBytes('Chambers/field-notes.txt'),
+    Array.from(new TextEncoder().encode('not a vein')),
+  );
+  assert.equal(await backend.readVaultFileBytes('Chambers/missing.txt'), null);
+  assert.equal(await backend.removeVaultFile('Chambers/field-notes.txt'), true);
+  assert.equal(await backend.removeVaultFile('Chambers/field-notes.txt'), false);
+  assert.ok(!(await backend.listVaultFiles()).some((file) => file.path === 'Chambers/field-notes.txt'));
+  assert.equal((await backend.history()).undo.length, before.undo.length, 'import writes never enter the stack');
+});
+
 test('undoing a metadata write restores the previous file contents', async () => {
   virtualVault.reset();
   await backend.openVault('/sample-vault');

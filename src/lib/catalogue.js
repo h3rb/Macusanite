@@ -260,8 +260,9 @@ export const COMMANDS = {
     description:
       'Write a single `.tar.gz` archive holding every vault file, including `.macusanite/history.json`, '
       + 'so the vault with its undo/redo history can be shared and imported elsewhere. The archive '
-      + 'carries a manifest (`macusanite-archive.json`) listing every file. `.git` internals and '
-      + 'symlinks are left out, exactly as for `vault backup`.',
+      +       'carries a manifest (`macusanite-archive.json`) listing every file. `.git` internals and '
+      + 'symlinks are left out, exactly as for `vault backup`. Non-text files are carried byte-for-byte, '
+      + 'so images and other binary files survive the round trip unchanged.',
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Where to write the archive, for example `notes.tar.gz`. Relative to the working directory.' },
     ],
@@ -276,18 +277,42 @@ export const COMMANDS = {
     summary: 'Import a portable vault archive into the open vault.',
     description:
       'Read a `.tar.gz` archive written by `vault.export` and update the open vault with its files, '
-      + 'including its undo/redo history. Files the archive carries are overwritten in place; files '
-      + 'it does not carry are left alone. If existing files would change, the import refuses with an '
-      + '`overwrite-required` error naming them until `--overwrite` confirms it. A malformed archive, '
-      + 'an archive whose manifest does not match its contents, or one without history is refused '
-      + 'before anything is written.',
+      +       'including its undo/redo history. Files the archive carries are overwritten in place; files '
+      + 'it does not carry are left alone, unless `--replace` is given, which also deletes local files '
+      + 'missing from the archive (except `.git`) so the vault becomes the archive\'s copy. If existing '
+      + 'files would change or be deleted, the import refuses with an `overwrite-required` error naming '
+      + 'them until `--overwrite` confirms it. A malformed archive, an archive whose manifest does not '
+      + 'match its contents, or one without history is refused before anything is written. Files are '
+      + 'compared and written as bytes, so non-text files survive unchanged. A session that can only '
+      + 'write text (the desktop window, the browser) refuses an archive carrying non-text files — '
+      + 'naming them, with a `binary-unsupported` error — instead of importing them as corrupted text; '
+      + 'use the CLI for those.',
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'The archive to read, for example `notes.tar.gz`. Relative to the working directory.' },
-      { name: 'overwrite', type: 'boolean', description: 'Confirm overwriting existing files whose contents would change. Required when the import conflicts.' },
+      { name: 'overwrite', type: 'boolean', description: 'Confirm overwriting existing files whose contents would change, and deleting the files `--replace` would drop. Required when the import conflicts or deletes.' },
+      { name: 'replace', type: 'boolean', description: 'Also delete local files missing from the archive (except `.git`), so the vault fully becomes the archive\'s copy. Off by default: update-only.' },
     ],
-    returns: '`{ path, files, written, added, updated, unchanged, conflicts, history: { undo, redo } }`',
-    examples: ['macusanite vault import notes.tar.gz', 'macusanite vault import notes.tar.gz --overwrite'],
+    returns: '`{ path, files, written, added, updated, unchanged, conflicts, deletions, deleted, history: { undo, redo } }`',
+    examples: ['macusanite vault import notes.tar.gz', 'macusanite vault import notes.tar.gz --overwrite', 'macusanite vault import notes.tar.gz --replace --overwrite'],
     mutates: true,
+    mcp: false,
+  },
+
+  'vault.import.plan': {
+    group: 'Vault',
+    summary: 'Preview a portable vault archive import without writing anything.',
+    description:
+      'Read-only preflight for `vault.import`: validates the `.tar.gz` and names the files it would '
+      +       'add, the existing files it would overwrite, the files that would not change, and — with '
+      + '`--replace` — the local files it would delete (except `.git`). The window\'s Import vault '
+      + 'dialog shows this list before anything is written; a CLI caller can use it to decide whether '
+      + '`--overwrite` is needed.',
+    params: [
+      { name: 'path', type: 'string', required: true, positional: true, description: 'The archive to read, for example `notes.tar.gz`. Relative to the working directory.' },
+      { name: 'replace', type: 'boolean', description: 'Also list the local files missing from the archive (except `.git`) that the import would delete.' },
+    ],
+    returns: '`{ path, vaultName, files, added[], conflicts[], unchanged[], deletions[], history: { undo, redo } }`',
+    examples: ['macusanite vault import plan notes.tar.gz'],
     mcp: false,
   },
 

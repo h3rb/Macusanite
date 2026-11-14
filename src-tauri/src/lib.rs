@@ -203,6 +203,78 @@ fn list_veins(state: State<'_, VaultState>) -> Result<Vec<String>, String> {
     Ok(scan.veins)
 }
 
+/// Every vault file for Export vault: the archive carries what the folder
+/// holds, not only veins and metadata, matching `macusanite vault export`.
+#[tauri::command]
+fn list_vault_files(state: State<'_, VaultState>) -> Result<Vec<vault::FileStat>, String> {
+    let root = state.root()?;
+    vault::all_files(&root).map_err(|e| e.to_string())
+}
+
+/// Read one vault file byte-for-byte, for Export vault. A missing file is
+/// `None`, so a file removed mid-export is skipped instead of failing the walk.
+#[tauri::command]
+fn read_vault_file_bytes(
+    rel: String,
+    state: State<'_, VaultState>,
+) -> Result<Option<Vec<u8>>, String> {
+    let root = state.root()?;
+    let path = vault::resolve_in_vault(&root, &rel)?;
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("{rel}: {error}")),
+    }
+}
+
+/// Write one vault file byte-for-byte, unrecorded, for Import vault.
+/// `vault.import` writes through the unrecorded byte path for the same reason:
+/// the archive carries its own history, so the import itself must not land in
+/// the undo stack.
+#[tauri::command]
+fn write_vault_file_bytes(
+    app: AppHandle,
+    rel: String,
+    bytes: Vec<u8>,
+    state: State<'_, VaultState>,
+) -> Result<usize, String> {
+    let root = state.root()?;
+    let path = vault::resolve_in_vault(&root, &rel)?;
+    if path.is_dir() {
+        return Err(format!("not a file: {rel}"));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{rel}: {e}"))?;
+    }
+    remember_write(&app, &rel);
+    std::fs::write(&path, &bytes).map_err(|e| format!("{rel}: {e}"))?;
+    Ok(bytes.len())
+}
+
+/// Delete one vault file for Import vault's Replace option. A missing file is
+/// `false`, not an error; directories are refused so a malformed path can never
+/// remove a chamber.
+#[tauri::command]
+fn remove_vault_file(
+    app: AppHandle,
+    rel: String,
+    state: State<'_, VaultState>,
+) -> Result<bool, String> {
+    let root = state.root()?;
+    let path = vault::resolve_in_vault(&root, &rel)?;
+    if path.is_dir() {
+        return Err(format!("not a file: {rel}"));
+    }
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            remember_write(&app, &rel);
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("{rel}: {error}")),
+    }
+}
+
 /* ── veins and chambers ────────────────────────────────────────────────── */
 
 #[tauri::command]
@@ -397,9 +469,71 @@ fn pick_file(app: AppHandle) -> Result<Option<String>, String> {
         .map(|p| p.to_string_lossy().to_string()))
 }
 
+/// Save dialog: the archive Export vault writes to.
+#[tauri::command]
+fn pick_save_archive(app: AppHandle, default_name: String) -> Result<Option<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .add_filter("Macusanite vault archive", &["tar.gz"])
+        .set_file_name(&default_name)
+        .save_file(move |file| {
+            let _ = tx.send(file);
+        });
+    let picked = rx.recv_timeout(std::time::Duration::from_secs(600)).map_err(|e| e.to_string())?;
+    Ok(picked
+        .and_then(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().to_string()))
+}
+
+/// Open dialog: the archive Import vault reads from.
+#[tauri::command]
+fn pick_open_archive(app: AppHandle) -> Result<Option<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .add_filter("Macusanite vault archive", &["tar.gz"])
+        .pick_file(move |file| {
+            let _ = tx.send(file);
+        });
+    let picked = rx.recv_timeout(std::time::Duration::from_secs(600)).map_err(|e| e.to_string())?;
+    Ok(picked
+        .and_then(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().to_string()))
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+/// Write one binary file (a vault archive) at an absolute path. The parent
+/// must already exist — the save dialog chooses a real folder. Used by the
+/// window's Export vault only; nothing else writes outside the vault.
+#[tauri::command]
+fn write_archive_file(path: String, bytes: Vec<u8>) -> Result<usize, String> {
+    let target = std::path::PathBuf::from(&path);
+    if !target.is_absolute() {
+        return Err(format!("archive path must be absolute: {path}"));
+    }
+    match target.parent() {
+        Some(parent) if parent.is_dir() => {}
+        _ => return Err(format!("archive folder does not exist: {}", target.parent().map(|p| p.display().to_string()).unwrap_or_default())),
+    }
+    std::fs::write(&target, &bytes).map_err(|e| format!("{path}: {e}"))?;
+    Ok(bytes.len())
+}
+
+/// Read one binary file (a vault archive) at an absolute path. Used by the
+/// window's Import vault only; the vault itself is read through `read_vein`
+/// and `read_meta`.
+#[tauri::command]
+fn read_archive_file(path: String) -> Result<Vec<u8>, String> {
+    let target = std::path::PathBuf::from(&path);
+    if !target.is_absolute() {
+        return Err(format!("archive path must be absolute: {path}"));
+    }
+    std::fs::read(&target).map_err(|e| format!("{path}: {e}"))
 }
 
 /// Open the manual in its own window.
@@ -508,6 +642,10 @@ pub fn run() {
             vault_stat,
             vault_tree,
             list_veins,
+            list_vault_files,
+            read_vault_file_bytes,
+            write_vault_file_bytes,
+            remove_vault_file,
             read_vein,
             write_vein,
             create_vein,
@@ -523,6 +661,10 @@ pub fn run() {
             open_help_window,
             pick_folder,
             pick_file,
+            write_archive_file,
+            read_archive_file,
+            pick_save_archive,
+            pick_open_archive,
             quit_app,
             open_external,
             open_attachment,

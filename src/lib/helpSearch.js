@@ -10,7 +10,7 @@
  * HTML by walking its text nodes (see [src/ui/helpWindow.js](../ui/helpWindow.js)),
  * because doing it on the markdown source would corrupt the markup it is part of.
  */
-import { helpSections } from './helpDoc.js';
+import { helpSections, HELP_TOPICS } from './helpDoc.js';
 import { tokenize } from './search.js';
 
 const slugify = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -44,6 +44,54 @@ export function splitManual(markdown) {
     });
   }
   return { intro, sections };
+}
+
+/**
+ * A section's `###` subheadings, in reading order — the sidebar's third tier.
+ * Fenced code is skipped so a `# comment` inside an example is not a heading.
+ */
+export function sectionHeadings(body) {
+  const out = [];
+  let fenced = false;
+  for (const line of String(body ?? '').split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
+    const match = /^###\s+(.+?)\s*$/.exec(line);
+    if (match) out.push(match[1].replace(/`/g, ''));
+  }
+  return out;
+}
+
+/**
+ * The manual as a tree for the help window's sidebar: topics, their sections
+ * in the declared order, and each section's subheadings. A section the topics
+ * do not mention still appears, under “More”, so adding a section can never
+ * make it vanish from the sidebar.
+ *
+ * @param {Array<{slug: string, title: string, body: string}>} sections
+ * @param {Array<{id: string, title: string, sections: string[]}>} [topics]
+ * @returns {Array<{id: string, title: string, sections: Array<{slug: string, title: string, body: string, headings: string[]}>}>}
+ */
+export function manualTree(sections, topics = HELP_TOPICS) {
+  const bySlug = new Map(sections.map((section) => [section.slug, section]));
+  const claimed = new Set();
+  const tree = [];
+  for (const topic of topics) {
+    const entries = topic.sections
+      .map((slug) => bySlug.get(slug))
+      .filter((section) => section && !claimed.has(section.slug))
+      .map((section) => ({ ...section, headings: sectionHeadings(section.body) }));
+    for (const section of entries) claimed.add(section.slug);
+    if (entries.length) tree.push({ id: topic.id, title: topic.title, sections: entries });
+  }
+  const rest = sections
+    .filter((section) => !claimed.has(section.slug))
+    .map((section) => ({ ...section, headings: sectionHeadings(section.body) }));
+  if (rest.length) tree.push({ id: 'more', title: 'More', sections: rest });
+  return tree;
 }
 
 /** Every occurrence of `needle` in `haystack`, case-insensitively (both lowercased). */

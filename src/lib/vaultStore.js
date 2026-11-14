@@ -28,6 +28,8 @@
  *   append(path, text): Promise<void>
  *   remove(path): Promise<void>                     // a missing file is not an error
  *   stat(path): Promise<{ path, mtime, size }|null>
+ *   readBytes?(path): Promise<Uint8Array|null>      // binary-safe read, when
+ *   writeBytes?(path, bytes): Promise<void>         // the adapter can do it
  * }
  * ```
  *
@@ -894,6 +896,46 @@ export function createVaultStore({ fs, root = '' }) {
     return { path, bytes: text.length };
   }
 
+  /**
+   * Read any vault file as bytes, without interpreting it. Archive export
+   * uses this so non-text files (images, PDFs, …) survive a round trip
+   * byte-for-byte instead of being decoded as UTF-8 and corrupted. Adapters
+   * without `readBytes` only ever hold text, so encoding that text is exact.
+   */
+  async function readFileBytes(rel) {
+    const path = safePath(rel);
+    if (typeof fs.readBytes === 'function') {
+      const bytes = await fs.readBytes(path);
+      return bytes === null ? null : new Uint8Array(bytes);
+    }
+    const text = await fs.read(path);
+    return text === null ? null : new TextEncoder().encode(text);
+  }
+
+  /**
+   * Write any vault file as bytes, without recording history. Adapters with
+   * `writeBytes` store the bytes verbatim; text-only adapters can only take
+   * bytes that are valid UTF-8 text, and refuse binary data with a clear
+   * error rather than silently corrupting it.
+   */
+  async function writeFileBytes(rel, bytes) {
+    const path = safePath(rel);
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (typeof fs.writeBytes === 'function') {
+      await fs.writeBytes(path, data);
+    } else {
+      let text;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(data);
+      } catch {
+        throw new Error(`cannot write binary file ${path}: this vault session only handles text files, so the binary data would be corrupted — refusing instead`);
+      }
+      await fs.write(path, text);
+    }
+    invalidate();
+    return { path, bytes: data.length };
+  }
+
   async function removeFile(rel) {
     const path = safePath(rel);
     await fs.remove(path);
@@ -963,6 +1005,10 @@ export function createVaultStore({ fs, root = '' }) {
     listFiles,
     readFile,
     writeFile,
+    readFileBytes,
+    writeFileBytes,
+    /** Whether this session can store binary file bytes verbatim. */
+    canWriteFileBytes: typeof fs.writeBytes === 'function',
     removeFile,
     safePath,
     safeMetaName,

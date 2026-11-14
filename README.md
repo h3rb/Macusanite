@@ -63,6 +63,10 @@ macusanite path/to/reference-vault
 
 `npm run vault:sample` writes the bundled sample vault to
 [reference-vault/](reference-vault) so there is always something to open.
+`npm run vault:sample-archive` writes the same fixture as
+`reference-vault.tar.gz`, the portable archive the import tests read — run it
+once on a fresh checkout before `npm test` — and a ready-made `vault import`
+target.
 
 ---
 
@@ -421,7 +425,7 @@ tests/node/     unit tests for everything under src/lib plus the renderers
 ### Tests
 
 ```bash
-npm test                                  # 355 JS tests
+npm test                                  # 343 JS tests
 cargo test --manifest-path src-tauri/Cargo.toml   # 41 Rust tests
 ```
 

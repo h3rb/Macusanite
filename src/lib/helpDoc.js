@@ -25,6 +25,7 @@ export const FEATURES = [
   {
     slug: 'what-macusanite-is',
     title: 'What Macusanite is',
+    demo: 'vault-graph',
     body: `Macusanite is a viewer for a **vault**: a folder tree of markdown that behaves like a
 wiki. Folders are **chambers**, markdown files are **veins**, and a **concept graph** shows how a
 document is built and where it sits in the vault.
@@ -41,6 +42,7 @@ version.
   {
     slug: 'vault-on-disk',
     title: 'The vault on disk',
+    demo: 'vault-disk',
     body: `\`\`\`
 My Vault/
 ├── .macusanite/                   # everything Macusanite manages
@@ -72,6 +74,7 @@ My Vault/
   {
     slug: 'window',
     title: 'The window',
+    demo: 'window-tour',
     body: `| Region | What it does |
 | --- | --- |
 | **Top bar** | the menu (new, open, save, undo, redo, settings, help, wiki, exit), the vault name and description, and wiki breadcrumbs that fill in as you follow links |
@@ -107,6 +110,7 @@ Editing:
   {
     slug: 'search',
     title: 'Search',
+    demo: 'search-type',
     body: `\`Ctrl+F\` opens the search pane. Typing searches every vein as you go — titles, section
 headings, tags and body text, ranked in that order:
 
@@ -130,6 +134,7 @@ background and the results grow as it arrives (the status row shows \`reading 24
   {
     slug: 'colours',
     title: 'Colours',
+    demo: 'colours',
     body: `Every **page**, every **link** and every **section** starts at the vault default —
 white until you change it in **Settings → Default colours** — and can be recoloured by clicking its
 swatch. The picker offers a common palette, a searchable selection of X11 colours, a \`#hex\` field and
@@ -149,6 +154,7 @@ target page's colour, fading across the line. On the command line the same assig
   {
     slug: 'graph',
     title: 'The concept graph',
+    demo: 'graph-orbits',
     body: `The right-hand pane answers two questions at once: *what is this note made of*, and *where
 does it sit in the vault*.
 
@@ -168,6 +174,7 @@ same structure as data.`,
   {
     slug: 'undo',
     title: 'Undo and redo',
+    demo: 'undo-flip',
     body: `Every mutation is recorded as a before/after snapshot of a single file, so undo restores
 **exactly** what changed: vein edits, new veins and chambers, colour assignments, settings changes and
 vault details. The stack lives in \`.macusanite/history.json\`, holds 400 entries and is shared — a vein
@@ -188,6 +195,7 @@ a non-optional \`after\` field. Undo brings the text back; redo re-creates the f
   {
     slug: 'watching',
     title: 'Following the vault',
+    demo: 'watching',
     body: `The vault is watched while it is open, in the window *and* by nothing else — the watcher
 lives in the desktop shell. A vein created, edited or deleted by another program appears in the tree,
 the index, the graph and — when it is the open vein and nothing is unsaved — in the reader itself,
@@ -217,6 +225,7 @@ the undo stacks, the session log, \`vault.json\`) is the viewer's own bookkeepin
   {
     slug: 'lazy-index',
     title: 'Opening a large vault',
+    demo: 'lazy-index',
     body: `A vault is opened by *describing* it, not by reading it. Opening walks the folder once —
 which veins exist, when each last changed — and reads \`.macusanite/index.json\`, which holds what each
 vein contained the last time it was read: its title, aliases, headings, links, tags and front-matter
@@ -236,6 +245,7 @@ saved by the viewer refreshes its own entry immediately. \`vault index\` reports
   {
     slug: 'backups',
     title: 'Backing up to S3',
+    demo: 'backup-upload',
     body: `A vault is a folder, so its backup is the folder: one timestamped \`.tar.gz\` of every vein,
 chamber and \`.macusanite\` file, uploaded as a single object. A run never changes the vault.
 
@@ -298,12 +308,23 @@ process list. A region comes from \`--region\`, \`AWS_REGION\`, \`AWS_DEFAULT_RE
 defaults to \`us-east-1\`. \`--endpoint\` sends the upload to an S3-compatible service (MinIO, R2, a
 gateway), addressed path-style; AWS itself is virtual-host addressed. \`--dry-run\` builds the archive
 and prints where it would go, without uploading. The secret is never written to the vault or to the
-session log.`,
+session log.
+
+The same folder can travel without a bucket: **☰ → Export vault…** writes one
+\`.tar.gz\` of the vault and its undo stacks, and **☰ → Import vault…** previews and merges one back.
+The CLI equivalents are \`macusanite vault export\` and \`vault import\` (\`vault import plan\` is the
+dry run); with \`--replace\`, import also deletes local files the archive does not carry. The window
+exports the same whole folder — every file, hidden folders included — and imports without recording
+the files as changes. The desktop carries binary files byte-for-byte, and its Replace checkbox names
+the local files the archive does not carry before deleting them. The browser fallback stores text
+only, so it refuses a binary archive with \`binary-unsupported\` instead of corrupting it — use the
+desktop app or the CLI for images and other non-text files.`,
   },
 
   {
     slug: 'keyboard',
     title: 'Keyboard',
+    demo: 'keyboard-keys',
     body: `| Keys | Action |
 | --- | --- |
 | \`Ctrl+S\` | save the open vein |
@@ -317,6 +338,7 @@ session log.`,
   {
     slug: 'agents',
     title: 'Driving Macusanite without a window',
+    demo: 'agents-terminal',
     body: `The CLI and the MCP server are the same API over the same vault. Both are Node
 programs and need no build step; both speak to a vault through
 [src/lib/vaultStore.js](../../src/lib/vaultStore.js), which writes the same files the window writes,
@@ -371,6 +393,7 @@ job or a tool call needs.`,
   {
     slug: 'worldbuilding',
     title: 'The Worldbuilding canvas',
+    demo: 'worldbuild-canvas',
     body: `A vein marked as **Worldbuilding** (the switch at the top right of the centre pane, or the
 **★ Mark** button on the canvas toolbar) opens not as lines but as cards on a canvas — one card
 per heading of the vein, editing the same markdown the reader sees. Switching to **Markdown**
@@ -419,6 +442,7 @@ health](#canvas-history-exports-and-health).`,
   {
     slug: 'worldbuilding-cards',
     title: 'Cards, prose and heights',
+    demo: 'worldbuild-cards',
     body: `Every card is a heading of the vein. Its title is the heading text, its prose is what sits
 under that heading, and the card before the first heading is the **intro** card, titled “Before the
 first heading”. Clicking a card's rendered prose swaps in the source textarea; leaving it renders
@@ -459,6 +483,7 @@ they link to, and **Overview** folds every card at once.
   {
     slug: 'worldbuilding-types',
     title: 'Types, fields, colours and images',
+    demo: 'worldbuild-types',
     body: `The drop-down in a card's header chooses what the node **is**. The type gives the card its
 icon and colour and, for the game-like types, its structured fields:
 
@@ -500,6 +525,7 @@ makes it clickable, counts it in the stats bar, and offers to open the card it n
   {
     slug: 'worldbuilding-bonds',
     title: 'Bonds, groups and annotations',
+    demo: 'worldbuild-bonds',
     body: `**Wires come from the prose first.** A dotted wire is the vein's own outline — each card
 nested under its nearest shallower heading. A solid wire is a \`[[#Heading]]\` link written in a
 note, and a faint green wire is a mention of another vein, \`[[Another note]]\`. A bond asserted on
@@ -538,6 +564,7 @@ double-click empty canvas. They drag, scroll with the canvas, export with it, an
   {
     slug: 'worldbuilding-arrange',
     title: 'Arranging and navigating',
+    demo: 'worldbuild-arrange',
     body: `### Selecting
 
 Click a card; **Ctrl+click** toggles it in the set and a picked set drags as
@@ -587,6 +614,7 @@ place.`,
   {
     slug: 'worldbuilding-history',
     title: 'Canvas history, exports and health',
+    demo: 'worldbuild-history',
     body: `The canvas keeps its **own undo history**, separate from the markdown editor's. A drag, a
 layout, a type, a colour, a bond, a fold, a card's mode or height — each is one named step, and
 **Undo** and **Redo** name what they would change (\`Ctrl+Z\`, \`Ctrl+Shift+Z\` or \`Ctrl+Y\` while
@@ -624,6 +652,70 @@ than two cards) appear as jumpable rows, with the counts beside the button. The 
 for card height sits in **Settings → Worldbuilding**, and every node can override it from its own
 menu.`,
   },
+  {
+    slug: 'updates',
+    title: 'Signed self-updates',
+    demo: 'update-flow',
+    body: `The desktop app updates itself from signed GitHub releases. A few seconds after a vault opens
+— unless you turned it off in **Settings → Updates** — it fetches the release's static
+\`latest.json\`, and if it names a newer version a dialog offers it with the release notes.
+Nothing installs itself: **Download & restart** downloads with progress, verifies the installer
+against the public key embedded in the app, installs it and restarts into the new version.
+
+On Windows the installed version is the NSIS setup exe, installed per user into
+\`%LOCALAPPDATA%\\Macusanite\` (AppData, never Program Files, no admin), and the update replaces
+\`macusanite.exe\` in place in that same folder — the same way the portable exe is replaced.
+Signing keys live outside the repo (\`~/.tauri/macusanite.key\`); see \`docs/Updates.md\` for the
+publish flow.`,
+  },
+];
+
+/**
+ * How the manual is organised for readers: the help window's sidebar is this
+tree, three tiers deep — topic, section, and the section's own `###` headings.
+ * The order is the reading order of the manual's topics; a section's position
+ * inside a topic is its position here. Every section must appear in exactly
+ * one topic (the help tests check this), and a section added without a home
+ * still renders, under "More".
+ */
+export const HELP_TOPICS = [
+  {
+    id: 'start',
+    title: 'Getting started',
+    sections: ['what-macusanite-is', 'vault-on-disk', 'window'],
+  },
+  {
+    id: 'reading',
+    title: 'Reading and editing',
+    sections: ['search', 'colours', 'graph', 'undo', 'watching'],
+  },
+  {
+    id: 'worldbuilding',
+    title: 'Worldbuilding',
+    sections: [
+      'worldbuilding',
+      'worldbuilding-cards',
+      'worldbuilding-types',
+      'worldbuilding-bonds',
+      'worldbuilding-arrange',
+      'worldbuilding-history',
+    ],
+  },
+  {
+    id: 'care',
+    title: 'Vault care',
+    sections: ['lazy-index', 'backups', 'updates'],
+  },
+  {
+    id: 'automation',
+    title: 'Automation',
+    sections: ['agents'],
+  },
+  {
+    id: 'reference',
+    title: 'Reference',
+    sections: ['keyboard', 'this-manual', 'commands', 'limitations'],
+  },
 ];
 
 const slugify = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -642,9 +734,11 @@ it cannot drift: the commands come from \`src/lib/catalogue.js\` and the prose h
 | The **CLI** | \`macusanite docs\` prints it, \`macusanite docs <section>\` prints one section, \`macusanite docs --sections\` lists the slugs, and \`macusanite docs --out docs/Help.md\` writes it to a file (that is exactly what \`npm run docs\` does) |
 | An **MCP client** | the \`docs\` tool, or the \`macusanite://manual\` resource, which every agent should read before guessing how something works |
 
-The sections below are the windows into the manual's own structure: \`search\`, \`colours\`,
-\`graph\`, \`undo\`, \`watching\`, \`lazy-index\`, \`keyboard\`, \`agents\`, \`commands\`,
-\`limitations\`.`,
+The sections are the manual's own structure, grouped in the help window's sidebar by topic:
+\`worldbuilding\` and its five deeper sections, \`search\`, \`colours\`, \`graph\`, \`undo\`,
+\`watching\`, \`lazy-index\`, \`backups\`, \`updates\`, \`keyboard\`, \`agents\`, \`commands\`,
+\`limitations\`, and the rest. Each feature section also carries a small animated figure,
+generated from the same declarations — see \`src/lib/helpDemos.js\`.`,
 };
 
 /** Section slugs a caller can ask `docs` for, in order. */

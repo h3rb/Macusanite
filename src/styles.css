@@ -120,6 +120,17 @@ body.resizing {
   color: #fff;
 }
 
+.btn-warn {
+  background: rgba(240, 163, 54, 0.16);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.btn-warn:hover:not(:disabled) {
+  background: rgba(240, 163, 54, 0.26);
+  border-color: var(--warn);
+}
+
 [data-theme='light'] .btn-primary {
   color: #fff;
 }
@@ -1718,6 +1729,28 @@ dialog::backdrop {
   font-size: 13px;
 }
 
+.import-replace {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 4px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.import-replace input {
+  margin: 2px 0 0;
+  accent-color: var(--warn);
+}
+
+.import-replace-hint {
+  margin: 0 0 12px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
 /* ── S3 backups ───────────────────────────────────────────────────────── */
 
 .backup-dialog {
@@ -2416,6 +2449,94 @@ dialog::backdrop {
   line-height: 1.5;
 }
 
+/* The manual's topic tree: topic → section → that section's headings. */
+.help-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.help-tree-topic {
+  margin-top: 8px;
+}
+
+.help-tree-topic:first-child {
+  margin-top: 0;
+}
+
+.help-tree-row {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+}
+
+.help-tree-row .help-nav-item {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.help-nav-item.is-topic {
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.help-tree-toggle {
+  flex: 0 0 18px;
+  width: 18px;
+  padding: 0;
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.help-tree-toggle:hover {
+  color: var(--text);
+  background: var(--bg-sunken);
+}
+
+.help-tree-toggle.is-empty {
+  visibility: hidden;
+}
+
+.help-tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 2px 9px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border);
+}
+
+.help-tree-headings {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 3px 9px;
+  padding-left: 7px;
+  border-left: 1px dashed var(--border);
+}
+
+.help-tree-children[hidden],
+.help-tree-headings[hidden] {
+  display: none;
+}
+
+.help-nav-item.is-heading {
+  padding: 4px 8px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.help-nav-item.is-heading:hover {
+  color: var(--text);
+}
+
 .help-content {
   overflow-y: auto;
   padding: 0 34px 80px;
@@ -2586,14 +2707,15 @@ dialog::backdrop {
     grid-template-rows: auto 1fr;
   }
   .help-nav {
-    flex-direction: row;
-    flex-wrap: wrap;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    max-height: 42vh;
     border-right: none;
     border-bottom: 1px solid var(--border);
-    padding: 8px;
+    padding: 8px 10px;
   }
   .help-nav-item {
-    width: auto;
+    width: 100%;
   }
   .help-content {
     padding: 0 16px 60px;
