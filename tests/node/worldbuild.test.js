@@ -1156,6 +1156,109 @@ test('renameHistoryAnchor follows a rename in both stacks, names intact', () => 
   assert.deepEqual(JSON.parse(stack.future[0].snap).positions, { new: { x: 2, y: 2 }, a: { x: 0, y: 0 } });
 });
 
+test('renameHistoryAnchor moves every anchored slice in every past and future snapshot', () => {
+  const snapshot = canvasSnapshot({
+    positions: { old: { x: 1, y: 1 }, a: { x: 0, y: 0 } },
+    groups: { g: { id: 'g', members: ['old', 'a'], children: [] } },
+    relations: { 'old->a': 'ally', 'a->old': 'foe', 'a->b': 'contains' },
+    folded: { old: { card: true } },
+    types: { old: 'stat', a: 'note' },
+    fields: { old: { value: '1' }, a: {} },
+    colors: { old: '#ff0000', a: '#00ff00' },
+    images: { old: '.macusanite/node-images/x.png' },
+    resources: { old: { files: [{ ref: '.macusanite/node-files/x.pdf' }], urls: [] } },
+    pinned: { old: true },
+    locked: { old: true },
+    cardModes: { old: 'compact' },
+    cardSizes: { old: 'content' },
+    collapsedGroups: { g: true },
+    view: { x: 1, y: 2, s: 1.5 },
+  });
+  const stack = {
+    past: [step('Move card', snapshot), step('Arrange', snapshot)],
+    future: [step('Redo arrange', snapshot)],
+  };
+
+  renameHistoryAnchor(stack, 'old', 'new');
+
+  const slices = ['positions', 'folded', 'types', 'fields', 'colors', 'images', 'resources', 'pinned', 'locked', 'cardModes', 'cardSizes'];
+  for (const entry of [...stack.past, ...stack.future]) {
+    const snap = JSON.parse(entry.snap);
+    for (const slice of slices) {
+      // Older snapshots do not carry every slice yet; the ones they do carry
+      // are all anchor-keyed and must follow the rename.
+      if (!snap[slice]) continue;
+      assert.equal('old' in snap[slice], false, `${slice} keeps no old anchor`);
+      assert.ok('new' in snap[slice], `${slice} carries the new anchor`);
+    }
+    assert.deepEqual(snap.groups.g.members, ['new', 'a']);
+    assert.deepEqual(snap.relations, { 'a->b': 'contains' }, 'bonds naming the old name drop');
+    assert.deepEqual(snap.collapsedGroups, { g: true }, 'group ids are not note anchors');
+    assert.deepEqual(snap.view, { x: 1, y: 2, s: 1.5 });
+  }
+  assert.deepEqual(stack.past.map((entry) => entry.name), ['Move card', 'Arrange']);
+  assert.deepEqual(stack.future.map((entry) => entry.name), ['Redo arrange']);
+});
+
+test('renameHistoryAnchor keeps a malformed legacy snapshot and still renames the valid ones', () => {
+  const good = canvasSnapshot({ positions: { old: { x: 1, y: 1 } }, colors: { old: '#ff0000' } });
+  const bad = '{not json';
+  const stack = {
+    past: [step('Broken', bad), step('Good', good)],
+    future: [step('Good again', good), step('Broken again', bad)],
+  };
+
+  renameHistoryAnchor(stack, 'old', 'new');
+
+  assert.equal(stack.past[0].snap, bad, 'the malformed entry is left exactly as it was');
+  assert.equal(stack.future[1].snap, bad);
+  assert.deepEqual(JSON.parse(stack.past[1].snap).positions, { new: { x: 1, y: 1 } });
+  assert.deepEqual(JSON.parse(stack.future[0].snap).colors, { new: '#ff0000' });
+  assert.deepEqual([...stack.past, ...stack.future].map((entry) => entry.name), ['Broken', 'Good', 'Good again', 'Broken again']);
+});
+
+test('pruneHistoryStack clears every anchored slice on both sides of the stack', () => {
+  const snapshot = canvasSnapshot({
+    positions: { a: { x: 0, y: 0 }, gone: { x: 3, y: 3 } },
+    groups: {
+      pair: { id: 'pair', members: ['a', 'b'], children: [] },
+      thin: { id: 'thin', members: ['a', 'gone'], children: [] },
+    },
+    relations: { 'a->b': 'ally', 'a->gone': 'foe', 'a->group:thin': 'contains' },
+    folded: { gone: { card: true } },
+    types: { gone: 'stat' },
+    fields: { gone: { value: '1' } },
+    colors: { gone: '#ff0000' },
+    images: { gone: '.macusanite/node-images/x.png' },
+    resources: { gone: { files: [{ ref: '.macusanite/node-files/x.pdf' }], urls: [] } },
+    pinned: { gone: true },
+    locked: { gone: true },
+    cardModes: { gone: 'compact' },
+    cardSizes: { gone: 'content' },
+    collapsedGroups: { thin: true },
+  });
+  const stack = {
+    past: [step('Delete', snapshot), step('Broken', 'nope')],
+    future: [step('Redo delete', snapshot)],
+  };
+
+  pruneHistoryStack(stack, new Set(['a', 'b']));
+
+  const slices = ['positions', 'folded', 'types', 'fields', 'colors', 'images', 'resources', 'pinned', 'locked', 'cardModes', 'cardSizes'];
+  for (const entry of [stack.past[0], stack.future[0]]) {
+    const snap = JSON.parse(entry.snap);
+    for (const slice of slices) {
+      if (!snap[slice]) continue;
+      assert.equal('gone' in snap[slice], false, `${slice} drops the deleted anchor`);
+    }
+    assert.deepEqual(snap.groups, { pair: { id: 'pair', members: ['a', 'b'], children: [] } });
+    assert.deepEqual(snap.relations, { 'a->b': 'ally' }, 'bonds to the deleted card and its dissolved group drop');
+    assert.deepEqual(snap.collapsedGroups, {}, 'a dissolved group takes its collapse with it');
+  }
+  assert.equal(stack.past[1].snap, 'nope', 'a malformed entry is kept unchanged');
+  assert.deepEqual([...stack.past, ...stack.future].map((entry) => entry.name), ['Delete', 'Broken', 'Redo delete']);
+});
+
 test('pruneHistoryStack removes deleted anchors from past and future, dissolving thin groups', () => {
   const snapshot = canvasSnapshot({
     positions: { a: { x: 1, y: 1 }, b: { x: 2, y: 2 }, gone: { x: 3, y: 3 } },

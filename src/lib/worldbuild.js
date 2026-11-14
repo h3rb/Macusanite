@@ -1014,12 +1014,20 @@ export function pushHistoryStep(stack, currentSnap, before, name = DEFAULT_STEP_
 
 /**
  * Rewrite every stored snapshot the way the vein record was just rewritten:
- * a rename moves entries onto the new name. Each step keeps its name.
+ * a rename moves entries onto the new name. Each step keeps its name, and a
+ * malformed legacy snapshot is kept as it is — exactly as pruning keeps it —
+ * so one bad entry cannot strand every other snapshot on the old anchor.
  */
 export function rewriteHistoryStack(stack, edit) {
-  const map = (entry) => ({ name: entry.name, snap: JSON.stringify(edit(JSON.parse(entry.snap))) });
-  stack.past = stack.past.map(map);
-  stack.future = stack.future.map(map);
+  const map = (entry) => {
+    try {
+      return { ...entry, name: entry.name, snap: JSON.stringify(edit(JSON.parse(entry.snap))) };
+    } catch {
+      return entry;
+    }
+  };
+  stack.past = (stack.past ?? []).map(map);
+  stack.future = (stack.future ?? []).map(map);
   return stack;
 }
 
