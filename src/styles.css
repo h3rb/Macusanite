@@ -3527,17 +3527,22 @@ dialog::backdrop {
 
 /* The stage is the pan viewport: the canvas is translated inside it, clipped,
  * so the graph can be moved by dragging the background. Overflow clip (not
- * hidden) so no scroll container swallows focus changes mid-pan. */
+ * hidden) so no scroll container swallows focus changes mid-pan. The camera
+ * uses a four-way move cursor; grab is reserved for draggable objects. */
 .wb-stage {
   position: relative;
   overflow: clip;
   height: min(70vh, 860px);
   min-height: 340px;
-  cursor: grab;
+  cursor: move;
 }
 
-.wb-stage.is-panning {
-  cursor: grabbing;
+/* Keep the camera cursor for the whole gesture, even when it passes over a
+ * card or annotation that would otherwise show its own drag hand. The pan
+ * state wins over the element cursors while the pointer is down. */
+.wb-stage.is-panning,
+.wb-stage.is-panning * {
+  cursor: move !important;
 }
 
 /* A direct link in progress. The overlay is in stage pixels, so the dashed
