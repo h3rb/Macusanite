@@ -69,6 +69,17 @@ later ones towards the right.
 A sequence diagram names the actors and the order they speak in, top to
 bottom. Both diagram kinds render in place, exactly where they are written.
 
+\`\`\`mermaid
+sequenceDiagram
+  participant Reader
+  participant Vault
+  participant Graph
+  Reader->>Vault: open a vein
+  Vault-->>Reader: rendered markdown
+  Vault->>Graph: index links and headings
+  Graph-->>Reader: concept graph
+\`\`\`
+
 ## Reference cards and hand-written links
 
 A reference card points at another vein without leaving this one:
@@ -143,6 +154,22 @@ means the glass is unusually fresh for its age.
 * [[Chambers/Lab/Analytical Methods]]
 * [[#Field checklist]] — a link to a section of this very note
 
+## Formation
+
+\`\`\`mermaid
+stateDiagram-v2
+  state "Ash flow" as AshFlow
+  state "Macusanite glass" as Glass
+  state "Weathering rind" as Rind
+  state "Dense lens" as Lens
+  [*] --> AshFlow
+  AshFlow --> Glass: rapid quench
+  Glass --> Rind: weathering
+  Glass --> Lens: dense obsidian
+  Rind --> [*]: sample lost
+  Lens --> [*]: collected
+\`\`\`
+
 ## Field checklist
 
 1. Record GPS and lithology for every lens.
@@ -181,6 +208,21 @@ sequenceDiagram
   Field->>Field: update [[Chambers/Fieldwork/Macusanite Occurrence]]
 \`\`\`
 
+## Schedule
+
+\`\`\`mermaid
+gantt
+  title Field season
+  dateFormat YYYY-MM-DD
+  axisFormat %b %d
+  section Reconnaissance
+  North ridge :done, t1, 2026-05-04, 5d
+  Dry wash :active, t2, after t1, 4d
+  section Collection
+  Plateau :t3, after t2, 6d
+  Lab handoff :milestone, m1, after t3, 0d
+\`\`\`
+
 ## Risks
 
 - Rind formation if samples stand wet overnight.
@@ -217,6 +259,16 @@ graph TD
   T --> Model[Dry hot melt]
   Model --> Cs[Cs retention]
 \`\`\`
+
+## Thermal path
+
+\`\`\`mermaid
+timeline
+  title Cooling path recorded by the inclusions
+  780 °C : Melt trapped
+  500 °C : Bubble nucleates
+  20 °C : Wafer measured
+\`\`\`
 `;
 
 const CESIUM = `---
@@ -245,6 +297,16 @@ Where does the caesium sit? Two candidates:
 | LA-ICP-MS | Cs spikes on vesicle rims | vapour |
 | [[Chambers/Mineralogy/Fluid Inclusions]] | hot, dry homogenisation | dry melt |
 
+## Caesium budget
+
+\`\`\`mermaid
+pie showData
+  title Where the caesium sits
+  "Glass network" : 55
+  "Vesicle rims" : 30
+  "Phenocryst rims" : 15
+\`\`\`
+
 ## Working model
 
 An extremely fractionated, volatile-rich melt degassed while quenching. See
@@ -271,6 +333,26 @@ Standards are re-measured every ten samples.
 
 Drift above 3 % invalidates the batch; the run is repeated. Related:
 [[Chambers/Mineralogy/Fluid Inclusions#Method]].
+
+## Sample flow
+
+\`\`\`mermaid
+erDiagram
+  BATCH ||--o{ SAMPLE : contains
+  SAMPLE ||--o{ MEASUREMENT : yields
+  BATCH {
+    string id
+    string prepared
+  }
+  SAMPLE {
+    string id
+    float mass
+  }
+  MEASUREMENT {
+    string method
+    float value
+  }
+\`\`\`
 
 ## Instrument map
 

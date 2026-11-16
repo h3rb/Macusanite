@@ -9,6 +9,7 @@ import { el, clear, qs, htmlNode } from './dom.js';
 import { renderMarkdown, renderMermaidIn, colorSwatch } from './markdown.js';
 import { parseFrontmatter } from '../lib/frontmatter.js';
 import { createWorldbuildPanel } from './worldbuildPanel.js';
+import { createFormatBar } from './formatBar.js';
 import { findMatches } from '../lib/search.js';
 import { sourceSectionRanges, lockedRangeAt } from '../lib/worldbuild.js';
 
@@ -18,6 +19,9 @@ const SKIP_HITS = 'svg, mark, script, style, .color-swatch, .mermaid-caption';
 export function createViewer({ app, root }) {
   let currentRender = null;
   let scrollPositions = new Map();
+  // Where the reader was in the document before the canvas took the pane:
+  // the canvas view never scrolls, so its offset cannot be the one restored.
+  let readScroll = 0;
   // Search terms the reader is looking for, and the marks they produced.
   let hitTerms = [];
   let hitNodes = [];
@@ -118,14 +122,59 @@ export function createViewer({ app, root }) {
   const editorSource = el('div', { class: 'editor-source' }, [sourceHighlight, textareaEl]);
   const editorSplit = el('div', { class: 'editor-split' }, [editorSource, preview]);
   const editorHint = el('span', { class: 'editor-hint', text: 'Markdown source — Ctrl+S saves, Esc returns to the rendered view' });
+
+  /** Vault veins the link dialog can offer, titled the way the sidebar shows them. */
+  function linkTargets() {
+    const here = app.state.current?.path ?? '';
+    return (app.state.index ?? [])
+      .filter((entry) => entry.path && entry.path !== here)
+      .map((entry) => ({
+        path: entry.path,
+        target: entry.path.replace(/\.(md|markdown|mdx)$/i, ''),
+        title: entry.title ?? entry.stem ?? entry.path,
+      }))
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }
+
+  /**
+   * Put formatted text into the editor the way typing would: the draft, the
+   * dirty flag, the preview and the locked-section rules all see it.
+   */
+  function applyFormatEdit(next, start, end) {
+    if (!app.state.current || app.state.current.readOnly) return;
+    if (next === textareaEl.value) return;
+    textareaEl.value = next;
+    app.setDraft(next);
+    if (app.state.draft !== next) {
+      textareaEl.value = app.state.draft;
+      paintLockedSource();
+      warnLocked();
+      return;
+    }
+    paintLockedSource();
+    scheduleVisualPreview();
+    textareaEl.focus();
+    const limit = textareaEl.value.length;
+    textareaEl.setSelectionRange(Math.min(start, limit), Math.min(end ?? start, limit));
+  }
+
+  const formatBar = createFormatBar({
+    textarea: textareaEl,
+    apply: applyFormatEdit,
+    blocked: (start, end) => Boolean(lockedRangeAt(lockedRanges, start, end)),
+    warnBlocked: warnLocked,
+    linkTargets,
+  });
+
   const editor = el('div', { class: 'editor-pane hidden' }, [
     el('div', { class: 'editor-toolbar' }, [
       el('div', { class: 'editor-mode-switch', role: 'group', 'aria-label': 'Editor mode' }, [visualBtn, codeBtn]),
       editorHint,
       el('div', { class: 'spacer' }),
-      el('button', { class: 'btn btn-ghost', type: 'button', text: 'Revert', onclick: () => app.revertDraft() }),
-      el('button', { class: 'btn btn-primary', type: 'button', text: 'Save', onclick: () => app.saveCurrent() }),
+      el('button', { class: 'btn btn-ghost', type: 'button', text: 'Revert', title: 'Discard the draft and reload the saved text', onclick: () => app.revertDraft() }),
+      el('button', { class: 'btn btn-primary', type: 'button', text: 'Save', title: 'Save this vein (Ctrl+S)', onclick: () => app.saveCurrent() }),
     ]),
+    formatBar.element,
     editorSplit,
   ]);
 
@@ -175,8 +224,8 @@ export function createViewer({ app, root }) {
     el('h1', { text: 'Macusanite' }),
     el('p', { class: 'lede', text: 'Open a vault to begin — chambers on the left, veins in the middle, concepts on the right.' }),
     el('div', { class: 'empty-actions' }, [
-      el('button', { class: 'btn btn-primary', type: 'button', text: 'Open vault…', onclick: () => app.chooseAndOpenVault() }),
-      el('button', { class: 'btn', type: 'button', text: 'Create vault…', onclick: () => app.createVaultInteractive() }),
+      el('button', { class: 'btn btn-primary', type: 'button', text: 'Open vault…', title: 'Open an existing vault folder', onclick: () => app.chooseAndOpenVault() }),
+      el('button', { class: 'btn', type: 'button', text: 'Create vault…', title: 'Create a new vault in an empty folder', onclick: () => app.createVaultInteractive() }),
     ]),
   ]);
 
@@ -184,6 +233,8 @@ export function createViewer({ app, root }) {
     clear(head);
     clear(body).append(emptyState);
     clear(foot);
+    root.classList.remove('is-world');
+    foot.classList.remove('hidden');
     clearHits();
     editor.classList.add('hidden');
     world.classList.add('hidden');
@@ -337,6 +388,8 @@ export function createViewer({ app, root }) {
     const mode = app.state.ui.mode;
     const readOnly = Boolean(doc.readOnly);
     const inWorld = mode === 'world' && !readOnly;
+    const wasWorld = root.classList.contains('is-world');
+    if (inWorld && !wasWorld) readScroll = root.scrollTop;
     const lockedCount = app.lockedContentAnchors?.(doc.path)?.length ?? 0;
     editorHint.textContent = lockedCount
       ? `${lockedCount} locked section${lockedCount === 1 ? '' : 's'} read-only — changes there are ignored`
@@ -347,6 +400,10 @@ export function createViewer({ app, root }) {
     editor.classList.toggle('hidden', mode !== 'edit' || readOnly);
     body.classList.toggle('hidden', (mode === 'edit' && !readOnly) || inWorld);
     world.classList.toggle('hidden', !inWorld);
+    // The canvas takes the pane's whole height, so the page itself must not
+    // scroll: the menu bars stay put and only the canvas pans.
+    root.classList.toggle('is-world', inWorld);
+    foot.classList.toggle('hidden', inWorld);
     applyEditorMode();
     clear(head);
     clear(foot);
@@ -374,9 +431,10 @@ export function createViewer({ app, root }) {
           class: `btn btn-ghost ${mode === 'edit' ? 'is-active' : ''}`,
           type: 'button',
           text: mode === 'edit' ? 'Preview' : 'Edit',
+          title: mode === 'edit' ? 'Leave the editor and read the rendered vein' : 'Edit this vein’s markdown source',
           onclick: () => app.setMode(mode === 'edit' ? 'read' : 'edit'),
         }),
-        readOnly ? null : el('button', { class: 'btn btn-ghost', type: 'button', text: 'Save', onclick: () => app.saveCurrent() }),
+        readOnly ? null : el('button', { class: 'btn btn-ghost', type: 'button', text: 'Save', title: 'Save this vein (Ctrl+S)', onclick: () => app.saveCurrent() }),
         el('div', { class: 'spacer' }),
         el('span', { class: 'viewer-stat', text: `${words} words` }),
         el('span', { class: 'viewer-stat', text: `${(doc.headings ?? []).length} sections` }),
@@ -425,6 +483,8 @@ export function createViewer({ app, root }) {
     body.classList.add('rendered');
     // A re-render (colour change, save, external edit) keeps the reader's hits.
     if (hitTerms.length) applyHits({ keepIndex: true });
+    // Coming back from the canvas, the reader lands where they left the page.
+    if (!inWorld && wasWorld) root.scrollTop = readScroll;
   }
 
   /** Called by the app after an edit is saved/reverted. */

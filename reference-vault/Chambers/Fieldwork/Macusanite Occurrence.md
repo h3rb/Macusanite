@@ -26,6 +26,22 @@ means the glass is unusually fresh for its age.
 * [[Chambers/Lab/Analytical Methods]]
 * [[#Field checklist]] — a link to a section of this very note
 
+## Formation
+
+```mermaid
+stateDiagram-v2
+  state "Ash flow" as AshFlow
+  state "Macusanite glass" as Glass
+  state "Weathering rind" as Rind
+  state "Dense lens" as Lens
+  [*] --> AshFlow
+  AshFlow --> Glass: rapid quench
+  Glass --> Rind: weathering
+  Glass --> Lens: dense obsidian
+  Rind --> [*]: sample lost
+  Lens --> [*]: collected
+```
+
 ## Field checklist
 
 1. Record GPS and lithology for every lens.

@@ -51,6 +51,17 @@ later ones towards the right.
 A sequence diagram names the actors and the order they speak in, top to
 bottom. Both diagram kinds render in place, exactly where they are written.
 
+```mermaid
+sequenceDiagram
+  participant Reader
+  participant Vault
+  participant Graph
+  Reader->>Vault: open a vein
+  Vault-->>Reader: rendered markdown
+  Vault->>Graph: index links and headings
+  Graph-->>Reader: concept graph
+```
+
 ## Reference cards and hand-written links
 
 A reference card points at another vein without leaving this one:

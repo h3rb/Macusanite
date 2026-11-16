@@ -7,6 +7,7 @@
  */
 import { normalizeColor, PALETTE } from './colors.js';
 import { normalizeUnit, UNIT_VOCABULARY_LIMIT } from './worldbuild.js';
+import { cleanThemeHues, DEFAULT_THEME_HUES } from './themeHue.js';
 
 /** Every page, link and section starts white unless the vault says otherwise. */
 export const DEFAULT_COLOR = '#ffffff';
@@ -23,6 +24,13 @@ export const MAX_GRAPH_DEPTH = 144;
 export const DEFAULT_SETTINGS = {
   version: SETTINGS_VERSION,
   theme: 'dark',
+  // Degrees to rotate the background, chrome and text palettes around the
+  // colour wheel. 0 keeps the theme's own hues (see themeHue.js).
+  themeHues: { ...DEFAULT_THEME_HUES },
+  // Whether buttons carry a small symbol or emoji beside their label. Off is
+  // text-only, which is easier to scan for some readers (and avoids emoji
+  // fonts changing how the toolbar looks between platforms).
+  icons: true,
   autosave: true,
   autosaveDelayMs: 800,
   fontSize: 16,
@@ -126,6 +134,8 @@ export function validateSettings(settings) {
   s.autosaveDelayMs = clamp(Number(s.autosaveDelayMs), 150, 10_000, DEFAULT_SETTINGS.autosaveDelayMs);
   s.linkFadeSteps = clamp(Number(s.linkFadeSteps), 2, 12, DEFAULT_SETTINGS.linkFadeSteps);
   s.theme = s.theme === 'light' ? 'light' : 'dark';
+  s.themeHues = cleanThemeHues(s.themeHues);
+  s.icons = s.icons !== false;
   s.autosave = s.autosave !== false;
   s.graph = {
     ...DEFAULT_SETTINGS.graph,

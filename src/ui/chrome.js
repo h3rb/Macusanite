@@ -37,6 +37,7 @@ export function createChrome({ app, root }) {
       type: 'button',
       role: 'menuitem',
       text: label,
+      title: options.title ?? label,
       disabled: options.disabled ?? false,
       onclick: (event) => {
         event.stopPropagation();
@@ -132,6 +133,7 @@ export function createChrome({ app, root }) {
       crumbs.append(el('button', {
         class: `crumb ${entry.path === app.state.current?.path ? 'current' : ''}`,
         type: 'button',
+        icon: 'vein',
         text: entry.title ?? titleFromPath(entry.path),
         title: entry.path,
         onclick: () => app.openPath(entry.path, { section: entry.section }),
@@ -166,6 +168,7 @@ export function createChrome({ app, root }) {
       navTrail.append(el('button', {
         class: 'trail-chip',
         type: 'button',
+        icon: 'vein',
         text: titleFromPath(entry.path),
         title: entry.path,
         onclick: () => app.openPath(entry.path, { section: entry.section }),
@@ -178,8 +181,8 @@ export function createChrome({ app, root }) {
     redoBtn.disabled = !canRedo;
     undoBtn.title = canUndo ? `Undo ${app.state.undoStack[0].label}` : 'Nothing to undo';
     redoBtn.title = canRedo ? `Redo ${app.state.redoStack[0].label}` : 'Nothing to redo';
-    undoBtn.textContent = `↶ ${canUndo ? app.state.undoStack.length : ''}`.trim();
-    redoBtn.textContent = `↷ ${canRedo ? app.state.redoStack.length : ''}`.trim();
+    undoBtn.querySelector('.nav-count').textContent = canUndo ? String(app.state.undoStack.length) : '';
+    redoBtn.querySelector('.nav-count').textContent = canRedo ? String(app.state.redoStack.length) : '';
   }
 
   backBtn.addEventListener('click', () => app.navigateBack());
@@ -210,6 +213,8 @@ export function createChrome({ app, root }) {
       clear(list).append(...jumpMatches.map((entry, i) => el('button', {
         class: `jump-item ${i === jumpActive ? 'active' : ''}`,
         type: 'button',
+        icon: 'vein',
+        title: entry.path,
         onclick: () => choose(entry.path),
       }, [
         el('span', { class: 'jump-title', text: titleFromPath(entry.path) }),

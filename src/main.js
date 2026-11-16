@@ -14,21 +14,23 @@ import { LIVE_META, isWatched, isLiveMeta, metaChanges, metaPlan, planRefresh, c
 import { mergeVein, hasMergeMarkers, countConflicts, describeMerge } from './lib/merge.js';
 import { tokenize, plainText, buildSearchCorpus, searchVault } from './lib/search.js';
 import { mergeSettings, mergeVaultMeta, rememberColor, DEFAULT_SETTINGS } from './lib/settings.js';
+import { THEME_HUE_VARS, cleanThemeHues, rotateHue } from './lib/themeHue.js';
+import { mermaidThemeVariables } from './lib/mermaidTheme.js';
 import * as colorStore from './lib/colorStore.js';
 import { buildDocumentIndex } from './lib/graph.js';
 import { parseCache, serializeCache, cacheRecord, planIndex, stubEntry, createIndex, isStub } from './lib/indexCache.js';
 import { parseFrontmatter, documentMeta } from './lib/frontmatter.js';
 import {
-  setRelation, dropRelations, relationKey, setNodeType, setNodeField,
-  cleanHistoryStack, canvasRecordPatch, cleanView, cleanPositions, dropAnchorFromGroups, renameAnchorIn, cleanAnnotations, normalizeRouting, cleanCardModes, cleanCardSizes, cleanNodeResources, referencedNodeFileMetaNames, cleanCollapsedGroups,
+  setRelation, dropRelations, relationKey, setNodeType, setNodeField, dropNodeField,
+  cleanHistoryStack, canvasRecordPatch, cleanView, cleanPositions, dropAnchorFromGroups, renameAnchorIn, cleanAnnotations, normalizeRouting, cleanCardModes, cleanCardSizes, cleanCardDims, cleanNodeResources, referencedNodeFileMetaNames, cleanCollapsedGroups, cleanSavedViews,
   lockedContentAnchors as lockedAnchorsOf, enforceLockedSource,
   referencedNodeImageMetaNames,
   normalizeUnit, rememberUnit,
 } from './lib/worldbuild.js';
 import { resolveTarget } from './lib/wikilinks.js';
 import { dirname, join, basename, titleFromPath, slugify, isMarkdown } from './lib/path.js';
-import { ancestorPaths } from './lib/tree.js';
-import { el, qs, createToaster, askText } from './ui/dom.js';
+import { ancestorPaths, findNode } from './lib/tree.js';
+import { el, qs, createToaster, askText, askConfirm } from './ui/dom.js';
 import { createChrome } from './ui/chrome.js';
 import { createSidebar } from './ui/sidebar.js';
 import { createViewer } from './ui/viewer.js';
@@ -145,6 +147,7 @@ let searchHydrating = false;
 let corpusByPath = null;
 let autosaveTimer = null;
 let graphTimer = null;
+let themeHueTimer = null;
 let stateTimer = null;
 let unwatchVault = null;
 let searchPanel;
@@ -232,6 +235,9 @@ const app = {
     historyLog = createHistoryLog({ app });
     resizers = createResizers({ app, root });
 
+    applyTheme();
+    applyLayout();
+    applyIcons();
     app.configureMermaid();
     wireGlobalEvents();
 
@@ -271,14 +277,43 @@ const app = {
   },
 
   configureMermaid() {
+    const computed = getComputedStyle(document.documentElement);
+    const color = (name, fallback) => computed.getPropertyValue(name).trim() || fallback;
+    const dark = state.settings.theme !== 'light';
+    const bg = color('--bg', dark ? '#0d1117' : '#f6f7f9');
+    const raised = color('--bg-raised', dark ? '#131a22' : '#ffffff');
+    const sunken = color('--bg-sunken', dark ? '#090c11' : '#eceff3');
+    const panel = color('--panel', dark ? '#111823' : '#ffffff');
+    const border = color('--border', dark ? '#223040' : '#d6dce4');
+    const borderStrong = color('--border-strong', dark ? '#2f4257' : '#bcc6d2');
+    const text = color('--text', dark ? '#e6edf3' : '#16202b');
+    const textDim = color('--text-dim', dark ? '#9fb0c0' : '#4d5b6a');
+    const accent = color('--accent', dark ? '#58a6ff' : '#0b62d0');
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: 'loose',
-      theme: state.settings.theme === 'light' ? 'default' : 'dark',
+      // `base` lets the theme variables below carry the app's palette; the
+      // built-in dark/default themes are fixed blues and ignore theme hues.
+      theme: 'base',
       fontFamily: '"Segoe UI", system-ui, sans-serif',
-      themeVariables: { fontSize: '12px' },
+      themeVariables: {
+        fontSize: '12px',
+        ...mermaidThemeVariables({
+          dark,
+          background: bg,
+          raised,
+          sunken,
+          panel,
+          border,
+          borderStrong,
+          text,
+          textDim,
+          accent,
+        }),
+      },
       flowchart: { useMaxWidth: true },
       sequence: { useMaxWidth: true },
+      gantt: { fontSize: 12, sectionFontSize: 12 },
     });
   },
 
@@ -348,9 +383,10 @@ const app = {
     state.settings = mergeSettings(DEFAULT_SETTINGS, info.settings);
     state.colors = colorStore.cloneColorSet(info.colors);
     state.ui.expanded = {};
-    app.configureMermaid();
     applyTheme();
     applyLayout();
+    applyIcons();
+    app.configureMermaid();
 
     // A different vault: nothing cached from the last one applies, and a search
     // read that is still running is told so by moving its id on.
@@ -1012,7 +1048,7 @@ const app = {
   markWorld(path, marked) {
     if (!path) return null;
     const record = { ...state.world[path], marked: Boolean(marked) };
-    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups', 'colors', 'images', 'resources', 'pinned', 'locked', 'annotations', 'routing', 'history', 'cardModes', 'cardSizes', 'collapsedGroups']
+    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups', 'colors', 'images', 'resources', 'pinned', 'locked', 'annotations', 'routing', 'history', 'cardModes', 'cardSizes', 'cardDims', 'collapsedGroups', 'savedViews']
       .some((part) => record[part]);
     if (record.marked || keepsWork) state.world[path] = record;
     else delete state.world[path];
@@ -1110,6 +1146,14 @@ const app = {
    */
   setWorldNodeField(path, anchor, type, field, value) {
     const fields = setNodeField(state.world[path]?.fields ?? {}, type, anchor, field, value);
+    state.world[path] = { ...state.world[path], fields };
+    app.scheduleStatePersist();
+    return fields;
+  },
+
+  /** Forget one field on a node — used to retire a table's old JSON grid. */
+  dropWorldNodeField(path, anchor, field) {
+    const fields = dropNodeField(state.world[path]?.fields ?? {}, anchor, field);
     state.world[path] = { ...state.world[path], fields };
     app.scheduleStatePersist();
     return fields;
@@ -1291,15 +1335,42 @@ const app = {
     return all;
   },
 
-  /** Collapse a group to its summary card, or expand it back to its members. */
-  setWorldGroupCollapsed(path, groupId, collapsed) {
-    if (!path || !groupId) return null;
-    const all = cleanCollapsedGroups({ ...(state.world[path]?.collapsedGroups ?? {}), [groupId]: collapsed });
+  /**
+   * A dragged card's size, in canvas pixels. `null` puts the card back on the
+   * standard box. Record state like a card mode, so undo and reopen both keep
+   * it.
+   */
+  setWorldCardDims(path, anchor, dims) {
+    if (!path || !anchor) return null;
+    const current = { ...(state.world[path]?.cardDims ?? {}) };
+    if (dims) current[anchor] = dims;
+    else delete current[anchor];
+    const all = cleanCardDims(current);
+    const record = { ...state.world[path], cardDims: all };
+    if (!Object.keys(all).length) delete record.cardDims;
+    state.world[path] = record;
+    app.scheduleStatePersist();
+    return all;
+  },
+
+  /** Replace the set of groups collapsed on this canvas (saved lenses use this). */
+  saveWorldCollapsedGroups(path, collapsed) {
+    if (!path) return null;
+    const all = cleanCollapsedGroups(collapsed);
     const record = { ...state.world[path], collapsedGroups: all };
     if (!Object.keys(all).length) delete record.collapsedGroups;
     state.world[path] = record;
     app.scheduleStatePersist();
     return all;
+  },
+
+  /** Collapse a group to its summary card, or expand it back to its members. */
+  setWorldGroupCollapsed(path, groupId, collapsed) {
+    if (!path || !groupId) return null;
+    return app.saveWorldCollapsedGroups(path, {
+      ...(state.world[path]?.collapsedGroups ?? {}),
+      [groupId]: collapsed,
+    });
   },
 
   /**
@@ -1330,6 +1401,17 @@ const app = {
     app.scheduleStatePersist();
   },
 
+  /** Named camera/filter lenses for a vein; saved views are viewer state. */
+  saveWorldViews(path, views) {
+    if (!path) return [];
+    const savedViews = cleanSavedViews(views);
+    const record = { ...state.world[path], savedViews };
+    if (!savedViews.length) delete record.savedViews;
+    state.world[path] = record;
+    app.scheduleStatePersist();
+    return savedViews;
+  },
+
   /**
    * Replace a vein's groups wholesale (created, recoloured, dissolved).
    * A group is {members: [anchors], color}: the members' positions stay in
@@ -1356,7 +1438,7 @@ const app = {
     return next;
   },
 
-  /** Forget a deleted note's saved extras: its fields, folds, pin, lock, mode, height and resources. */
+  /** Forget a deleted note's saved extras: its fields, folds, pin, lock, mode, height, size and resources. */
   dropWorldFields(path, anchor) {
     const fields = { ...(state.world[path]?.fields ?? {}) };
     // A unit typed by hand belongs to the vault's vocabulary, not just to the
@@ -1367,6 +1449,7 @@ const app = {
     const locked = { ...(state.world[path]?.locked ?? {}) };
     const cardModes = { ...(state.world[path]?.cardModes ?? {}) };
     const cardSizes = { ...(state.world[path]?.cardSizes ?? {}) };
+    const cardDims = { ...(state.world[path]?.cardDims ?? {}) };
     const resources = { ...(state.world[path]?.resources ?? {}) };
     delete fields[anchor];
     delete folded[anchor];
@@ -1374,8 +1457,9 @@ const app = {
     delete locked[anchor];
     delete cardModes[anchor];
     delete cardSizes[anchor];
+    delete cardDims[anchor];
     delete resources[anchor];
-    state.world[path] = { ...state.world[path], fields, folded, pinned, locked, cardModes, cardSizes, resources };
+    state.world[path] = { ...state.world[path], fields, folded, pinned, locked, cardModes, cardSizes, cardDims, resources };
     app.scheduleStatePersist();
     return fields;
   },
@@ -1404,6 +1488,7 @@ const app = {
       locked: moved.locked ?? {},
       cardModes: moved.cardModes ?? {},
       cardSizes: moved.cardSizes ?? {},
+      cardDims: moved.cardDims ?? {},
       resources: moved.resources ?? {},
       groups: moved.groups ?? {},
     };
@@ -1699,10 +1784,12 @@ const app = {
   },
 
   async updateSettings(patch) {
+    clearTimeout(themeHueTimer);
     const autoCheckBefore = isAutoCheckEnabled(state.settings);
     state.settings = mergeSettings(state.settings, patch);
     applyTheme();
     applyLayout();
+    applyIcons();
     app.configureMermaid();
     await app.persistSettings();
     await rerenderCurrent();
@@ -1711,6 +1798,20 @@ const app = {
     const autoCheckAfter = isAutoCheckEnabled(state.settings);
     if (autoCheckAfter && !autoCheckBefore) app.scheduleUpdateCheck(800);
     if (!autoCheckAfter) clearTimeout(updateCheckTimer);
+  },
+
+  /** Move a hue slider's colour live, without waiting for the save on release. */
+  previewThemeHue(key, value) {
+    state.settings.themeHues = cleanThemeHues({ ...(state.settings.themeHues ?? {}), [key]: value });
+    applyTheme();
+    app.configureMermaid();
+    // The write is debounced, so a slider dragged and then abandoned still
+    // lands in this vault's settings.json (appearance is not an undoable edit).
+    app.persistSettings({ record: false });
+    // Re-render diagrams shortly after the thumb pauses, so they follow the
+    // palette during the drag instead of only when it is released.
+    clearTimeout(themeHueTimer);
+    themeHueTimer = setTimeout(() => { void rerenderCurrent(); }, 220);
   },
 
   /**
@@ -2010,62 +2111,277 @@ const app = {
     }
   },
 
-  showVeinMenu(path, anchorEvent) {
-    const existing = qs('.context-menu');
-    existing?.remove();
-    const menu = el('div', { class: 'menu-popover context-menu', role: 'menu' });
-    const item = (label, action) => el('button', {
-      class: 'menu-item',
-      type: 'button',
-      text: label,
-      onclick: () => {
-        menu.remove();
-        action();
-      },
+  showTreeMenu(kind, path, anchorEvent) {
+    qs('.context-menu')?.remove();
+    const isVein = kind === 'vein';
+    const node = !isVein ? findNode(state.tree, path) : null;
+    if (!isVein && !node) return;
+    const menu = el('div', {
+      class: 'menu-popover context-menu',
+      role: 'menu',
+      style: 'position: fixed;',
+      'aria-label': isVein ? `Vein actions for ${path}` : `Chamber actions for ${path}`,
     });
-    menu.append(
-      item('Open', () => app.openPath(path)),
-      item('Edit', async () => {
-        await app.openPath(path);
-        if (state.ui.mode !== 'edit') app.toggleEdit();
-      }),
-      item('Set page colour…', async () => {
-        await app.openPath(path);
-        setTimeout(() => {
-          const swatch = qs('.viewer-title-row .color-swatch');
-          if (swatch) app.openColorPicker({ kind: 'page', path }, swatch);
-        }, 60);
-      }),
-      item('Copy wiki link', async () => {
-        const link = `[[${path.replace(/\.md$/i, '')}]]`;
-        try {
-          await navigator.clipboard.writeText(link);
-          app.toast(`Copied ${link}`, 'ok');
-        } catch {
-          app.toast(link, 'info');
-        }
-      }),
-      item('Show in graph', async () => {
-        await app.openPath(path);
-        app.toggleGraph(true);
-      }),
-    );
-    const x = anchorEvent?.clientX ?? 40;
-    const y = anchorEvent?.clientY ?? 40;
-    menu.style.left = `${x}px`;
-    menu.style.top = `${y}px`;
-    menu.style.position = 'fixed';
-    document.body.append(menu);
-    const dismiss = (event) => {
-      if (menu.contains(event.target)) return;
+    let dismiss;
+    const close = () => {
       menu.remove();
       document.removeEventListener('click', dismiss, true);
       document.removeEventListener('contextmenu', dismiss, true);
+      document.removeEventListener('keydown', escape, true);
+    };
+    const item = (label, action, danger = false) => el('button', {
+      class: `menu-item${danger ? ' menu-danger' : ''}`,
+      type: 'button',
+      role: 'menuitem',
+      text: label,
+      title: label,
+      onclick: () => {
+        close();
+        void action();
+      },
+    });
+    const separator = () => el('div', { class: 'menu-sep', role: 'separator' });
+    if (isVein) {
+      menu.append(
+        item('Open', () => app.openPath(path)),
+        item('Edit', async () => {
+          await app.openPath(path);
+          if (state.ui.mode !== 'edit') app.toggleEdit();
+        }),
+        item('Set page colour…', async () => {
+          await app.openPath(path);
+          setTimeout(() => {
+            const swatch = qs('.viewer-title-row .color-swatch');
+            if (swatch) app.openColorPicker({ kind: 'page', path }, swatch);
+          }, 60);
+        }),
+        item('Copy wiki link', async () => {
+          const link = `[[${path.replace(/\.md$/i, '')}]]`;
+          try {
+            await navigator.clipboard.writeText(link);
+            app.toast(`Copied ${link}`, 'ok');
+          } catch {
+            app.toast(link, 'info');
+          }
+        }),
+        item('Show in graph', async () => {
+          await app.openPath(path);
+          app.toggleGraph(true);
+        }),
+        separator(),
+        item('Rename…', () => app.renameVein(path)),
+        item('Delete…', () => app.deleteVein(path), true),
+      );
+    } else {
+      menu.append(
+        item('New vein here…', () => app.newVein(path)),
+        item('New chamber here…', () => app.newChamber(path)),
+        separator(),
+        item('Rename…', () => app.renameChamber(path)),
+      );
+      if (!(node.children?.length)) {
+        menu.append(item('Delete empty chamber…', () => app.deleteChamber(path), true));
+      }
+    }
+    const x = anchorEvent?.clientX ?? 40;
+    const y = anchorEvent?.clientY ?? 40;
+    document.body.append(menu);
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
+    dismiss = (event) => {
+      if (!menu.contains(event.target)) close();
+    };
+    const escape = (event) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      close();
     };
     setTimeout(() => {
       document.addEventListener('click', dismiss, true);
       document.addEventListener('contextmenu', dismiss, true);
+      // Capture, so Escape closes the menu without also leaving edit mode.
+      document.addEventListener('keydown', escape, true);
     }, 0);
+    menu.querySelector('button')?.focus();
+  },
+
+  async renameVein(path) {
+    const originalName = path.split('/').pop();
+    const requested = await askText({
+      title: 'Rename vein',
+      label: 'File name',
+      value: originalName,
+      hint: 'Rename within the current chamber. Keep a Markdown file extension.',
+      confirmLabel: 'Rename',
+    });
+    if (!requested) return;
+    if (/[\\/]/.test(requested) || requested.includes(':') || requested === '.' || requested === '..') {
+      app.toast('Enter a file name, not a path', 'warn');
+      return;
+    }
+    const extension = originalName.match(/\.(md|markdown|mdx)$/i)?.[0] ?? '.md';
+    const name = /\.(md|markdown|mdx)$/i.test(requested) ? requested : `${requested}${extension}`;
+    const target = join(dirname(path), name);
+    if (target === path) return;
+    try {
+      const wasOpen = state.current?.path === path;
+      if (wasOpen && state.dirty) {
+        await app.saveCurrent();
+        if (state.dirty) return;
+      }
+      const result = await backend.renameVein(path, target);
+      if (!result?.moved) return;
+      migrateTreePath(path, target);
+      await app.reloadVault({ tree: true, index: true });
+      await refreshHistory();
+      if (wasOpen) await app.openPath(target, { fromState: true });
+      app.scheduleStatePersist();
+      app.toast(`Renamed ${path} to ${target}`, 'ok');
+    } catch (error) {
+      app.toast(`Could not rename that vein: ${error.message}`, 'error');
+    }
+  },
+
+  async deleteVein(path) {
+    const wasOpen = state.current?.path === path;
+    if (wasOpen && state.dirty) {
+      app.toast('Save or discard the current edits before deleting this vein', 'warn');
+      return;
+    }
+    const confirmed = await askConfirm({
+      title: 'Delete vein',
+      message: `Delete “${path}”? Undo can restore the file.`,
+      confirmLabel: 'Delete vein',
+    });
+    if (!confirmed) return;
+    try {
+      const deleted = await backend.deleteVein(path);
+      if (!deleted) throw new Error('vein was not found');
+      delete state.world[path];
+      pruneNav((entry) => entry.path === path);
+      await app.reloadVault({ tree: true, index: true });
+      state.colors = colorStore.pruneColorSet(state.colors, state.veins);
+      await app.persistColors('delete page colours');
+      await refreshHistory();
+      if (wasOpen) {
+        state.current = null;
+        state.draft = '';
+        viewer.renderEmpty();
+        chrome.render();
+        graphPanel.render();
+        const fallback = state.veins.find((candidate) => candidate.toLowerCase() === 'home.md') ?? state.veins[0];
+        if (fallback) await app.openPath(fallback);
+      }
+      app.scheduleStatePersist();
+      app.toast(`Deleted ${path}`, 'ok');
+    } catch (error) {
+      app.toast(`Could not delete that vein: ${error.message}`, 'error');
+    }
+  },
+
+  async renameChamber(path) {
+    const requested = await askText({
+      title: 'Rename chamber',
+      label: 'Chamber name',
+      value: path.split('/').pop(),
+      hint: 'Rename within the current parent chamber.',
+      confirmLabel: 'Rename',
+    });
+    if (!requested) return;
+    if (/[\\/]/.test(requested) || requested.includes(':') || requested === '.' || requested === '..') {
+      app.toast('Enter a chamber name, not a path', 'warn');
+      return;
+    }
+    const target = join(dirname(path), requested);
+    if (target === path) return;
+    try {
+      const currentPath = state.current?.path;
+      const wasOpen = Boolean(currentPath && (currentPath === path || currentPath.startsWith(`${path}/`)));
+      if (wasOpen && state.dirty) {
+        await app.saveCurrent();
+        if (state.dirty) return;
+      }
+      const result = await backend.renameChamber(path, target);
+      if (!result?.moved) return;
+      migrateTreePath(path, target);
+      await app.reloadVault({ tree: true, index: true });
+      await refreshHistory();
+      if (wasOpen) await app.openPath(`${target}${currentPath.slice(path.length)}`, { fromState: true });
+      app.scheduleStatePersist();
+      app.toast(`Renamed chamber ${path} to ${target}`, 'ok');
+    } catch (error) {
+      app.toast(`Could not rename that chamber: ${error.message}`, 'error');
+    }
+  },
+
+  async deleteChamber(path) {
+    const confirmed = await askConfirm({
+      title: 'Delete empty chamber',
+      message: `Delete the empty chamber “${path}”? This cannot be undone.`,
+      confirmLabel: 'Delete chamber',
+    });
+    if (!confirmed) return;
+    try {
+      const deleted = await backend.deleteChamber(path);
+      if (!deleted) throw new Error('chamber was not found or is no longer empty');
+      await app.reloadVault({ tree: true });
+      delete state.ui.expanded[path];
+      pruneNav((entry) => entry.path === path || entry.path.startsWith(`${path}/`));
+      await refreshHistory();
+      app.scheduleStatePersist();
+      app.toast(`Deleted empty chamber ${path}`, 'ok');
+    } catch (error) {
+      app.toast(`Could not delete that chamber: ${error.message}`, 'error');
+    }
+  },
+
+  /* ── drag and drop ─────────────────────────────────────────────────── */
+
+  /** Would moving `path` into `chamber` actually change anything? */
+  canMoveTreeItem(kind, path, chamber) {
+    if (!path || typeof chamber !== 'string') return false;
+    if (kind === 'chamber' && (chamber === path || chamber.startsWith(`${path}/`))) return false;
+    return join(chamber, basename(path)) !== path;
+  },
+
+  /**
+   * Move a vein or chamber into another chamber ('' is the vault root).
+   *
+   * A move is a rename of the path, so it keeps the file's history and reuses
+   * the same state migration: the open document, navigation, expanded folders,
+   * worldbuilding records and colours all follow the new name.
+   */
+  async moveTreeItem(kind, path, chamber) {
+    if (!app.canMoveTreeItem(kind, path, chamber)) return;
+    const isVein = kind === 'vein';
+    const target = join(chamber, basename(path));
+    const currentPath = state.current?.path;
+    const openInside = Boolean(currentPath
+      && (currentPath === path || (!isVein && currentPath.startsWith(`${path}/`))));
+    if (openInside && state.dirty) {
+      await app.saveCurrent();
+      if (state.dirty) return;
+    }
+    try {
+      const result = isVein
+        ? await backend.renameVein(path, target)
+        : await backend.renameChamber(path, target);
+      if (!result?.moved) return;
+      migrateTreePath(path, target);
+      if (chamber) state.ui.expanded[chamber] = true;
+      if (!isVein) state.ui.expanded[target] = true;
+      for (const ancestor of ancestorPaths(target)) state.ui.expanded[ancestor] = true;
+      await app.reloadVault({ tree: true, index: true });
+      await refreshHistory();
+      if (openInside) {
+        const reopened = isVein ? target : `${target}${currentPath.slice(path.length)}`;
+        await app.openPath(reopened, { fromState: true });
+      }
+      app.scheduleStatePersist();
+      app.toast(`Moved ${path} to ${chamber || 'the vault root'}`, 'ok');
+    } catch (error) {
+      app.toast(`Could not move ${isVein ? 'that vein' : 'that chamber'}: ${error.message}`, 'error');
+    }
   },
 
   /* ---------------------------------------------------------- navigation */
@@ -2160,6 +2476,10 @@ async function refreshScan() {
   state.tree = scan.tree ?? state.tree;
   state.veins = scan.veins ?? [];
   indexStats = new Map((scan.stats ?? []).map((stat) => [stat.path, stat]));
+  // The search pane was rendered before the walk that fills this list — a
+  // vault restored with Search showing, or one reloaded from disk — so its
+  // "what is there to search" line follows the vault rather than the boot.
+  if (state.ui.pane === 'search') searchPanel?.render();
   return { tree: state.tree, veins: state.veins, stats: scan.stats ?? [] };
 }
 
@@ -2207,6 +2527,58 @@ function forgetPaths(paths) {
     setPageOverride(path, null);
   }
   state.indexing = { ...state.indexing, total: indexStore.total, indexed: indexStore.indexed };
+}
+
+function replaceTreePath(value, before, after) {
+  return value === before || value.startsWith(`${before}/`)
+    ? `${after}${value.slice(before.length)}`
+    : value;
+}
+
+/** Drop history entries for paths that no longer exist, keeping the current step. */
+function pruneNav(drop) {
+  const { entries, index } = state.nav;
+  const current = entries[index] ?? null;
+  const kept = entries.filter((entry) => !drop(entry));
+  state.nav.entries = kept;
+  const moved = kept.indexOf(current);
+  state.nav.index = current && moved >= 0 ? moved : Math.min(index, kept.length - 1);
+}
+
+/** Keep path-keyed viewer state in step when a vein or chamber is renamed. */
+function migrateTreePath(before, after) {
+  state.world = Object.fromEntries(Object.entries(state.world).map(([path, record]) => [
+    replaceTreePath(path, before, after), record,
+  ]));
+  state.ui.expanded = Object.fromEntries(Object.entries(state.ui.expanded).map(([path, expanded]) => [
+    replaceTreePath(path, before, after), expanded,
+  ]));
+  for (const entry of state.nav.entries) {
+    entry.path = replaceTreePath(entry.path, before, after);
+    if (entry.via) entry.via = replaceTreePath(entry.via, before, after);
+  }
+  if (state.current?.path) state.current.path = replaceTreePath(state.current.path, before, after);
+
+  const renameKeyPath = (key) => {
+    const anchorAt = key.indexOf('#');
+    const path = anchorAt < 0 ? key : key.slice(0, anchorAt);
+    return `${replaceTreePath(path, before, after)}${anchorAt < 0 ? '' : key.slice(anchorAt)}`;
+  };
+  const colors = colorStore.cloneColorSet(state.colors);
+  colors.pages = Object.fromEntries(Object.entries(colors.pages).map(([key, color]) => [renameKeyPath(key), color]));
+  colors.sections = Object.fromEntries(Object.entries(colors.sections).map(([key, color]) => [renameKeyPath(key), color]));
+  colors.links = Object.fromEntries(Object.entries(colors.links).map(([key, color]) => {
+    const anchorAt = key.indexOf('#');
+    const endpoints = anchorAt < 0 ? key : key.slice(0, anchorAt);
+    const anchor = anchorAt < 0 ? '' : key.slice(anchorAt);
+    const separator = endpoints.indexOf('->');
+    if (separator < 0) return [key, color];
+    const from = replaceTreePath(endpoints.slice(0, separator), before, after);
+    const to = replaceTreePath(endpoints.slice(separator + 2), before, after);
+    return [`${from}->${to}${anchor}`, color];
+  }));
+  state.colors = colors;
+  app.persistColors('rename page colours');
 }
 
 /**
@@ -2511,6 +2883,7 @@ async function applyMetaFromDisk(name, { render = true } = {}) {
     state.settings = next;
     applyTheme();
     applyLayout();
+    applyIcons();
     app.configureMermaid();
     settingsDialog?.refresh();
     if (render) await rerenderCurrent();
@@ -2539,18 +2912,55 @@ async function applyMetaFromDisk(name, { render = true } = {}) {
 }
 
 function applyTheme() {
-  document.documentElement.dataset.theme = state.settings.theme;
-  document.documentElement.style.setProperty('--font-size', `${state.settings.fontSize}px`);
-  document.documentElement.style.setProperty('--line-width', `${state.settings.lineWidth}ch`);
+  const root = document.documentElement;
+  root.dataset.theme = state.settings.theme;
+  root.style.setProperty('--font-size', `${state.settings.fontSize}px`);
+  root.style.setProperty('--line-width', `${state.settings.lineWidth}ch`);
+
+  // The palette is authored in CSS; hue shifts are applied as overrides. Clear
+  // the old overrides first so the base read is the theme's own colours, not
+  // last frame's rotated ones.
+  const names = Object.values(THEME_HUE_VARS).flat();
+  for (const name of names) root.style.removeProperty(name);
+  const hues = state.settings.themeHues ?? {};
+  const computed = getComputedStyle(root);
+  const base = new Map(names.map((name) => [name, computed.getPropertyValue(name).trim()]));
+  for (const [group, groupNames] of Object.entries(THEME_HUE_VARS)) {
+    const shift = Number(hues[group]) || 0;
+    if (!shift) continue;
+    for (const name of groupNames) {
+      const value = base.get(name);
+      if (value) root.style.setProperty(name, rotateHue(value, shift));
+    }
+  }
+}
+
+/**
+ * Show or hide button icons everywhere at once.
+ *
+ * The icons are already in the DOM; the root attribute lets styles.css remove
+ * them without a re-render, and icon-only controls fall back to their text
+ * label in the same rule.
+ */
+function applyIcons() {
+  // On <html>, not #app: dialogs and menus are appended to <body>.
+  document.documentElement.dataset.icons = state.settings.icons === false ? 'off' : 'on';
 }
 
 function applyLayout() {
   resizers?.apply();
   const show = state.settings.layout.showGraph;
-  qs('#graph-panel').classList.toggle('hidden', !show);
+  qs('#workspace').classList.toggle('is-graph-folded', !show);
+  qs('#graph-panel').classList.remove('hidden');
+  qs('#graph-panel').classList.toggle('is-folded', !show);
   qs('#graph-resizer').classList.toggle('hidden', !show);
   document.documentElement.style.setProperty('--sidebar-width', `${state.settings.layout.sidebarWidth}px`);
   document.documentElement.style.setProperty('--graph-width', `${state.settings.layout.graphWidth}px`);
+  const graphButton = qs('#graph-btn');
+  if (graphButton) {
+    graphButton.title = show ? 'Fold the concept graph' : 'Expand the concept graph';
+    graphButton.setAttribute('aria-pressed', String(show));
+  }
 }
 
 /**

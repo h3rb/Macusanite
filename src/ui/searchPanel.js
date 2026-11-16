@@ -32,8 +32,8 @@ export function createSearchPanel({ app, root }) {
     oninput: (event) => app.runSearch(event.target.value),
   });
 
-  const prevHit = el('button', { class: 'icon-btn btn-mini', type: 'button', title: 'Previous hit (Shift+F3)', text: '‹', onclick: () => app.searchHit(-1) });
-  const nextHit = el('button', { class: 'icon-btn btn-mini', type: 'button', title: 'Next hit (F3)', text: '›', onclick: () => app.searchHit(1) });
+  const prevHit = el('button', { class: 'icon-btn btn-mini ui-icon-only', type: 'button', title: 'Previous hit (Shift+F3)', icon: 'previous', iconLabel: 'Previous', onclick: () => app.searchHit(-1) });
+  const nextHit = el('button', { class: 'icon-btn btn-mini ui-icon-only', type: 'button', title: 'Next hit (F3)', icon: 'next', iconLabel: 'Next', onclick: () => app.searchHit(1) });
   const summary = el('div', { class: 'search-summary' });
   const results = el('div', { class: 'search-results', role: 'listbox', 'aria-label': 'Search results' });
 
@@ -73,10 +73,17 @@ export function createSearchPanel({ app, root }) {
     clear(summary);
     if (!search.terms.length) {
       // The vault size is always known; the corpus is only built on first use.
+      // "No vault" and "a vault with nothing in it" are different states, and
+      // saying the wrong one over an open vault reads as a broken window.
       const veins = app.state.veins.length;
+      const loaded = Boolean(app.state.vault);
       summary.append(el('span', {
         class: 'search-stat',
-        text: veins ? `${veins} vein${veins === 1 ? '' : 's'} to search` : 'no vault loaded',
+        text: !loaded
+          ? 'open a vault to search'
+          : veins
+            ? `${veins} vein${veins === 1 ? '' : 's'} to search`
+            : 'this vault has no veins yet',
       }));
     } else {
       summary.append(

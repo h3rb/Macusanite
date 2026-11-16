@@ -76,6 +76,37 @@ export function createSettingsDialog({ app }) {
     return field(label, el('div', { class: 'settings-row' }, [input, picker, quick]), hint);
   }
 
+  /** A hue rotation for one palette group, previewed while the thumb moves. */
+  function hueField(key, label, hint) {
+    const value = app.state.settings.themeHues?.[key] ?? 0;
+    const output = el('span', { class: 'hue-value', text: `${value}°` });
+    const slider = el('input', {
+      class: 'hue-slider',
+      type: 'range',
+      min: '-180',
+      max: '180',
+      step: '1',
+      value: String(value),
+      'aria-label': label,
+      oninput: (event) => {
+        output.textContent = `${event.target.value}°`;
+        app.previewThemeHue(key, Number(event.target.value));
+      },
+      onchange: (event) => app.updateSettings({ themeHues: { [key]: Number(event.target.value) } }),
+    });
+    return field(label, el('div', { class: 'hue-row' }, [slider, output]), hint);
+  }
+
+  /** Put every hue back to the theme's own palette, sliders included. */
+  async function resetThemeHues() {
+    await app.updateSettings({ themeHues: { background: 0, chrome: 0, text: 0 } });
+    for (const slider of dialog.querySelectorAll('.hue-slider')) {
+      slider.value = '0';
+      const output = slider.parentElement.querySelector('.hue-value');
+      if (output) output.textContent = '0°';
+    }
+  }
+
   function render() {
     const settings = app.state.settings;
     const vault = app.state.vault;
@@ -86,7 +117,7 @@ export function createSettingsDialog({ app }) {
         el('header', { class: 'settings-head' }, [
           el('h2', { text: 'Settings' }),
           el('div', { class: 'spacer' }),
-          el('button', { class: 'icon-btn', type: 'button', text: '✕', onclick: () => dialog.close() }),
+          el('button', { class: 'icon-btn ui-icon-only', type: 'button', icon: 'close', iconLabel: 'Close', title: 'Close settings', onclick: () => dialog.close() }),
         ]),
 
         el('section', { class: 'settings-section' }, [
@@ -129,8 +160,27 @@ export function createSettingsDialog({ app }) {
               el('option', { value: 'dark', text: 'Dark', selected: settings.theme === 'dark' ? '' : null }),
               el('option', { value: 'light', text: 'Light', selected: settings.theme === 'light' ? '' : null }),
             ])),
+            field('Button icons', checkbox(settings.icons !== false, (v) => app.updateSettings({ icons: v })), 'Show a small symbol or emoji beside button labels. Off leaves plain text buttons.'),
             field('Autosave', checkbox(settings.autosave, (v) => app.updateSettings({ autosave: v })), 'Save the open vein shortly after you stop typing.'),
           ]),
+        ]),
+
+        el('section', { class: 'settings-section' }, [
+          el('div', { class: 'settings-section-head' }, [
+            el('h3', { text: 'Theme hues' }),
+            el('button', {
+              class: 'btn btn-ghost btn-mini',
+              type: 'button',
+              icon: 'reset',
+              text: 'Reset',
+              title: 'Return the background, borders and text to the theme’s own hues',
+              onclick: resetThemeHues,
+            }),
+          ]),
+          el('p', { class: 'settings-hint', text: 'Rotate the palette around the colour wheel without changing its contrast. 0° leaves the theme as authored.' }),
+          hueField('background', 'Background hue', 'The page, panes and raised panels.'),
+          hueField('chrome', 'Borders and sliders', 'Panel borders, dividers and the slider accent.'),
+          hueField('text', 'Text hue', 'Body text, dimmed labels and faint hints.'),
         ]),
 
         el('section', { class: 'settings-section' }, [
@@ -164,15 +214,15 @@ export function createSettingsDialog({ app }) {
           el('h3', { text: 'Updates' }),
           el('div', { class: 'settings-grid' }, [
             field('Check for updates automatically', checkbox(settings.updates?.autoCheck !== false, (v) => app.updateSettings({ updates: { autoCheck: v } })), 'Checks shortly after a vault opens. Updates are signed and only install when you ask.'),
-            field('Check now', el('button', { class: 'btn', type: 'button', text: 'Check for updates', onclick: () => app.checkForUpdates({ manual: true }) }), 'Manual checks always run, even when automatic checks are off.'),
+            field('Check now', el('button', { class: 'btn', type: 'button', text: 'Check for updates', title: 'Look for a newer release now', onclick: () => app.checkForUpdates({ manual: true }) }), 'Manual checks always run, even when automatic checks are off.'),
           ]),
         ]),
 
         el('footer', { class: 'settings-actions' }, [
-          el('button', { class: 'btn btn-ghost', type: 'button', text: 'Open .macusanite folder', onclick: () => app.revealMetaFolder() }),
+          el('button', { class: 'btn btn-ghost', type: 'button', text: 'Open .macusanite folder', title: 'Show this vault’s settings and metadata folder', onclick: () => app.revealMetaFolder() }),
           el('div', { class: 'spacer' }),
-          el('button', { class: 'btn', type: 'button', text: 'Reset colours', onclick: () => app.resetAllColors() }),
-          el('button', { class: 'btn btn-primary', type: 'button', text: 'Done', onclick: () => dialog.close() }),
+          el('button', { class: 'btn', type: 'button', text: 'Reset colours', title: 'Clear every custom colour in this vault', onclick: () => app.resetAllColors() }),
+          el('button', { class: 'btn btn-primary', type: 'button', text: 'Done', title: 'Close settings', onclick: () => dialog.close() }),
         ]),
       ]),
     );

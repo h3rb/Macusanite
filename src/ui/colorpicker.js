@@ -185,7 +185,7 @@ export function createColorPicker({ app, root }) {
           el('strong', { class: 'picker-title', text: description.title }),
           el('span', { class: 'picker-subtitle', text: description.subtitle }),
         ]),
-        el('button', { class: 'icon-btn', type: 'button', text: '✕', title: 'Close', onclick: close }),
+        el('button', { class: 'icon-btn ui-icon-only', type: 'button', icon: 'close', iconLabel: 'Close', title: 'Close', onclick: close }),
       ]),
 
       previewBox,
@@ -213,6 +213,7 @@ export function createColorPicker({ app, root }) {
           class: 'btn btn-ghost',
           type: 'button',
           text: current.target?.kind === 'default' ? 'Reset to white' : 'Use default',
+          title: current.target?.kind === 'default' ? 'Clear this colour and use white' : 'Clear this colour and use the vault default',
           onclick: () => {
             if (current.target?.kind === 'default') commitColor('#ffffff');
             else {
@@ -222,8 +223,8 @@ export function createColorPicker({ app, root }) {
           },
         }),
         el('div', { class: 'spacer' }),
-        el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: close }),
-        el('button', { class: 'btn btn-primary', type: 'button', text: 'Apply', onclick: () => commitColor(current.color) }),
+        el('button', { class: 'btn', type: 'button', text: 'Cancel', title: 'Close without changing the colour', onclick: close }),
+        el('button', { class: 'btn btn-primary', type: 'button', text: 'Apply', title: 'Use this colour', onclick: () => commitColor(current.color) }),
       ]),
     );
 

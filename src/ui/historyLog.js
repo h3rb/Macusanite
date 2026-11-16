@@ -85,7 +85,7 @@ export function createHistoryLog({ app }) {
             }),
             el('span', { text: current ? `This file only (${current})` : 'This file only' }),
           ]),
-          el('button', { class: 'icon-btn', type: 'button', text: '✕', onclick: () => dialog.close() }),
+          el('button', { class: 'icon-btn ui-icon-only', type: 'button', icon: 'close', iconLabel: 'Close', title: 'Close the history log', onclick: () => dialog.close() }),
         ]),
         el('p', {
           class: 'history-note',
@@ -98,7 +98,7 @@ export function createHistoryLog({ app }) {
             text: `${app.state.undoStack.length} to undo · ${app.state.redoStack.length} to redo`,
           }),
           el('div', { class: 'spacer' }),
-          el('button', { class: 'btn btn-primary', type: 'button', text: 'Close', onclick: () => dialog.close() }),
+          el('button', { class: 'btn btn-primary', type: 'button', text: 'Close', title: 'Close the history log', onclick: () => dialog.close() }),
         ]),
       ]),
     );

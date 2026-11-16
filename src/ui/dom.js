@@ -1,9 +1,12 @@
 /** Tiny DOM helpers. No framework, no build magic. */
 
+import { decorateButton } from './icons.js';
+
 export function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
     if (value === null || value === undefined || value === false) continue;
+    if (key === 'icon' || key === 'iconLabel') continue;
     if (key === 'class') node.className = value;
     else if (key === 'dataset') Object.assign(node.dataset, value);
     else if (key === 'text') node.textContent = value;
@@ -15,6 +18,9 @@ export function el(tag, attrs = {}, children = []) {
     if (child === null || child === undefined || child === false) continue;
     node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   }
+  // Buttons wear a small symbol beside their label; Settings can hide them all
+  // at once, so this is decoration only and never replaces the label.
+  if (tag === 'button') decorateButton(node, attrs);
   return node;
 }
 
@@ -75,6 +81,39 @@ export function truncate(value, max = 48) {
   return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
+/** A yes/no dialog, used before anything is deleted. */
+export function askConfirm({ title, message, confirmLabel = 'Delete', danger = true }) {
+  return new Promise((resolve) => {
+    for (const stale of document.querySelectorAll('dialog.md-dialog')) stale.remove();
+    const dialog = el('dialog', { class: 'md-dialog' });
+    let settled = false;
+    const finish = (confirmed) => {
+      if (settled) return;
+      settled = true;
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      resolve(confirmed);
+    };
+    dialog.append(
+      el('form', { method: 'dialog', class: 'md-dialog-form' }, [
+        el('h2', { class: 'md-dialog-title', text: title }),
+        el('p', { class: 'md-hint', text: message }),
+        el('div', { class: 'md-dialog-actions' }, [
+          el('button', { type: 'button', class: 'btn', text: 'Cancel', title: 'Close without making changes', onclick: () => finish(false) }),
+          el('button', { type: 'submit', class: `btn ${danger ? 'btn-warn' : 'btn-primary'}`, text: confirmLabel, title: confirmLabel }),
+        ]),
+      ]),
+    );
+    dialog.addEventListener('close', () => finish(false));
+    dialog.querySelector('form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      finish(true);
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+}
+
 /** Prompt-free inline "modal" used for new vein/chamber names and confirmations. */
 export function askText({ title, label = 'Name', value = '', hint = '', confirmLabel = 'Create' }) {
   return new Promise((resolve) => {
@@ -89,8 +128,8 @@ export function askText({ title, label = 'Name', value = '', hint = '', confirmL
       el('label', { class: 'md-field' }, [el('span', { text: label }), input]),
       hint ? el('p', { class: 'md-hint', text: hint }) : null,
       el('div', { class: 'md-dialog-actions' }, [
-        el('button', { type: 'button', class: 'btn', text: 'Cancel', onclick: () => finish(null) }),
-        el('button', { type: 'submit', class: 'btn btn-primary', text: confirmLabel }),
+        el('button', { type: 'button', class: 'btn', text: 'Cancel', title: 'Close without making changes', onclick: () => finish(null) }),
+        el('button', { type: 'submit', class: 'btn btn-primary', text: confirmLabel, title: confirmLabel }),
       ]),
     ]);
     dialog.append(form);
@@ -141,6 +180,7 @@ export function createToaster(host) {
           type: 'button',
           class: 'toast-action',
           text: action.label,
+          title: action.label,
           onclick: (event) => {
             event.preventDefault();
             event.stopPropagation();

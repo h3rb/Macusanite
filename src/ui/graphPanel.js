@@ -34,8 +34,19 @@ export function createGraphPanel({ app, root }) {
   const statsBar = el('div', { class: 'graph-stats' });
   const tooltip = el('div', { class: 'graph-tooltip hidden' });
   const footer = el('div', { class: 'graph-foot' });
+  const fold = el('button', {
+    class: 'graph-fold',
+    type: 'button',
+    title: 'Expand the concept graph',
+    'aria-label': 'Expand the concept graph',
+    icon: false,
+    onclick: () => app.toggleGraph(true),
+  }, [
+    el('span', { class: 'graph-fold-arrow', text: '‹', 'aria-hidden': 'true' }),
+    el('span', { class: 'graph-fold-label', text: 'Concept graph' }),
+  ]);
 
-  root.append(header, stage, statsBar, footer);
+  root.append(fold, header, stage, statsBar, footer);
   stage.append(tooltip);
 
   let svg = null;
@@ -58,6 +69,7 @@ export function createGraphPanel({ app, root }) {
       class: `chip ${app.state.settings.graph[key] ? 'on' : ''}`,
       type: 'button',
       text: label,
+      icon: { showSections: 'compact', showTags: 'tag', showUnresolved: 'ghosts', showContext: 'context' }[key],
       title,
       onclick: () => {
         app.setGraphOption(key, !app.state.settings.graph[key]);
@@ -72,9 +84,10 @@ export function createGraphPanel({ app, root }) {
    */
   function navButton(label, key, title, navigate) {
     return el('button', {
-      class: 'icon-btn',
+      class: 'icon-btn ui-icon-only',
       type: 'button',
-      text: label,
+      icon: key === 'canBack' ? 'back' : 'forward',
+      iconLabel: key === 'canBack' ? 'Back' : 'Forward',
       title,
       disabled: !app.state.nav[key],
       onclick: navigate,
@@ -90,8 +103,8 @@ export function createGraphPanel({ app, root }) {
       el('div', { class: 'spacer' }),
       navButton('←', 'canBack', 'Back to the previous vein in this graph journey', () => app.navigateBack()),
       navButton('→', 'canForward', 'Forward to the next vein in this graph journey', () => app.navigateForward()),
-      el('button', { class: 'icon-btn', type: 'button', title: 'Re-fit graph', text: '⤢', onclick: () => { view = { x: 0, y: 0, k: 1 }; draw(); } }),
-      el('button', { class: 'icon-btn', type: 'button', title: 'Hide graph panel', text: '⇥', onclick: () => app.toggleGraph(false) }),
+      el('button', { class: 'icon-btn ui-icon-only', type: 'button', title: 'Re-fit graph', icon: 'fit', iconLabel: 'Fit', onclick: () => { view = { x: 0, y: 0, k: 1 }; draw(); } }),
+      el('button', { class: 'icon-btn ui-icon-only', type: 'button', title: 'Fold the graph panel', icon: 'hide', iconLabel: 'Hide', onclick: () => app.toggleGraph(false) }),
     );
 
     clear(footer).append(
@@ -117,6 +130,7 @@ export function createGraphPanel({ app, root }) {
   /* ------------------------------------------------------------ rendering */
 
   function render() {
+    root.classList.toggle('is-folded', !app.state.settings.layout.showGraph);
     renderHeader();
     if (!app.state.settings.layout.showGraph) {
       stage.classList.add('hidden');

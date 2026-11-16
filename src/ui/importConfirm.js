@@ -38,6 +38,7 @@ export function confirmImport({ archive, preview, replacePreview = null, sourceN
     const primary = el('button', {
       type: 'button',
       class: 'btn',
+      title: 'Copy this archive’s files into the vault',
       onclick: () => finish(true),
     });
     const chosen = () => (replace && replacePreview ? replacePreview : preview);
@@ -72,8 +73,9 @@ export function confirmImport({ archive, preview, replacePreview = null, sourceN
         el('div', { class: 'spacer' }),
         el('button', {
           type: 'button',
-          class: 'icon-btn',
-          text: '✕',
+          class: 'icon-btn ui-icon-only',
+          icon: 'close',
+          iconLabel: 'Cancel',
           title: 'Cancel the import',
           onclick: () => finish(false),
         }),
@@ -112,6 +114,7 @@ export function confirmImport({ archive, preview, replacePreview = null, sourceN
           type: 'button',
           class: 'btn',
           text: 'Cancel',
+          title: 'Close without importing anything',
           onclick: () => finish(false),
         }),
         primary,

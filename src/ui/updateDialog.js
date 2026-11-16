@@ -21,6 +21,7 @@ export function createUpdateDialog({ app }) {
       class: 'btn btn-primary',
       type: 'button',
       text: 'Download & restart',
+      title: 'Download this update and restart Macusanite to install it',
       onclick: async () => {
         installing = true;
         installBtn.disabled = true;
@@ -51,6 +52,7 @@ export function createUpdateDialog({ app }) {
       class: 'btn',
       type: 'button',
       text: 'Later',
+      title: 'Close this and update another time',
       onclick: () => { if (!installing) dialog.close(); },
     });
 

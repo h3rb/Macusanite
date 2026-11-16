@@ -219,10 +219,80 @@ const fallbackCommands = {
     return { path, created: true };
   },
   async create_chamber({ rel }) {
-    const path = normalize(rel);
+    const path = safeVirtualPath(rel);
     const marker = join(path, '.keep');
     if (!virtual.files.has(marker)) virtual.write(marker, '', 'create chamber');
     return { path, created: true };
+  },
+  async rename_vein({ from, to }) {
+    const source = safeVirtualPath(from);
+    const target = safeVirtualPath(to);
+    if (!isMarkdown(source) || !isMarkdown(target)) throw new Error('vein names must use a Markdown extension');
+    const text = virtual.read(source);
+    if (text === null) throw new Error(`vein not found: ${source}`);
+    if (source === target) return { path: target, from: source, moved: false };
+    if (virtual.files.has(target)) throw new Error(`vein already exists: ${target}`);
+    const parent = dirname(target);
+    if (parent && ![...virtual.files.keys()].some((path) => path.startsWith(`${parent}/`))) {
+      throw new Error(`chamber does not exist: ${parent}`);
+    }
+    virtual.files.set(target, text);
+    virtual.mtimes = { ...(virtual.mtimes ?? {}), [target]: Date.now() };
+    virtual.files.delete(source);
+    delete virtual.mtimes[source];
+    const label = `rename ${source} -> ${target}`;
+    virtual.record({ path: target, before: null, after: text, label });
+    virtual.record({ path: source, before: text, after: '', label });
+    virtual.persist();
+    return { path: target, from: source, moved: true };
+  },
+  async delete_vein({ rel }) {
+    const path = safeVirtualPath(rel);
+    if (!isMarkdown(path)) throw new Error(`not a Markdown vein: ${path}`);
+    const before = virtual.read(path);
+    if (before === null) return false;
+    virtual.files.delete(path);
+    delete virtual.mtimes[path];
+    virtual.record({ path, before, after: '', label: `delete ${path}` });
+    virtual.persist();
+    return true;
+  },
+  async rename_chamber({ from, to }) {
+    const source = safeVirtualPath(from);
+    const target = safeVirtualPath(to);
+    if (target === source || target.startsWith(`${source}/`)) throw new Error('invalid chamber rename');
+    const entries = [...virtual.files.entries()].filter(([path]) => path.startsWith(`${source}/`));
+    if (!entries.length) throw new Error(`chamber not found: ${source}`);
+    if ([...virtual.files.keys()].some((path) => path === target || path.startsWith(`${target}/`))) {
+      throw new Error(`chamber or file already exists: ${target}`);
+    }
+    const parent = dirname(target);
+    if (parent && ![...virtual.files.keys()].some((path) => path.startsWith(`${parent}/`))) {
+      throw new Error(`parent chamber does not exist: ${parent}`);
+    }
+    for (const [path, contents] of entries) {
+      const moved = `${target}${path.slice(source.length)}`;
+      virtual.files.set(moved, contents);
+      if (virtual.mtimes?.[path] !== undefined) virtual.mtimes[moved] = virtual.mtimes[path];
+    }
+    for (const [path] of entries) {
+      virtual.files.delete(path);
+      if (virtual.mtimes) delete virtual.mtimes[path];
+    }
+    virtual.persist();
+    return { path: target, from: source, moved: true };
+  },
+  async delete_chamber({ rel }) {
+    const path = safeVirtualPath(rel);
+    const entries = [...virtual.files.keys()].filter((file) => file.startsWith(`${path}/`));
+    if (!entries.length) return false;
+    if (entries.some((file) => file !== `${path}/.keep`)) throw new Error(`chamber is not empty: ${path}`);
+    for (const file of entries) {
+      virtual.files.delete(file);
+      if (virtual.mtimes) delete virtual.mtimes[file];
+    }
+    virtual.persist();
+    return true;
   },
   async read_meta({ name }) {
     return virtual.meta(name, null);
@@ -292,6 +362,15 @@ const fallbackCommands = {
     return helpWindowUrl(theme);
   },
 };
+
+function safeVirtualPath(rel) {
+  const raw = String(rel ?? '').replace(/\\/g, '/');
+  const parts = raw.split('/').filter(Boolean);
+  if (!parts.length || raw.startsWith('/') || parts.some((part) => part === '.' || part === '..' || part.includes(':'))) {
+    throw new Error(`invalid vault path: ${rel}`);
+  }
+  return parts.join('/');
+}
 
 function veinPaths() {
   return [...virtual.files.keys()].filter((p) => isMarkdown(p) && !p.startsWith(`${META_DIR}/`)).sort();
@@ -422,6 +501,10 @@ export const backend = {
   writeVein: (rel, contents, label) => invoke('write_vein', { rel, contents, label: label ?? null }),
   createVein: (rel, contents) => invoke('create_vein', { rel, contents: contents ?? null }),
   createChamber: (rel) => invoke('create_chamber', { rel }),
+  renameVein: (from, to) => invoke('rename_vein', { from, to }),
+  deleteVein: (rel) => invoke('delete_vein', { rel }),
+  renameChamber: (from, to) => invoke('rename_chamber', { from, to }),
+  deleteChamber: (rel) => invoke('delete_chamber', { rel }),
   readMeta: (name) => invoke('read_meta', { name }),
   writeMeta: (name, contents, label, record = true) => invoke('write_meta', {
     name,

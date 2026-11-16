@@ -52,8 +52,8 @@ export function createHelpWindow({ root, markdown = buildHelpMarkdown() }) {
     autocomplete: 'off',
   });
   const status = el('span', { class: 'help-status', role: 'status' });
-  const prevBtn = el('button', { class: 'help-step', type: 'button', title: 'Previous hit (Shift+Enter)', text: '↑', onclick: () => step(-1) });
-  const nextBtn = el('button', { class: 'help-step', type: 'button', title: 'Next hit (Enter)', text: '↓', onclick: () => step(1) });
+  const prevBtn = el('button', { class: 'help-step ui-icon-only', type: 'button', title: 'Previous hit (Shift+Enter)', icon: 'arrowUp', iconLabel: 'Previous', onclick: () => step(-1) });
+  const nextBtn = el('button', { class: 'help-step ui-icon-only', type: 'button', title: 'Next hit (Enter)', icon: 'arrowDown', iconLabel: 'Next', onclick: () => step(1) });
   const nav = el('nav', { class: 'help-nav', 'aria-label': 'Manual topics' });
   const content = el('main', { class: 'help-content' });
   // Which topic branches and heading lists the reader has opened. Topics open
@@ -177,12 +177,14 @@ export function createHelpWindow({ root, markdown = buildHelpMarkdown() }) {
         text: open ? '▾' : '▸',
         'aria-expanded': open ? 'true' : 'false',
         'aria-label': `${open ? 'Collapse' : 'Expand'} ${topic.title}`,
+        title: `${open ? 'Collapse' : 'Expand'} ${topic.title}`,
         onclick: () => {
           const next = children.hidden;
           children.hidden = !next;
           toggle.textContent = next ? '▾' : '▸';
           toggle.setAttribute('aria-expanded', next ? 'true' : 'false');
           toggle.setAttribute('aria-label', `${next ? 'Collapse' : 'Expand'} ${topic.title}`);
+          toggle.title = `${next ? 'Collapse' : 'Expand'} ${topic.title}`;
           if (next) collapsedTopics.delete(topic.id);
           else collapsedTopics.add(topic.id);
         },
@@ -205,6 +207,7 @@ export function createHelpWindow({ root, markdown = buildHelpMarkdown() }) {
         const sectionButton = el('button', {
           class: 'help-nav-item',
           type: 'button',
+          title: section.title,
           dataset: { slug: section.slug },
           onclick: () => focusSection(section.slug),
         }, [
@@ -218,12 +221,14 @@ export function createHelpWindow({ root, markdown = buildHelpMarkdown() }) {
               text: headingList.hidden ? '▸' : '▾',
               'aria-expanded': headingList.hidden ? 'false' : 'true',
               'aria-label': `${headingList.hidden ? 'Expand' : 'Collapse'} ${section.title}`,
+              title: `${headingList.hidden ? 'Expand' : 'Collapse'} ${section.title}`,
               onclick: () => {
                 const next = headingList.hidden;
                 headingList.hidden = !next;
                 sectionToggle.textContent = next ? '▾' : '▸';
                 sectionToggle.setAttribute('aria-expanded', next ? 'true' : 'false');
                 sectionToggle.setAttribute('aria-label', `${next ? 'Collapse' : 'Expand'} ${section.title}`);
+                sectionToggle.title = `${next ? 'Collapse' : 'Expand'} ${section.title}`;
                 if (next) openHeadings.add(section.slug);
                 else openHeadings.delete(section.slug);
               },
@@ -235,6 +240,7 @@ export function createHelpWindow({ root, markdown = buildHelpMarkdown() }) {
             type: 'button',
             dataset: { slug: section.slug, heading: String(index) },
             text: title,
+            title: `Jump to “${title}”`,
             onclick: () => focusHeading(section.slug, index),
           }));
         });

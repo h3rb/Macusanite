@@ -5,6 +5,7 @@
   --bg-raised: #131a22;
   --bg-sunken: #090c11;
   --panel: #111823;
+  --glass-bg: rgba(17, 24, 35, 0.38);
   --border: #223040;
   --border-strong: #2f4257;
   --text: #e6edf3;
@@ -25,6 +26,7 @@
   --sans: "Segoe UI", system-ui, -apple-system, "Inter", Roboto, sans-serif;
   --sidebar-width: 268px;
   --graph-width: 340px;
+  --graph-fold-width: 36px;
 }
 
 [data-theme='light'] {
@@ -32,6 +34,7 @@
   --bg-raised: #ffffff;
   --bg-sunken: #eceff3;
   --panel: #ffffff;
+  --glass-bg: rgba(255, 255, 255, 0.5);
   --border: #d6dce4;
   --border-strong: #bcc6d2;
   --text: #16202b;
@@ -156,6 +159,88 @@ body.resizing {
 .btn-mini {
   padding: 3px 8px;
   font-size: 12px;
+}
+
+/* ── button icons ──────────────────────────────────────────────────────
+   Icons are decoration added beside a button's label. `Settings → Button
+   icons` flips data-icons on #app, which hides them all at once; icon-only
+   controls keep a text label that appears in their place. */
+
+.ui-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1.15em;
+  height: 1.15em;
+  font-size: 1em;
+  line-height: 1;
+}
+
+.ui-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.menu-item > .ui-icon,
+.wb-menu-item > .ui-icon,
+.toast-action > .ui-icon {
+  margin-right: 8px;
+}
+
+.wb-menu-item.wb-submenu-choice > .ui-icon {
+  margin-right: 0;
+}
+
+.pane-tab > .ui-icon,
+.chip > .ui-icon,
+.nav-arrow > .ui-icon,
+.tree-row > .ui-icon {
+  margin-right: 4px;
+}
+
+.nav-count {
+  margin-left: 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* An icon-only control carries its words for the text-only mode. */
+.ui-icon-only > .ui-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+[data-icons='off'] .ui-icon {
+  display: none;
+}
+
+[data-icons='off'] .ui-icon-only {
+  width: auto;
+  min-width: 30px;
+  padding-inline: 8px;
+}
+
+[data-icons='off'] .ui-icon-only > .ui-label {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
 }
 
 .icon-btn {
@@ -316,6 +401,23 @@ body.resizing {
   font-weight: 620;
 }
 
+/* The destructive half of a context menu. */
+.menu-item.menu-danger {
+  color: var(--error);
+}
+
+.menu-item.menu-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 16%, transparent);
+  color: var(--error);
+}
+
+/* The vault tree's right-click menu: anchored at the pointer, not the toolbar. */
+.context-menu {
+  position: fixed;
+  min-width: 212px;
+  z-index: 90;
+}
+
 .menu-group-label {
   padding: 8px 10px 3px;
   color: var(--text-faint);
@@ -442,6 +544,16 @@ body.resizing {
   background: var(--bg);
 }
 
+/* The graph folds to a narrow vertical rail instead of leaving its grid
+   column reserved: the viewer takes the freed width. */
+.workspace.is-graph-folded {
+  grid-template-columns: var(--sidebar-width) 5px minmax(0, 1fr) var(--graph-fold-width);
+}
+
+.workspace.is-graph-folded #graph-resizer {
+  display: none;
+}
+
 .resizer {
   background: var(--border);
   cursor: col-resize;
@@ -468,6 +580,11 @@ body.resizing {
 
 .graph-panel {
   border-left: 1px solid var(--border);
+}
+
+.graph-panel.is-folded {
+  border-left-color: var(--border-strong);
+  background: linear-gradient(180deg, var(--panel), var(--bg-sunken));
 }
 
 /* ── sidebar tree ───────────────────────────────────────────────────── */
@@ -740,6 +857,26 @@ mark.search-hit {
 .tree-row.chamber {
   color: var(--text);
   font-weight: 560;
+}
+
+/* Drag and drop: rows are handles, the chamber under the pointer is the target. */
+.tree-row[draggable='true'] {
+  cursor: grab;
+}
+
+.tree-row.dragging {
+  opacity: 0.45;
+}
+
+.tree-row.drop-target {
+  background: var(--accent-soft);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.tree-row.drop-invalid {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  box-shadow: inset 0 0 0 1px var(--error);
 }
 
 .twisty {
@@ -1198,6 +1335,139 @@ mark.search-hit {
   gap: 4px;
 }
 
+/* The formatting bar above the source. */
+.editor-format-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.fmt-btn {
+  min-width: 26px;
+  height: 25px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fmt-btn:hover {
+  background: var(--bg-raised);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.fmt-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.fmt-btn.fmt-bold { font-weight: 700; }
+.fmt-btn.fmt-italic { font-style: italic; }
+.fmt-btn.fmt-strike { text-decoration: line-through; }
+.fmt-btn.fmt-mono { font-family: var(--mono); font-size: 11.5px; }
+.fmt-btn.fmt-text { padding: 0 8px; }
+
+.fmt-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--border);
+}
+
+/* Tool dialogs: Link, Table and Mermaid. */
+.composition-dialog {
+  width: min(540px, 94vw);
+}
+
+.md-dialog-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.md-check-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.md-dialog-error {
+  margin: 0;
+  color: var(--error);
+  font-size: 12px;
+}
+
+.md-dialog .combo {
+  position: relative;
+  display: flex;
+}
+
+.combo-list {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 3px);
+  left: 0;
+  right: 0;
+  max-height: 210px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+
+.combo-option {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 5px 7px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.combo-option.is-active,
+.combo-option:hover {
+  background: var(--accent-soft);
+  color: #fff;
+}
+
+.combo-detail {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.combo-option.is-active .combo-detail,
+.combo-option:hover .combo-detail {
+  color: inherit;
+  opacity: 0.78;
+}
+
 .visual-preview {
   flex: 1 1 0;
   min-width: 0;
@@ -1270,6 +1540,62 @@ mark.search-hit {
   height: 8px;
   border-radius: 50%;
   background: linear-gradient(135deg, #58a6ff, #da70d6);
+}
+
+/* The folded graph: one full-height vertical tab on the right edge. */
+.graph-fold {
+  display: none;
+}
+
+.graph-panel.is-folded > .graph-head,
+.graph-panel.is-folded > .graph-stage,
+.graph-panel.is-folded > .graph-stats,
+.graph-panel.is-folded > .graph-foot {
+  display: none;
+}
+
+.graph-panel.is-folded > .graph-fold {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 0;
+  padding: 12px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.graph-panel.is-folded > .graph-fold:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+}
+
+.graph-panel.is-folded > .graph-fold:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.graph-fold-arrow {
+  color: var(--accent);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.graph-fold-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  user-select: none;
 }
 
 .graph-stage {
@@ -2079,6 +2405,13 @@ dialog::backdrop {
   gap: 10px;
 }
 
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
 .settings-section h3 {
   margin: 0;
   font-size: 13px;
@@ -2098,6 +2431,26 @@ dialog::backdrop {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.hue-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hue-slider {
+  flex: 1 1 auto;
+  min-width: 140px;
+  accent-color: var(--accent);
+}
+
+.hue-value {
+  flex: 0 0 auto;
+  width: 3.6em;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .settings-swatches {
@@ -2284,11 +2637,13 @@ dialog::backdrop {
 }
 
 @media (max-width: 1080px) {
-  .workspace {
+  .workspace,
+  .workspace.is-graph-folded {
     grid-template-columns: var(--sidebar-width) 5px minmax(0, 1fr);
   }
   .graph-panel,
-  #graph-resizer {
+  #graph-resizer,
+  .graph-fold {
     display: none;
   }
 }
@@ -2791,13 +3146,367 @@ dialog::backdrop {
   margin-top: 4px;
 }
 
+/* Worldbuilding is a fixed frame, not a scrolling page: the title bar, the
+   canvas menu, the canvas and its stats share the pane's height, so the menu
+   bars never scroll away from the cards. Only the canvas pans. */
+.viewer.is-world {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 14px;
+}
+
+.viewer.is-world .viewer-head {
+  flex: 0 0 auto;
+}
+
+.viewer.is-world .world-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 0;
+}
+
+.viewer.is-world .wb-toolbar,
+.viewer.is-world .wb-search,
+.viewer.is-world .wb-connector-bar,
+.viewer.is-world .wb-stats {
+  flex: 0 0 auto;
+}
+
+.viewer.is-world .wb-workbench {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.wb-workbench {
+  display: flex;
+  min-height: 0;
+  gap: 12px;
+}
+
+.wb-workbench > .wb-stage {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wb-inspector {
+  display: flex;
+  flex: 0 0 284px;
+  flex-direction: column;
+  width: 284px;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
+}
+
+.wb-inspector.hidden {
+  display: none;
+}
+
+.wb-inspector-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 8px 7px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.wb-inspector-kicker {
+  color: var(--text-faint);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.wb-inspector-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.wb-inspector-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.wb-inspector-type-icon {
+  flex: 0 0 auto;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.wb-inspector-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.wb-inspector-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.wb-inspector-badge {
+  max-width: 100%;
+  padding: 1px 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 9.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-inspector-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.wb-inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 1px 0 3px;
+}
+
+.wb-inspector-section {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.wb-inspector-section-head,
+.wb-inspector-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wb-inspector-section-head {
+  margin-bottom: 4px;
+}
+
+.wb-inspector-section-title,
+.wb-inspector-subhead {
+  color: var(--text-faint);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wb-inspector-section-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text-dim);
+  font-size: 9.5px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.wb-inspector-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.wb-inspector-tag {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-sunken);
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.wb-inspector-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wb-inspector-field {
+  display: grid;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.wb-inspector-field-label {
+  color: var(--text-faint);
+}
+
+.wb-inspector-field-value {
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.wb-inspector-group {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.wb-inspector-group span {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.wb-inspector-subhead {
+  margin: 7px 0 2px;
+}
+
+.wb-inspector-subhead:first-child {
+  margin-top: 0;
+}
+
+.wb-inspector-link,
+.wb-inspector-picked {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  align-items: center;
+  gap: 0 7px;
+  width: 100%;
+  padding: 4px 5px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wb-inspector-link:hover,
+.wb-inspector-picked:hover {
+  background: var(--bg-hover);
+}
+
+.wb-inspector-link-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.wb-inspector-link-name,
+.wb-inspector-picked-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-inspector-link-kind {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-inspector-link:hover .wb-inspector-link-name,
+.wb-inspector-picked:hover .wb-inspector-picked-name {
+  color: var(--accent);
+}
+
+.wb-inspector-picked {
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+}
+
+.wb-inspector-picked-type {
+  color: var(--text-faint);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.wb-inspector-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.wb-inspector-summary span {
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.wb-inspector-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.wb-inspector-empty {
+  margin: 2px 0;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.wb-inspector :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@media (max-width: 1100px) {
+  .wb-inspector {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 8;
+    width: min(300px, calc(100% - 24px));
+    box-shadow: var(--shadow-lg);
+  }
+
+  .wb-workbench {
+    position: relative;
+  }
+}
+
+.viewer.is-world .wb-stage {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+
 .wb-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
-  padding-bottom: 10px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -2816,11 +3525,6 @@ dialog::backdrop {
   box-shadow: 0 0 8px var(--ok);
 }
 
-.wb-hint {
-  color: var(--text-faint);
-  font-size: 11.5px;
-}
-
 /* The stage is the pan viewport: the canvas is translated inside it, clipped,
  * so the graph can be moved by dragging the background. Overflow clip (not
  * hidden) so no scroll container swallows focus changes mid-pan. */
@@ -2836,9 +3540,185 @@ dialog::backdrop {
   cursor: grabbing;
 }
 
+/* A direct link in progress. The overlay is in stage pixels, so the dashed
+ * rubber-band stays crisp over the transformed canvas and its cards. */
+.wb-stage.is-linking {
+  cursor: crosshair;
+  user-select: none;
+}
+
+.wb-link-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.wb-link-overlay.hidden {
+  display: none;
+}
+
+/* The transient scale readout during a wheel zoom or a fit. It is only a
+ * readout: the canvas keeps every pointer gesture underneath it. */
+.wb-zoom-hud {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  z-index: 10;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 7px 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.09), transparent 55%),
+    var(--glass-bg);
+  -webkit-backdrop-filter: blur(22px) saturate(1.45);
+  backdrop-filter: blur(22px) saturate(1.45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), var(--shadow-lg);
+  color: var(--text-dim);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 6px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.wb-zoom-hud.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.wb-zoom-hud-label {
+  color: var(--text-faint);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wb-zoom-hud-value {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-zoom-hud { transition: none; }
+}
+
+.wb-link-preview-line {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 7 4;
+  stroke-linecap: round;
+  opacity: 0.9;
+}
+
+.wb-link-preview-dot {
+  fill: var(--bg-raised);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.wb-link-overlay.is-over-target .wb-link-preview-line {
+  stroke: var(--warn);
+}
+
+.wb-link-overlay.is-over-target .wb-link-preview-dot {
+  fill: var(--warn);
+  stroke: var(--warn);
+}
+
 .wb-card.is-selected {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* The drop a direct link would make: the target card, group tab, summary, or
+ * the group box when the pointer is over its empty interior. */
+.wb-card.is-link-target,
+.wb-group-tab.is-link-target,
+.wb-group-summary.is-link-target {
+  outline: 2px solid var(--warn);
+  outline-offset: 2px;
+}
+
+.wb-box.is-link-target {
+  fill-opacity: 0.16;
+  stroke: var(--warn);
+  stroke-width: 3;
+  stroke-opacity: 1;
+}
+
+/* The link port: a small ring in a card head or on a group's title/summary.
+ * It is always visible, stronger on hover and selection, and hidden below
+ * 1:1 where the canvas is deliberately not an editing surface. */
+.wb-link-handle {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: crosshair;
+  opacity: 0.55;
+  touch-action: none;
+}
+
+.wb-link-handle-core {
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  background: var(--bg-raised);
+}
+
+.wb-link-handle:hover,
+.wb-link-handle:focus-visible,
+.wb-card.is-selected .wb-link-handle {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.wb-link-handle:hover {
+  background: var(--bg-hover);
+}
+
+.wb-link-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.wb-link-handle.is-linking {
+  color: var(--warn);
+  opacity: 1;
+}
+
+.wb-group-tab .wb-link-handle {
+  width: 14px;
+  height: 14px;
+}
+
+.wb-group-summary .wb-link-handle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+/* Cards and group tabs are keyboard stops: Shift+F10 opens their menu. */
+.wb-card:focus-visible,
+.wb-group-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Canvas search: hits, the current jump target, and isolated dimming. */
@@ -2964,6 +3844,68 @@ dialog::backdrop {
   min-width: 220px;
 }
 
+/* The toolbar's single overflow menu: the advanced canvas actions. */
+.wb-more-menu {
+  min-width: 224px;
+}
+
+/* Saved canvas lenses: each row applies a view, with delete kept separate. */
+.wb-saved-views {
+  width: min(320px, calc(100vw - 16px));
+}
+
+.wb-saved-view-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 2px;
+}
+
+.wb-menu-item.wb-saved-view-apply {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+}
+
+.wb-saved-view-name,
+.wb-saved-view-meta {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-saved-view-name {
+  font-weight: 600;
+}
+
+.wb-saved-view-meta {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.wb-saved-view-del {
+  flex: 0 0 24px;
+  align-self: center;
+  min-width: 24px;
+  min-height: 24px;
+  margin: 0 2px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.wb-saved-view-del:hover {
+  border-color: transparent;
+  background: var(--bg-hover);
+  color: var(--error);
+}
+
 .wb-menu {
   position: fixed;
   z-index: 120;
@@ -3077,6 +4019,14 @@ dialog::backdrop {
 
 .wb-menu-item:hover:not(:disabled) {
   background: var(--bg-hover);
+}
+
+.wb-menu:focus-visible,
+.wb-menu-item:focus-visible,
+.wb-menu-swatch:focus-visible,
+.wb-menu-icon:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .wb-menu-item.is-current {
@@ -3445,16 +4395,20 @@ dialog::backdrop {
   opacity: 0.42;
 }
 
-/* A bond stated on the canvas itself — no prose link stands behind it. */
+/* A bond stated on the canvas itself — no prose link stands behind it. The
+ * dash is the quick read that separates it from a solid prose link. */
 .wb-edge-bond {
   stroke: var(--accent);
-  opacity: 0.62;
+  stroke-dasharray: 8 4;
+  stroke-linecap: round;
+  opacity: 0.72;
 }
 
 /* A kind's translucency belongs to its wire, not to the diamond that ends it:
  * the cut marker stays solid so it reads as the clickable control it is. */
 .wb-edge-cut {
   opacity: 1;
+  stroke-dasharray: none;
 }
 
 .wb-edge-contains {
@@ -3497,7 +4451,16 @@ dialog::backdrop {
 /* A group's bond is twice the weight of a card's bond of the same kind. */
 .wb-edge-group {
   stroke-width: calc(var(--wb-weight, 1.6px) * 2);
+  stroke-dasharray: 8 4;
+  stroke-linecap: round;
   opacity: 0.78;
+}
+
+/* A cut diamond inherits its wire's kind class for colour; it must not inherit
+ * the bond's dash pattern, even when the group class comes later in the file. */
+.wb-edge-cut.wb-edge-bond,
+.wb-edge-cut.wb-edge-group {
+  stroke-dasharray: none;
 }
 
 /* A card dragged over a group's box: the box it would join if released. */
@@ -3591,6 +4554,280 @@ dialog::backdrop {
   pointer-events: auto;
 }
 
+/* Below 1:1 the card's text and controls are too small to aim at. Only the
+ * card itself, its head, fold toggle and resize handle keep the pointer; the
+ * rest falls through to the card, whose body is a drag surface. Menus stay
+ * available on right-click, including the card's Rename command. */
+.wb-stage.is-zoomed-out .wb-card *,
+.wb-stage.is-zoomed-out .wb-group-tab * {
+  pointer-events: none;
+}
+
+.wb-stage.is-zoomed-out .wb-card-head,
+.wb-stage.is-zoomed-out .wb-fold-toggle,
+.wb-stage.is-zoomed-out .wb-resize {
+  pointer-events: auto;
+}
+
+.wb-stage.is-zoomed-out .wb-card:not(.is-locked),
+.wb-stage.is-zoomed-out .wb-card:not(.is-locked) .wb-card-head {
+  cursor: grab;
+}
+
+.wb-stage.is-zoomed-out .wb-card.is-locked {
+  cursor: not-allowed;
+}
+
+/* A relationship word is a change control at full size; zoomed out it falls
+ * through to its wire so a click selects the connector instead. */
+.wb-stage.is-zoomed-out .wb-edge-label {
+  pointer-events: none;
+}
+
+.wb-stage.is-zoomed-out .wb-link-handle {
+  display: none;
+}
+
+/* At the summary scale cards keep their saved box and hit area, but give up
+ * their real contents for a screen-sized semantic face. The card's gesture
+ * layer stays underneath; only the fold and resize controls remain visible. */
+.wb-stage.is-semantic-zoom .wb-card {
+  overflow: visible;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.wb-stage.is-semantic-zoom .wb-card > :not(.wb-semantic):not(.wb-resize):not(.wb-card-head),
+.wb-stage.is-semantic-zoom .wb-card-head > :not(.wb-fold-toggle),
+.wb-stage.is-semantic-zoom .wb-group-summary > :not(.wb-semantic) {
+  opacity: 0;
+}
+
+.wb-stage.is-semantic-zoom .wb-card-head {
+  position: relative;
+  z-index: 3;
+  background: transparent;
+  border-bottom-color: transparent;
+}
+
+/* Fold and resize stay at a usable screen size rather than shrinking with
+ * the canvas, while their hit areas remain the card's own controls. */
+.wb-stage.is-semantic-zoom .wb-card-head .wb-fold-toggle {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg-raised);
+  opacity: 0.88;
+  transform: scale(var(--wb-inv-zoom, 1));
+  transform-origin: top left;
+}
+
+.wb-stage.is-semantic-zoom .wb-card-head .wb-fold-toggle:hover {
+  opacity: 1;
+  background: var(--bg-hover);
+}
+
+.wb-stage.is-semantic-zoom .wb-resize {
+  z-index: 4;
+  right: 1px;
+  bottom: calc(-15px * var(--wb-inv-zoom, 1));
+  width: calc(13px * var(--wb-inv-zoom, 1));
+  height: calc(13px * var(--wb-inv-zoom, 1));
+  opacity: 0.7;
+}
+
+.wb-stage.is-semantic-zoom .wb-resize:hover {
+  opacity: 1;
+}
+
+.wb-stage.is-semantic-zoom .wb-group-summary {
+  overflow: visible;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.wb-stage.is-semantic-zoom .wb-group-summary > :not(.wb-semantic) {
+  pointer-events: none;
+}
+
+/* The semantic face is decorative: its box is the card's on-screen box, but
+ * its own inverse scale cancels the canvas transform, so its type keeps a
+ * readable screen size. It never takes a pointer event. */
+.wb-semantic {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  width: calc(100% * var(--wb-zoom, 1));
+  height: calc(100% * var(--wb-zoom, 1));
+  min-width: 100px;
+  min-height: 66px;
+  padding: 5px 9px 6px;
+  transform: scale(var(--wb-inv-zoom, 1));
+  transform-origin: top left;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-left: 4px solid var(--wb-semantic-accent, var(--accent));
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+  color: var(--text);
+  pointer-events: none;
+  container-type: inline-size;
+}
+
+[data-theme='light'] .wb-semantic {
+  box-shadow: 0 3px 12px rgba(20, 30, 45, 0.14);
+}
+
+.wb-stage.is-semantic-zoom .wb-semantic {
+  display: flex;
+  /* The visual face may be wider or taller than the saved card box (a
+   * collapsed card keeps a short box), so it doubles as the card's hit area.
+   * Events bubble to the card's own drag and menu handlers — no new gesture. */
+  pointer-events: auto;
+}
+
+/* The fold control sits at the card's top-left; leave it a clear corner. */
+.wb-semantic.wb-card-semantic {
+  padding-left: 23px;
+}
+
+.wb-semantic-type {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--wb-semantic-type, var(--text-dim));
+  font-size: clamp(9.5px, 5cqw, 15px);
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.wb-semantic-icon {
+  flex: 0 0 auto;
+  font-size: 1.1em;
+}
+
+.wb-semantic-type-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-semantic-flag {
+  flex: 0 0 auto;
+  font-size: 0.9em;
+  opacity: 0.85;
+}
+
+.wb-semantic-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: clamp(12px, 6cqw, 22px);
+  font-weight: 650;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.wb-semantic-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: clamp(9.5px, 5.5cqw, 14px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.wb-semantic-count {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-semantic-dot {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.wb-semantic::after {
+  content: attr(data-icon);
+  position: absolute;
+  right: 6px;
+  bottom: -3px;
+  font-size: clamp(28px, 18cqw, 72px);
+  line-height: 1;
+  opacity: 0.06;
+  pointer-events: none;
+}
+
+/* The semantic face carries the low-zoom states the card's outline used to. */
+.wb-stage.is-semantic-zoom .wb-card.is-selected,
+.wb-stage.is-semantic-zoom .wb-card.is-search-hit,
+.wb-stage.is-semantic-zoom .wb-card.is-search-current,
+.wb-stage.is-semantic-zoom .wb-card.is-link-target {
+  outline: none;
+}
+
+.wb-card.is-selected .wb-semantic {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.wb-card.is-search-hit .wb-semantic {
+  outline: 2px solid var(--warn);
+  outline-offset: 1px;
+}
+
+.wb-card.is-search-current .wb-semantic {
+  outline: 3px solid var(--warn);
+  outline-offset: 2px;
+}
+
+.wb-card.is-link-target .wb-semantic {
+  outline: 2px solid var(--warn);
+  outline-offset: 2px;
+}
+
+.wb-stage.is-semantic-zoom .wb-card.is-dragging {
+  box-shadow: none;
+}
+
+.wb-card.is-dragging .wb-semantic {
+  box-shadow: var(--shadow-lg);
+}
+
+.wb-stage.is-semantic-zoom .wb-card:hover .wb-semantic,
+.wb-stage.is-semantic-zoom .wb-group-summary:hover .wb-semantic {
+  border-color: var(--border-strong);
+}
+
 /* The card size is mirrored in worldbuildPanel.js (CARD_W / CARD_H). */
 .wb-card {
   position: absolute;
@@ -3604,6 +4841,11 @@ dialog::backdrop {
   border-radius: var(--radius);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
   overflow: hidden;
+  /* Sticky table headings carry their own z-index so they scroll over cells.
+   * Keep that stacking inside this card: when another card overlaps it, the
+   * nearby card must paint over the heading rather than the heading leaking
+   * above it. */
+  isolation: isolate;
 }
 
 [data-theme='light'] .wb-card {
@@ -3636,6 +4878,39 @@ dialog::backdrop {
 .wb-card.is-dragging {
   z-index: 5;
   box-shadow: var(--shadow-lg);
+}
+
+/* The corner handle: drag to size a note, double-click for the designed box. */
+.wb-resize {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 15px;
+  height: 15px;
+  opacity: 0.75;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(135deg,
+    transparent 0 42%,
+    var(--border-strong) 42% 52%,
+    transparent 52% 66%,
+    var(--border-strong) 66% 76%,
+    transparent 76%);
+}
+
+.wb-resize:hover {
+  opacity: 1;
+}
+
+.wb-card.is-resizing {
+  z-index: 6;
+  user-select: none;
+}
+
+.wb-card.is-folded .wb-resize,
+.wb-card.is-mode-compact .wb-resize,
+.wb-card.is-mode-thumbnail .wb-resize {
+  display: none;
 }
 
 .wb-card.is-locked .wb-card-head,
@@ -3688,6 +4963,7 @@ dialog::backdrop {
 .wb-card.is-mode-compact .wb-fields,
 .wb-card.is-mode-compact .wb-card-body,
 .wb-card.is-mode-compact .wb-card-rendered,
+.wb-card.is-mode-compact .wb-caption-label,
 .wb-card.is-mode-compact .wb-resources,
 .wb-card.is-mode-compact .wb-card-foot {
   display: none;
@@ -3713,6 +4989,7 @@ dialog::backdrop {
 .wb-card.is-mode-thumbnail .wb-fields,
 .wb-card.is-mode-thumbnail .wb-card-body,
 .wb-card.is-mode-thumbnail .wb-card-rendered,
+.wb-card.is-mode-thumbnail .wb-caption-label,
 .wb-card.is-mode-thumbnail .wb-resources,
 .wb-card.is-mode-thumbnail .wb-card-foot,
 .wb-card.is-mode-thumbnail .wb-meta-line {
@@ -3765,6 +5042,7 @@ dialog::backdrop {
 /* A collapsed group as one summary card. */
 .wb-group-summary {
   position: absolute;
+  pointer-events: auto;
   width: 280px;
   height: 120px;
   box-sizing: border-box;
@@ -3813,6 +5091,7 @@ dialog::backdrop {
 .wb-card.is-folded .wb-fields,
 .wb-card.is-folded .wb-card-body,
 .wb-card.is-folded .wb-card-rendered,
+.wb-card.is-folded .wb-caption-label,
 .wb-card.is-folded .wb-resources,
 .wb-card.is-folded .wb-card-foot {
   display: none;
@@ -4111,6 +5390,376 @@ dialog::backdrop {
   color: var(--text-faint);
   font-size: 10px;
   white-space: nowrap;
+}
+
+/* Table nodes: a real grid inside the card, with a bounded scroll area so a
+ * long sheet cannot push the prose and tags out of a fixed-height card. */
+.wb-fields.wb-table-editor {
+  display: block;
+  padding: 5px 8px 7px;
+}
+
+.wb-table-scroll {
+  max-height: 112px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-sunken);
+  overscroll-behavior: contain;
+}
+
+/* Table mode keeps its prose in a caption outside the grid. The label and
+ * preview sit under the grid; the caption textarea replaces only the preview
+ * while it is being edited. */
+.wb-caption-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 10px 0;
+  color: var(--text-faint);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.wb-caption-hint {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 9px;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.wb-table-caption-preview {
+  flex: 0 1 auto;
+  min-height: 26px;
+  max-height: 84px;
+  padding-top: 2px;
+  padding-bottom: 4px;
+}
+
+.wb-table-caption-preview.is-caption-empty {
+  display: flex;
+  align-items: flex-start;
+}
+
+.wb-caption-empty {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.wb-card-body.wb-table-caption-body {
+  flex: 0 1 auto;
+  min-height: 34px;
+}
+
+.wb-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.wb-table th,
+.wb-table td {
+  padding: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.wb-table th:last-child,
+.wb-table td:last-child {
+  border-right: 0;
+}
+
+.wb-table tbody tr:last-child th,
+.wb-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.wb-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-raised);
+}
+
+.wb-table-corner {
+  left: 0;
+  z-index: 3 !important;
+  width: 28px;
+  min-width: 28px;
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.wb-table-header-cell {
+  min-width: 68px;
+}
+
+.wb-table-header-wrap {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+}
+
+.wb-table-align {
+  flex: 0 0 auto;
+  min-width: 14px;
+  height: 15px;
+  padding: 0 1px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.45;
+  cursor: pointer;
+}
+
+.wb-table-align:hover,
+.wb-table-align:focus-visible {
+  color: var(--text);
+  background: var(--border);
+  opacity: 1;
+}
+
+.wb-table-align.is-center,
+.wb-table-align.is-right {
+  color: var(--accent);
+  opacity: 0.85;
+}
+
+.wb-table-align:disabled {
+  opacity: 0.18;
+  cursor: default;
+}
+
+.wb-table-header-input,
+.wb-table-cell-input {
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.wb-table-header-input {
+  flex: 1 1 auto;
+  width: 100%;
+  padding: 5px 4px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.wb-table-cell-input {
+  display: block;
+  width: 100%;
+  padding: 4px 5px;
+  font-size: 11px;
+}
+
+.wb-table-header-input:focus,
+.wb-table-cell-input:focus {
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.wb-table-header-input::placeholder {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+.wb-table-header-input:disabled,
+.wb-table-cell-input:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.wb-table-row-head {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 28px;
+  min-width: 28px;
+  background: var(--bg-raised);
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 500;
+  text-align: center;
+  cursor: grab;
+  outline: none;
+}
+
+.wb-table-row-head:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.wb-table-row-head:active {
+  cursor: grabbing;
+}
+
+.wb-table tbody tr.is-row-dragging {
+  opacity: 0.45;
+}
+
+.wb-table tbody tr.is-row-drop td,
+.wb-table tbody tr.is-row-drop th {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.wb-table-row-num {
+  display: block;
+  line-height: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-table-del {
+  min-width: 14px;
+  height: 15px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.35;
+  cursor: pointer;
+}
+
+.wb-table-del:hover,
+.wb-table-del:focus-visible {
+  color: var(--text);
+  background: var(--border);
+  opacity: 1;
+}
+
+.wb-table-del:disabled {
+  opacity: 0.18;
+  cursor: default;
+}
+
+.wb-table-row-head .wb-table-del {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 14px;
+  height: 13px;
+  margin: 0;
+  font-size: 9px;
+  opacity: 0.4;
+}
+
+.wb-table-row-head:hover .wb-table-del,
+.wb-table-row-head:focus-within .wb-table-del {
+  opacity: 0.9;
+}
+
+.wb-table-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 5px;
+  flex-wrap: wrap;
+}
+
+.wb-table-bar .btn {
+  padding: 2px 6px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.wb-table-size {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wb-table-source {
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-faint);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.wb-table-picker,
+.wb-table-sort,
+.wb-table-filter {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 9px;
+}
+
+.wb-table-picker {
+  max-width: 110px;
+}
+
+.wb-table-sort {
+  flex: 0 1 auto;
+  max-width: 104px;
+}
+
+.wb-table-filter {
+  flex: 1 1 74px;
+  height: 19px;
+  padding: 0 5px;
+}
+
+.wb-table-picker:focus,
+.wb-table-sort:focus,
+.wb-table-filter:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.wb-table-view {
+  padding-top: 3px;
+}
+
+.wb-table-view .btn {
+  padding: 1px 5px;
+  font-size: 9px;
+}
+
+.wb-table-empty {
+  padding: 8px 6px;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-align: center;
+}
+
+.wb-table-note {
+  padding: 5px 10px 0;
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.wb-table-note strong {
+  color: var(--text-dim);
+  font-weight: 600;
 }
 
 .wb-words {

@@ -24,6 +24,16 @@ Where does the caesium sit? Two candidates:
 | LA-ICP-MS | Cs spikes on vesicle rims | vapour |
 | [[Chambers/Mineralogy/Fluid Inclusions]] | hot, dry homogenisation | dry melt |
 
+## Caesium budget
+
+```mermaid
+pie showData
+  title Where the caesium sits
+  "Glass network" : 55
+  "Vesicle rims" : 30
+  "Phenocryst rims" : 15
+```
+
 ## Working model
 
 An extremely fractionated, volatile-rich melt degassed while quenching. See

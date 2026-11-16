@@ -17,8 +17,12 @@ import {
   RELATION_KINDS, DEFAULT_RELATION, relationOf, relationKind, relationKey, groupEndpoint,
   bondEdges,
   NODE_TYPES, nodeType, nodeTypeOf, nodeFields, nodeFieldOf, fieldRangeHint, unitSuggestions,
+  blankTable, normalizeTable, tableSummary,
+  markdownTables, tableCaptionOf, replaceTableCaption, syncTableMarkdown,
+  parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
+  TABLE_ALIGNMENTS, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_HEADER_MAX_LENGTH, TABLE_CELL_MAX_LENGTH,
   dropMembershipKind,
-  clampView, zoomViewAt, fitView, centreView, snapDelta, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
+  clampView, snapZoomView, fitView, centreView, snapDelta, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
   normalizeRouting, prepareConnectorGeometry, cleanAnnotations, makeAnnotationId,
   placeConnectorLabels,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
@@ -28,10 +32,11 @@ import {
   referencedNodeFileMetaNames, orphanedNodeFileMetaNames, NODE_FILE_MAX_BYTES, NODE_RESOURCE_LIMIT,
   canvasSnapshot as snapshotCanvas, renameHistoryAnchor, pruneHistoryStack,
   connectedAnchors, lineageAnchors, anchorsInRect, relationshipDepths, canvasSearch,
-  connectorList, connectorKey, pathAnchors, effectiveRouting, spreadConnectorCurves, cleanCardModes, cleanCardSizes, cleanCollapsedGroups, proseLinkBetween, unlinkProseBetween,
+  connectorList, connectorKey, nextConnectorSelection, pathAnchors, effectiveRouting, spreadConnectorCurves, cleanCardModes, cleanCardSizes, cleanCardDims, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
   progressionColumns,
   DEFAULT_STEP_NAME, cleanHistoryStack, historyJump, historyKey,
   restoreSnapshot, pushHistoryStep,
+  CARD_MIN_W, CARD_MIN_H, CARD_MAX_W, CARD_MAX_H,
 } from '../lib/worldbuild.js';
 import { buildCanvasSvg, buildCanvasMermaid, canvasExportName } from '../lib/worldbuildExport.js';
 
@@ -46,6 +51,13 @@ const GAP_X = 96;
 const GAP_Y = 76;
 const PAD = 26;
 const INTRO_H = 150;
+// Below 1:1 controls and editable text become too small to aim at; the canvas
+// stays an object map (drag, resize, fold, selection and menus stay).
+const DETAIL_ZOOM = 1;
+// Full cards survive the first two wheel notches out of 1:1. A notch is
+// exp(-0.2) at the usual 100px delta, so three notches land near 0.549: 0.55
+// switches to the screen-readable summary on that third notch, not the first.
+const SUMMARY_ZOOM = 0.55;
 // A stacked pair leaves a short wire between them — tight enough that the
 // folded card and the card under it read as one stack, not two neighbours.
 const STACK_GAP = 8;
@@ -73,28 +85,10 @@ export function createWorldbuildPanel({ app, root }) {
   const toolbar = el('div', { class: 'wb-toolbar' });
   // The canvas's own undo pair: steps taken on the graph, not the vein's edits.
   const undoBtn = el('button', {
-    class: 'btn btn-ghost btn-mini', type: 'button', text: '↶', onclick: () => undoCanvas(),
+    class: 'btn btn-ghost btn-mini ui-icon-only', type: 'button', icon: 'undo', iconLabel: 'Undo', title: 'Undo the last canvas change', onclick: () => undoCanvas(),
   });
   const redoBtn = el('button', {
-    class: 'btn btn-ghost btn-mini', type: 'button', text: '↷', onclick: () => redoCanvas(),
-  });
-  // The history browser: name every step, and jump to any of them.
-  const historyBtn = el('button', {
-    class: 'btn btn-ghost btn-mini', type: 'button', text: 'History',
-    'data-history-toggle': '',
-    title: 'Browse this vein’s canvas history — undo or redo several steps at once',
-    'aria-haspopup': 'dialog',
-    'aria-expanded': 'false',
-    onclick: (event) => toggleHistory(event.currentTarget),
-  });
-  // Canvas health: orphans and thin groups, with a jump to each.
-  const healthBtn = el('button', {
-    class: 'btn btn-ghost btn-mini', type: 'button', text: 'Health',
-    'data-health-toggle': '',
-    title: 'Canvas health — cards with nothing connected to them, groups too thin to mean anything',
-    'aria-haspopup': 'dialog',
-    'aria-expanded': 'false',
-    onclick: (event) => toggleHealth(event.currentTarget),
+    class: 'btn btn-ghost btn-mini ui-icon-only', type: 'button', icon: 'redo', iconLabel: 'Redo', title: 'Redo the last undone canvas change', onclick: () => redoCanvas(),
   });
   const stage = el('div', { class: 'wb-stage' });
   const canvas = el('div', { class: 'wb-canvas' });
@@ -107,10 +101,49 @@ export function createWorldbuildPanel({ app, root }) {
   const guides = el('div', { class: 'wb-guides', 'aria-hidden': 'true' }, [guideV, guideH]);
   // The marquee box, in stage coordinates: Shift+drag on the background.
   const marqueeBox = el('div', { class: 'wb-marquee hidden', 'aria-hidden': 'true' });
+  // A link drag lives in stage pixels, above the cards and their group boxes:
+  // the dashed rubber-band and its endpoint dot read the same at every zoom.
+  const linkOverlay = svgNode('svg', {
+    class: 'wb-link-overlay hidden', width: '100%', height: '100%', 'aria-hidden': 'true',
+  });
+  const linkPreviewLine = svgNode('path', { class: 'wb-link-preview-line', fill: 'none' });
+  const linkPreviewDot = svgNode('circle', { class: 'wb-link-preview-dot', r: 4 });
+  linkOverlay.append(linkPreviewLine, linkPreviewDot);
+  // A transient scale readout. It is pointer-transparent and decorative: the
+  // wheel and Fit are direct-manipulation gestures, so this stays on the
+  // canvas rather than joining the app's announcement toasts.
+  const zoomHudValue = el('span', { class: 'wb-zoom-hud-value', text: '100%' });
+  const zoomHud = el('div', { class: 'wb-zoom-hud', 'aria-hidden': 'true' }, [
+    el('span', { class: 'wb-zoom-hud-label', text: 'Zoom' }),
+    zoomHudValue,
+  ]);
   const statsBar = el('div', { class: 'wb-stats' });
+  // The inspector is a second view of the selection: a place to read what a
+  // card is, what it points at, and how it is grouped without opening its
+  // in-place editor. It holds no state of its own, so undo, saved views and
+  // the canvas camera keep treating it as chrome.
+  const inspectorBody = el('div', { class: 'wb-inspector-body' });
+  const inspector = el('aside', {
+    class: 'wb-inspector hidden',
+    'aria-label': 'Selected card inspector',
+  }, [
+    el('div', { class: 'wb-inspector-head' }, [
+      el('span', { class: 'wb-inspector-kicker', text: 'Inspector' }),
+      el('button', {
+        class: 'icon-btn btn-mini ui-icon-only',
+        type: 'button',
+        icon: 'close',
+        iconLabel: 'Close',
+        title: 'Clear the selection and close the inspector',
+        onclick: closeInspector,
+      }),
+    ]),
+    inspectorBody,
+  ]);
+  const workbench = el('div', { class: 'wb-workbench' }, [stage, inspector]);
 
   canvas.append(edgeSvg, cards, annotationsLayer, guides);
-  stage.append(canvas, marqueeBox);
+  stage.append(canvas, marqueeBox, linkOverlay, zoomHud);
   // Canvas search: titles, types, fields, colours and group names in this
   // vein, with jump-to, highlight, select-all-matches and isolate.
   const searchInput = el('input', {
@@ -133,12 +166,12 @@ export function createWorldbuildPanel({ app, root }) {
   const searchResults = el('div', { class: 'wb-search-results hidden', role: 'listbox', 'aria-label': 'Canvas search results' });
   const searchBar = el('div', { class: 'wb-search hidden' }, [
     searchInput,
-    el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: '‹', title: 'Previous match', onclick: () => jumpToSearchMatch(searchCurrent - 1) }),
-    el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: '›', title: 'Next match', onclick: () => jumpToSearchMatch(searchCurrent + 1) }),
+    el('button', { class: 'btn btn-ghost btn-mini ui-icon-only', type: 'button', icon: 'previous', iconLabel: 'Previous', title: 'Previous match', onclick: () => jumpToSearchMatch(searchCurrent - 1) }),
+    el('button', { class: 'btn btn-ghost btn-mini ui-icon-only', type: 'button', icon: 'next', iconLabel: 'Next', title: 'Next match', onclick: () => jumpToSearchMatch(searchCurrent + 1) }),
     searchCount,
     el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Select all', title: 'Select every match', onclick: selectAllSearchMatches }),
     el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Isolate', title: 'Dim everything outside the connected subgraph of the matches', onclick: isolateSearchMatches }),
-    el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear', onclick: () => clearCanvasSearch() }),
+    el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear', title: 'Close canvas search and clear its matches', onclick: () => clearCanvasSearch() }),
     searchResults,
   ]);
   // Connector selection bar: batch routing/arrowheads, path tracing, and
@@ -151,9 +184,9 @@ export function createWorldbuildPanel({ app, root }) {
     el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Trim', title: 'Cut off long selected wires at a diamond, or draw them full length again', onclick: () => batchRouting('cut') }),
     el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Trace upstream', title: 'Select every card that feeds into the selected connectors, following the arrows backwards', onclick: () => traceSelectedConnectors('upstream') }),
     el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Trace downstream', title: 'Select every card the selected connectors lead to, following the arrows forwards', onclick: () => traceSelectedConnectors('downstream') }),
-    el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear', onclick: () => clearConnectorSelection() }),
+    el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear', title: 'Clear the connector selection', onclick: () => clearConnectorSelection() }),
   ]);
-  root.append(toolbar, searchBar, connectorBar, stage, statsBar);
+  root.append(toolbar, searchBar, connectorBar, workbench, statsBar);
 
   let model = null;
   let currentPath = null;
@@ -180,6 +213,8 @@ export function createWorldbuildPanel({ app, root }) {
   // Card heights: `fixed` (the vault default, an override when stored) or
   // `content`, which grows a full card to its prose instead of scrolling it.
   let cardSizes = {};
+  // Dragged card sizes, by anchor: `{ width, height }` in canvas pixels.
+  let cardDims = {};
   // The vault's default card height last built with, so a change in Settings
   // rebuilds the canvas even though the vein's text did not change.
   let lastVaultCardSize = null;
@@ -236,12 +271,18 @@ export function createWorldbuildPanel({ app, root }) {
   let marked = false;
   // The relationship the next link from each card asserts, by note index.
   let linkKinds = new Map();
+  // Which markdown table a Table card is showing, by anchor. A section may
+  // hold several tables; this chooses one without moving or merging them.
+  let tableSelection = new Map();
   let cardEls = [];
   // Watchers on content-sized cards: their height follows their prose (and
   // any image or diagram inside it), so connectors and the canvas keep up.
   let contentObservers = [];
   let layout = { cols: 1, top: PAD };
   let dragging = null;
+  // A card being resized from its corner: its starting box and the point the
+  // drag began at, in canvas pixels.
+  let resizing = null;
   // The group a dragged card would join if released where it is — lit while
   // the card is over its box, null the rest of the time.
   let dropTargetId = null;
@@ -250,6 +291,10 @@ export function createWorldbuildPanel({ app, root }) {
   // Transient UI state: they can be grouped, moved together, fitted,
   // aligned, and distributed.
   let selected = new Set();
+  // Coalesce inspector refreshes while a selected card is being edited. The
+  // card rebuilds already refresh it once; prose typing would otherwise clear
+  // and rebuild the panel on every keystroke.
+  let inspectorTimer = 0;
   // An in-progress marquee: screen start, the selection to start from, and
   // whether it has grown past a click.
   let marquee = null;
@@ -260,6 +305,8 @@ export function createWorldbuildPanel({ app, root }) {
   let searchMatches = [];
   let searchCurrent = -1;
   let isolatedAnchors = null;
+  // Named lenses for this vein, loaded from its canvas record.
+  let savedViews = [];
   // Connectors picked on the canvas, by connector key. Transient, like
   // card selection: they batch routing/arrowheads and seed path tracing.
   let selectedEdges = new Set();
@@ -271,6 +318,22 @@ export function createWorldbuildPanel({ app, root }) {
   // never touches them. A new vein (or tidying the grid) starts at 1:1.
   let view = { x: 0, y: 0, s: 1 };
   let panning = null;
+  // A drag from a link dot: its source endpoint, the dotted preview, and the
+  // endpoint currently lit as the drop target. One pointer gesture, no step
+  // until a relationship is chosen.
+  let linkDrag = null;
+  // The scale badge's hide timer; each wheel tick restarts it.
+  let zoomHudTimer = 0;
+
+  /** True when the canvas is scaled below legible, editable card content. */
+  function isOverviewZoom() {
+    return view.s < DETAIL_ZOOM;
+  }
+
+  /** True when the canvas is scaled down to its screen-readable summary. */
+  function isSemanticZoom() {
+    return view.s < SUMMARY_ZOOM;
+  }
 
   /* ------------------------------------------------------------ content -- */
 
@@ -283,13 +346,23 @@ export function createWorldbuildPanel({ app, root }) {
   function render(doc) {
     if (!doc) {
       // Leaving the mode must not leave a floating menu behind over it.
+      cancelLinkDrag();
+      clearTimeout(zoomHudTimer);
+      zoomHudTimer = 0;
+      clearTimeout(inspectorTimer);
+      inspectorTimer = 0;
+      inspector.classList.add('hidden');
+      clear(inspectorBody);
+      zoomHud.classList.remove('is-visible');
       closeMenu();
+      closeMoreMenu({ returnFocus: false });
       closeSelectMenu();
       closeArrangeMenu();
       mounted = false;
       model = null;
       currentPath = null;
       lastText = null;
+      savedViews = [];
       for (const observer of contentObservers) observer.disconnect();
       contentObservers = [];
       clear(toolbar);
@@ -311,6 +384,7 @@ export function createWorldbuildPanel({ app, root }) {
       searchCurrent = -1;
       isolatedAnchors = null;
       searchInput.value = '';
+      tableSelection = new Map();
     }
     if (currentPath === doc.path && lastText !== null && text !== lastText) overviewFolded = null;
     currentPath = doc.path;
@@ -318,11 +392,13 @@ export function createWorldbuildPanel({ app, root }) {
     model = parseNotes(text);
     const record = app.worldRecord?.(doc.path) ?? null;
     marked = Boolean(record?.marked);
+    savedViews = cleanSavedViews(record?.savedViews);
     positions = new Map(Object.entries(record?.positions ?? {}));
     relations = record?.relations ?? {};
     folded = record?.folded ?? {};
     cardModes = cleanCardModes(record?.cardModes);
     cardSizes = cleanCardSizes(record?.cardSizes);
+    cardDims = cleanCardDims(record?.cardDims);
     collapsedGroups = cleanCollapsedGroups(record?.collapsedGroups);
         nodeTypes = record?.types ?? {};
     fieldValues = record?.fields ?? {};
@@ -342,8 +418,35 @@ export function createWorldbuildPanel({ app, root }) {
     // the zoom it was left at, so the graph reopens exactly as it was left.
     view = viewOfAnchor(record?.view) ?? { x: 0, y: 0, s: 1 };
     linkKinds = new Map();
+    const migratedTables = migrateTableFields();
     mounted = true;
     build();
+    if (migratedTables) commit();
+  }
+
+  /**
+   * Old records kept a second copy of a table as JSON. Markdown is the source
+   * of truth now: keep that copy only long enough to seed a legacy table that
+   * has no markdown yet, then remove it. A locked card is left alone until it
+   * can be written safely.
+   */
+  function migrateTableFields() {
+    if (!model || !currentPath) return false;
+    let changed = false;
+    for (const [index, note] of (model.notes ?? []).entries()) {
+      const stored = nodeFieldOf(fieldValues, note.anchor, 'table');
+      if (!stored) continue;
+      if (isContentLocked(note.anchor)) continue;
+      if (nodeTypeOf(nodeTypes, note.anchor).id === 'table' && !markdownTables(note.body).length) {
+        const body = syncTableMarkdown(note.body, normalizeTable(stored), 0);
+        if (body !== note.body) {
+          model = updateNote(model, index, { body });
+          changed = true;
+        }
+      }
+      fieldValues = app.dropWorldNodeField?.(currentPath, note.anchor, 'table') ?? fieldValues;
+    }
+    return changed;
   }
 
   function build() {
@@ -371,6 +474,8 @@ export function createWorldbuildPanel({ app, root }) {
     sizeCanvas();
     drawEdges();
     renderStats();
+    renderInspector();
+    syncOverviewInteraction();
   }
 
   function commit() {
@@ -384,35 +489,37 @@ export function createWorldbuildPanel({ app, root }) {
 
   /* ------------------------------------------------------------ toolbar -- */
 
+  /**
+   * The canvas toolbar keeps only what a canvas is used for minute to minute:
+   * undo/redo, a new note, arrange, overview, card shapes, fit, search, save.
+   * Everything rarer — history, health, routing, quick select, legend, export,
+   * the markdown source — lives in one More menu, so the canvas gets the row
+   * back instead of spending it on a second line of buttons. The gesture tour
+   * that used to sit here is on the title's tooltip and in Canvas gestures.
+   */
   function renderToolbar() {
+    moreButton = el('button', {
+      class: 'btn btn-ghost btn-mini', type: 'button', text: 'More ▾',
+      'data-more-toggle': '',
+      'aria-haspopup': 'menu',
+      'aria-expanded': 'false',
+      title: 'More canvas actions — history, health, routing, quick select, legend, export, the markdown source',
+      onclick: (event) => toggleMoreMenu(event.currentTarget),
+    });
     clear(toolbar).append(
-      el('div', { class: 'wb-title' }, [
+      el('div', {
+        class: 'wb-title',
+        title: 'Each card is a heading of this vein — typing here edits the markdown. Shift+drag on the background to box-select, Ctrl+click to pick.',
+      }, [
         el('span', { class: 'wb-dot' }),
         el('strong', { text: 'Worldbuilding' }),
       ]),
-      el('span', { class: 'wb-hint', text: 'Each card is a heading of this vein — typing here edits the markdown. Shift+drag on the background to box-select, Ctrl+click to pick, Select for quick picks' }),
       el('div', { class: 'spacer' }),
       undoBtn,
       redoBtn,
-      historyBtn,
-      healthBtn,
-      el('button', {
-        class: `btn ${marked ? 'btn-primary' : 'btn-ghost'} btn-mini`,
-        type: 'button',
-        text: marked ? '★ Marked' : '☆ Mark',
-        title: marked
-          ? 'This vein opens as a worldbuilding graph — click to unmark it (the layout and relationships are kept)'
-          : 'Mark this vein as Worldbuilding: it will open as a graph, with these card positions',
-        onclick: toggleMark,
-      }),
       el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: '+ Note',
         title: 'Add a note to this vein', onclick: addNewNote,
-      }),
-      el('button', {
-        class: 'btn btn-ghost btn-mini', type: 'button', text: '+ Annotation',
-        title: 'Add a free-floating margin note — not tied to a heading',
-        onclick: () => addAnnotation(),
       }),
       el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: 'Arrange ▾',
@@ -438,27 +545,9 @@ export function createWorldbuildPanel({ app, root }) {
         onclick: (event) => toggleCardsMenu(event.currentTarget),
       }),
       el('button', {
-        class: 'btn btn-ghost btn-mini', type: 'button', text: '⤢ Fit',
+        class: 'btn btn-ghost btn-mini', type: 'button', text: 'Fit',
         title: 'Zoom to fit every card on screen — no more hunting for edges off-screen',
         onclick: zoomToFit,
-      }),
-      el('button', {
-        class: `btn ${routing.elbow ? 'btn-primary' : 'btn-ghost'} btn-mini`, type: 'button', text: 'Elbow',
-        'aria-pressed': routing.elbow ? 'true' : 'false',
-        title: 'Route connectors as right-angle elbows instead of curves — applies to the selected connectors when any are selected',
-        onclick: () => toggleRouting('elbow'),
-      }),
-      el('button', {
-        class: `btn ${routing.arrows ? 'btn-primary' : 'btn-ghost'} btn-mini`, type: 'button', text: 'Arrows',
-        'aria-pressed': routing.arrows ? 'true' : 'false',
-        title: 'Show arrowheads on connectors — applies to the selected connectors when any are selected',
-        onclick: () => toggleRouting('arrows'),
-      }),
-      el('button', {
-        class: `btn ${routing.cut ? 'btn-primary' : 'btn-ghost'} btn-mini`, type: 'button', text: 'Trim',
-        'aria-pressed': routing.cut ? 'true' : 'false',
-        title: 'Cut off wires longer than a screen at a diamond — click it to reveal the far card if it is inside a collapsed group, then centre the view there',
-        onclick: () => toggleRouting('cut'),
       }),
       el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: 'Search',
@@ -466,54 +555,164 @@ export function createWorldbuildPanel({ app, root }) {
         onclick: () => toggleSearchBar(),
       }),
       el('button', {
-        class: 'btn btn-ghost btn-mini', type: 'button', text: 'Select ▾',
-        'data-select-toggle': '',
-        'aria-haspopup': 'menu',
-        'aria-expanded': 'false',
-        title: 'Quick selections — connected, ancestors, descendants, same type or colour, group members, pinned, locked, untyped, imageless',
-        onclick: (event) => toggleSelectMenu(event.currentTarget),
-      }),
-      el('button', {
-        class: 'btn btn-ghost btn-mini', type: 'button', text: 'Fit selection',
-        'data-fit-selection': '',
-        title: 'Zoom to fit the selection',
-        disabled: selected.size ? false : true,
-        onclick: zoomToFitSelection,
-      }),
-      el('button', {
-        class: 'btn btn-ghost btn-mini', type: 'button', text: 'Legend ▾',
-        'data-legend-toggle': '',
-        title: 'What the lines, colours and icons mean',
+        class: 'btn btn-ghost btn-mini', type: 'button', text: 'Views ▾',
+        'data-views-toggle': '',
         'aria-haspopup': 'dialog',
         'aria-expanded': 'false',
-        onclick: (event) => toggleLegend(event.currentTarget),
+        title: 'Saved canvas views — switch a lens, or save the current filter, isolation, collapsed groups and camera',
+        onclick: (event) => toggleViewsMenu(event.currentTarget),
       }),
-      el('button', {
-        class: 'btn btn-ghost btn-mini', type: 'button', text: 'Export ▾',
-        'data-export-toggle': '',
-        'aria-haspopup': 'menu',
-        'aria-expanded': 'false',
-        title: 'Export this canvas as a standalone SVG, a PNG image, or Mermaid markdown',
-        onclick: (event) => toggleExportMenu(event.currentTarget),
-      }),
-      el('button', {
-        class: 'btn btn-ghost btn-mini', type: 'button', text: '?',
-        'data-help-toggle': '',
-        title: 'Canvas gestures — selecting, grouping, renaming, cycling bonds and Fold',
-        'aria-haspopup': 'dialog',
-        'aria-expanded': 'false',
-        onclick: (event) => toggleHelp(event.currentTarget),
-      }),
-      el('button', {
-        class: 'btn btn-ghost btn-mini', type: 'button', text: 'Markdown',
-        title: 'Edit this vein as markdown source', onclick: () => app.setMode('edit'),
-      }),
+      moreButton,
       el('button', {
         class: 'btn btn-primary btn-mini', type: 'button', text: 'Save',
+        title: 'Save this vein (Ctrl+S)',
         onclick: () => app.saveCurrent(),
       }),
     );
     syncHistoryButtons();
+    syncSelectionUi();
+  }
+
+  /* ------------------------------------------------------------ more menu -- */
+
+  let moreMenuEl = null;
+  let moreButton = null;
+
+  /** Whether a More-menu toggle is currently on. */
+  function moreState(kind) {
+    return kind === 'marked' ? marked : Boolean(routing[kind]);
+  }
+
+  /** One More-menu row: a tick box, then the label. */
+  function moreItem(label, title, action, { kind = null, disabled = false, attrs = {} } = {}) {
+    const on = kind ? moreState(kind) : false;
+    return el('button', {
+      class: `wb-menu-item wb-submenu-choice${on ? ' is-current' : ''}`,
+      type: 'button',
+      title,
+      disabled,
+      onclick: action,
+      ...attrs,
+    }, [
+      el('span', {
+        class: 'wb-menu-check',
+        text: on ? '✓' : '',
+        ...(kind ? { 'data-more-check': kind } : {}),
+      }),
+      el('span', { class: 'wb-submenu-choice-label', text: label }),
+    ]);
+  }
+
+  /** Close the More menu, then open one of the anchored dropdowns from it. */
+  function openFromMore(open) {
+    const anchor = moreButton;
+    closeMoreMenu({ returnFocus: false });
+    if (!anchor?.isConnected) return;
+    open(anchor);
+    // The popup now on screen is not the More menu, so the button must not
+    // claim its own menu is expanded while it is up.
+    anchor.setAttribute('aria-expanded', 'false');
+  }
+
+  function moreMenuRows() {
+    return [
+      el('div', { class: 'wb-menu-label', text: 'Canvas' }),
+      moreItem('History…', 'Browse this vein’s canvas history — undo or redo several steps at once', () => openFromMore(toggleHistory)),
+      moreItem('Health…', 'Cards with nothing connected to them, and groups too thin to mean anything', () => openFromMore(toggleHealth)),
+      moreItem('Quick select…', 'Connected, ancestors, descendants, same type or colour, group members, pinned, locked, untyped, imageless', () => openFromMore(toggleSelectMenu)),
+      moreItem('Fit selection', 'Zoom to fit the selected cards', () => {
+        closeMoreMenu({ returnFocus: false });
+        zoomToFitSelection();
+      }, { disabled: !selected.size, attrs: { 'data-fit-selection': '' } }),
+      el('div', { class: 'wb-menu-label', text: 'This vein' }),
+      moreItem(marked ? 'Unmark Worldbuilding' : 'Mark as Worldbuilding', marked
+        ? 'This vein opens as a worldbuilding graph — unmarking keeps the layout and relationships'
+        : 'Mark this vein as Worldbuilding: it will open as a graph, with these card positions', () => {
+        closeMoreMenu({ returnFocus: false });
+        toggleMark();
+      }, { kind: 'marked' }),
+      moreItem('Add annotation…', 'Add a free-floating margin note — not tied to a heading', () => {
+        closeMoreMenu({ returnFocus: false });
+        addAnnotation();
+      }),
+      moreItem('Edit markdown source', 'Edit this vein as markdown text instead of cards', () => {
+        closeMoreMenu({ returnFocus: false });
+        app.setMode('edit');
+      }),
+      el('div', { class: 'wb-menu-label', text: 'Connectors' }),
+      moreItem('Elbow routing', 'Route connectors as right-angle elbows instead of curves — applies to the selected connectors when any are selected', () => toggleRouting('elbow'), { kind: 'elbow' }),
+      moreItem('Arrowheads', 'Show arrowheads on connectors — applies to the selected connectors when any are selected', () => toggleRouting('arrows'), { kind: 'arrows' }),
+      moreItem('Trim long wires', 'Cut off wires longer than a screen at a diamond, instead of drawing them full length', () => toggleRouting('cut'), { kind: 'cut' }),
+      el('div', { class: 'wb-menu-label', text: 'Help and output' }),
+      moreItem('Legend…', 'What the lines, colours and icons mean', () => openFromMore(toggleLegend)),
+      moreItem('Export…', 'Export this canvas as a standalone SVG, a PNG image, or Mermaid markdown', () => openFromMore(toggleExportMenu)),
+      moreItem('Canvas gestures…', 'Selecting, grouping, renaming, cycling bonds and Fold', () => openFromMore(toggleHelp)),
+    ];
+  }
+
+  function positionMoreMenu(button) {
+    if (!moreMenuEl) return;
+    const rect = button.getBoundingClientRect();
+    const width = moreMenuEl.offsetWidth;
+    moreMenuEl.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
+    moreMenuEl.style.top = `${rect.bottom + 6}px`;
+    moreMenuEl.style.maxHeight = `${Math.max(160, window.innerHeight - rect.bottom - 14)}px`;
+  }
+
+  function moreEscape(event) {
+    if (event.key !== 'Escape' || !moreMenuEl) return;
+    event.stopPropagation();
+    closeMoreMenu({ returnFocus: true });
+  }
+
+  /** Close the More menu; a keyboard dismissal or choice hands focus back. */
+  function closeMoreMenu({ returnFocus = 'auto' } = {}) {
+    if (!moreMenuEl) return;
+    const trigger = moreMenuEl._trigger ?? null;
+    const hadFocus = moreMenuEl.contains(document.activeElement);
+    if (moreMenuEl._dismiss) document.removeEventListener('pointerdown', moreMenuEl._dismiss, true);
+    document.removeEventListener('keydown', moreEscape);
+    closeSubmenu();
+    moreMenuEl.remove();
+    moreMenuEl = null;
+    toolbar.querySelector('[data-more-toggle]')?.setAttribute('aria-expanded', 'false');
+    if (returnFocus === true || (returnFocus === 'auto' && hadFocus)) focusMenuTrigger(trigger);
+  }
+
+  function toggleMoreMenu(button) {
+    if (moreMenuEl) {
+      closeMoreMenu();
+      return;
+    }
+    // Any other dropdown gives way to this one.
+    closeMenu({ returnFocus: false });
+    closeCardsMenu({ returnFocus: false });
+    closeSelectMenu({ returnFocus: false });
+    closeArrangeMenu({ returnFocus: false });
+    moreButton = button;
+    moreMenuEl = el('div', { class: 'wb-menu wb-more-menu', role: 'menu', 'aria-label': 'More canvas actions' }, moreMenuRows());
+    moreMenuEl._trigger = button;
+    document.body.append(moreMenuEl);
+    button.setAttribute('aria-expanded', 'true');
+    positionMoreMenu(button);
+    const dismiss = (event) => {
+      if (!moreMenuEl?.contains(event.target) && event.target !== button) closeMoreMenu({ returnFocus: false });
+    };
+    moreMenuEl.addEventListener('pointerdown', (event) => event.stopPropagation());
+    moreMenuEl._dismiss = dismiss;
+    document.addEventListener('pointerdown', dismiss, true);
+    document.addEventListener('keydown', moreEscape);
+    focusMenuStart(moreMenuEl);
+  }
+
+  /** Ring the toggle rows the More menu is showing, after one changes. */
+  function syncMoreChecks() {
+    if (!moreMenuEl) return;
+    for (const node of moreMenuEl.querySelectorAll('[data-more-check]')) {
+      const on = moreState(node.dataset.moreCheck);
+      node.textContent = on ? '✓' : '';
+      node.closest('.wb-menu-item')?.classList.toggle('is-current', on);
+    }
   }
 
   /** Mark or unmark this vein; the head chip follows via a re-render. */
@@ -535,7 +734,7 @@ export function createWorldbuildPanel({ app, root }) {
     }
     routing = normalizeRouting({ ...routing, [kind]: !routing[kind] });
     app.saveWorldRouting?.(currentPath, routing);
-    renderToolbar();
+    syncMoreChecks();
     drawEdges();
   }
 
@@ -565,15 +764,9 @@ export function createWorldbuildPanel({ app, root }) {
     app.toast(`${keys.length} connector${keys.length === 1 ? '' : 's'}: ${what}`, 'ok', 1500);
   }
 
-  /** Pick (or, with Ctrl, toggle) one connector. */
+  /** Pick one connector; a plain click on the sole selection clears it. Ctrl toggles. */
   function toggleConnectorSelection(key, additive) {
-    if (additive) {
-      const next = new Set(selectedEdges);
-      next.has(key) ? next.delete(key) : next.add(key);
-      selectedEdges = next;
-    } else {
-      selectedEdges = new Set([key]);
-    }
+    selectedEdges = nextConnectorSelection(selectedEdges, key, additive);
     syncConnectorUi();
     drawEdges();
   }
@@ -870,7 +1063,8 @@ export function createWorldbuildPanel({ app, root }) {
   // in it, so an undo of any change — a drag, an arrange, a type — brings the
   // whole record back as it was. The snapshots are pruned at each rename and
   // at each restore (see the lib helpers they call).
-  function canvasSnapshot() {
+  function canvasSnapshot(includeTables = false, tableAnchors = null) {
+    const anchors = tableAnchors ? new Set(tableAnchors) : null;
     return snapshotCanvas({
       positions: Object.fromEntries(positions),
       groups,
@@ -885,8 +1079,15 @@ export function createWorldbuildPanel({ app, root }) {
       locked: nodeLocked,
       cardModes,
       cardSizes,
+      cardDims,
       collapsedGroups,
       annotations,
+      ...(includeTables ? {
+        tables: Object.fromEntries((model?.notes ?? [])
+          .filter((note) => nodeTypeOf(nodeTypes, note.anchor).id === 'table')
+          .filter((note) => !anchors || anchors.has(note.anchor))
+          .map((note) => [note.anchor, note.body])),
+      } : {}),
       view: { ...view },
     });
   }
@@ -931,8 +1132,9 @@ export function createWorldbuildPanel({ app, root }) {
    * A step wears the name of the change that made it, for the undo button and
    * the history browser.
    */
-  function pushStep(before, name = DEFAULT_STEP_NAME) {
-    const pushed = pushHistoryStep(historyFor(currentPath), canvasSnapshot(), before, name, HISTORY_LIMIT);
+  function pushStep(before, name = DEFAULT_STEP_NAME, { tables = false } = {}) {
+    const tableAnchors = Array.isArray(tables) ? tables : null;
+    const pushed = pushHistoryStep(historyFor(currentPath), canvasSnapshot(Boolean(tables), tableAnchors), before, name, HISTORY_LIMIT);
     if (!pushed) return false;
     saveHistory(currentPath);
     syncHistoryButtons();
@@ -1042,6 +1244,7 @@ export function createWorldbuildPanel({ app, root }) {
       locked: nodeLocked,
       cardModes,
       cardSizes,
+      cardDims,
       collapsedGroups,
       annotations,
       view,
@@ -1053,6 +1256,7 @@ export function createWorldbuildPanel({ app, root }) {
     folded = saved.folded;
     cardModes = saved.cardModes ?? {};
     cardSizes = saved.cardSizes ?? {};
+    cardDims = saved.cardDims ?? {};
     collapsedGroups = saved.collapsedGroups ?? {};
     nodeTypes = saved.types;
     fieldValues = saved.fields;
@@ -1063,6 +1267,17 @@ export function createWorldbuildPanel({ app, root }) {
     pinned = saved.pinned ?? {};
     nodeLocked = saved.locked ?? {};
     view = saved.view ?? view;
+    // A table edit step carries the markdown it changed, so undo restores the
+    // prose table itself — never a second saved grid. Snapshots from before
+    // tables lived in markdown have no table slice and leave the prose alone.
+    let tablesRewritten = false;
+    for (const [anchor, body] of Object.entries(saved.tables ?? {})) {
+      const index = (model?.notes ?? []).findIndex((note) => note.anchor === anchor);
+      if (index < 0 || model.notes[index].body === body) continue;
+      model = updateNote(model, index, { body: String(body ?? '') });
+      tablesRewritten = true;
+    }
+    if (tablesRewritten) commit();
     // Anchors come and go with the steps; a selection would outlive them.
     selected = new Set();
     app.restoreWorldCanvas(currentPath, {
@@ -1079,6 +1294,7 @@ export function createWorldbuildPanel({ app, root }) {
       locked: nodeLocked,
       cardModes,
       cardSizes,
+      cardDims,
       collapsedGroups,
       annotations,
       view: anchorOfView(view),
@@ -1088,9 +1304,19 @@ export function createWorldbuildPanel({ app, root }) {
 
   // Single steps are one-step jumps: the lib walks them the same way the
   // history browser does, so the two can never drift apart.
+  function stepTableAnchors(entry) {
+    try {
+      const tables = JSON.parse(entry?.snap ?? 'null')?.tables;
+      return tables && typeof tables === 'object' ? Object.keys(tables) : [];
+    } catch {
+      return [];
+    }
+  }
+
   function undoCanvas() {
     const stack = historyFor(currentPath);
-    const jumped = historyJump(stack, 'undo', 1, canvasSnapshot());
+    const anchors = stepTableAnchors(stack.past[stack.past.length - 1]);
+    const jumped = historyJump(stack, 'undo', 1, canvasSnapshot(anchors.length > 0, anchors));
     if (!jumped) return;
     stack.past = jumped.past;
     stack.future = jumped.future;
@@ -1101,7 +1327,8 @@ export function createWorldbuildPanel({ app, root }) {
 
   function redoCanvas() {
     const stack = historyFor(currentPath);
-    const jumped = historyJump(stack, 'redo', 1, canvasSnapshot());
+    const anchors = stepTableAnchors(stack.future[stack.future.length - 1]);
+    const jumped = historyJump(stack, 'redo', 1, canvasSnapshot(anchors.length > 0, anchors));
     if (!jumped) return;
     stack.past = jumped.past;
     stack.future = jumped.future;
@@ -1126,7 +1353,9 @@ export function createWorldbuildPanel({ app, root }) {
   /** Jump to a history entry in one restore, rewiring both stacks. */
   function jumpHistory(kind, index) {
     const stack = historyFor(currentPath);
-    const jumped = historyJump(stack, kind, index + 1, canvasSnapshot());
+    const top = kind === 'undo' ? stack.past[stack.past.length - 1] : stack.future[stack.future.length - 1];
+    const anchors = stepTableAnchors(top);
+    const jumped = historyJump(stack, kind, index + 1, canvasSnapshot(anchors.length > 0, anchors));
     if (!jumped) return;
     stack.past = jumped.past;
     stack.future = jumped.future;
@@ -1187,7 +1416,7 @@ export function createWorldbuildPanel({ app, root }) {
           record.length > limit ? el('span', { class: 'wb-stat', text: `+${record.length - limit} more` }) : null,
         ])
       ) : null,
-      el('span', { class: 'wb-legend-key', text: 'solid: links in the prose · dotted: section outline' }),
+      el('span', { class: 'wb-legend-key', text: 'solid: prose links · dashed: canvas bonds · dotted: section outline' }),
     ]);
   }
 
@@ -1215,6 +1444,34 @@ export function createWorldbuildPanel({ app, root }) {
     return cardModes[anchor] ?? 'full';
   }
 
+  /**
+   * A card's low-zoom face. It is laid out in screen pixels by `applyView`'s
+   * `--wb-zoom` pair, so a title and its type survive the zoom that makes the
+   * real card unreadable. It is decorative: the card underneath still owns
+   * every gesture and menu.
+   */
+  function semanticTile({ icon, typeLabel, title, accent, typeColor, className = '', flags = [] }) {
+    const typeRow = el('div', { class: 'wb-semantic-type' }, [
+      el('span', { class: 'wb-semantic-icon', text: icon || '•', 'aria-hidden': 'true' }),
+      el('span', { class: 'wb-semantic-type-name', text: typeLabel || 'Note' }),
+      ...flags.map((flag) => el('span', {
+        class: 'wb-semantic-flag',
+        text: flag.glyph,
+        title: flag.title,
+        'aria-hidden': 'true',
+      })),
+    ]);
+    const titleEl = el('div', { class: 'wb-semantic-title', text: title || 'Untitled' });
+    const meta = el('div', { class: 'wb-semantic-meta' });
+    const tile = el('div', {
+      class: `wb-semantic${className ? ` ${className}` : ''}`,
+      'aria-hidden': 'true',
+      style: `--wb-semantic-accent:${accent || 'var(--accent)'};--wb-semantic-type:${typeColor || accent || 'var(--text-dim)'};`,
+    }, [typeRow, titleEl, meta]);
+    tile.dataset.icon = icon || '';
+    return { tile, title: titleEl, meta };
+  }
+
   /** The vault's default card height, from Settings → Worldbuilding. */
   function vaultCardSize() {
     return app.state?.settings?.worldbuild?.cardSize === 'content' ? 'content' : 'fixed';
@@ -1228,6 +1485,12 @@ export function createWorldbuildPanel({ app, root }) {
   /** Only a full card has prose to grow to; compact and thumbnails stay boxes. */
   function isContentSized(anchor) {
     return cardModeOf(anchor) === 'full' && cardSizeOf(anchor) === 'content';
+  }
+
+  /** A dragged card's explicit box as inline style, or nothing for the designed one. */
+  function sizeStyleOf(anchor) {
+    const dims = cardDims[anchor];
+    return dims ? ` width:${dims.width}px; height:${dims.height}px;` : '';
   }
 
   /** A card hidden inside a collapsed group's summary. */
@@ -1310,6 +1573,13 @@ export function createWorldbuildPanel({ app, root }) {
       for (const target of targets) {
         if (target !== anchor) cardSizes = app.setWorldCardSize(currentPath, target, size) ?? cardSizes;
       }
+      // Content height is whatever the prose needs, so a dragged box is
+      // dropped with it.
+      if (size === 'content') {
+        for (const target of targets) {
+          cardDims = app.setWorldCardDims(currentPath, target, null) ?? cardDims;
+        }
+      }
       build();
     }, `${size === 'content' ? 'Fit to content' : 'Fixed height on'} ${only ? `“${noteTitle(targets[0])}”` : `${targets.length} cards`}`);
     // Content height is the only one that needs a full card; fixed height is
@@ -1355,6 +1625,7 @@ export function createWorldbuildPanel({ app, root }) {
   function buildFieldsRow(note, typeId) {
     const schema = nodeFields(typeId);
     if (!schema.length) return null;
+    if (schema.some((field) => field.kind === 'table')) return buildTableEditor(note);
     const type = nodeType(typeId);
     const row = el('div', { class: 'wb-fields' });
     const inputs = new Map();
@@ -1459,6 +1730,534 @@ export function createWorldbuildPanel({ app, root }) {
     return row;
   }
 
+  /**
+   * A table node's editor. The markdown table is canonical: the grid is read
+   * from the section on every build and every edit writes it back, so reader,
+   * CLI and MCP changes cannot hide behind a saved copy. A section with more
+   * than one table gets a picker; each table keeps its position and prose.
+   */
+  function buildTableEditor(note) {
+    const noteName = note.title || 'note';
+    const locked = isContentLocked(note.anchor);
+    const lockNote = 'Locked content cannot be edited';
+    let selectedIndex = tableSelection.get(note.anchor) ?? 0;
+    let tableCount = 0;
+    let table = blankTable();
+    let filterQuery = '';
+    let sortColumn = -1;
+    let sortDirection = 'asc';
+    const host = el('div', {
+      class: 'wb-fields wb-table-editor',
+      role: 'group',
+      'aria-label': `Table for ${noteName}`,
+    });
+    let editBefore = null;
+    let editDirty = false;
+    let editName = '';
+    let dragRow = null;
+
+    /** Read the selected table from the live markdown, clamping the picker. */
+    function readTable() {
+      const live = model?.notes.find((candidate) => candidate.anchor === note.anchor);
+      const tables = markdownTables(live?.body ?? note.body);
+      tableCount = tables.length;
+      const last = Math.max(0, tableCount - 1);
+      selectedIndex = Math.min(Math.max(0, selectedIndex), last);
+      tableSelection.set(note.anchor, selectedIndex);
+      table = tables[selectedIndex]?.table ?? blankTable();
+    }
+    readTable();
+
+    function persistTable() {
+      const liveIndex = model.notes.findIndex((candidate) => candidate.anchor === note.anchor);
+      const live = liveIndex >= 0 ? model.notes[liveIndex] : null;
+      if (live) {
+        const body = syncTableMarkdown(live.body, table, selectedIndex);
+        if (body !== live.body) {
+          model = updateNote(model, liveIndex, { body });
+          commit();
+        }
+        tableCount = markdownTables(body).length;
+      }
+    }
+
+    function beginEdit() {
+      if (editBefore !== null) return;
+      editBefore = canvasSnapshot(true, [note.anchor]);
+      editDirty = false;
+      editName = `Edit table on “${noteName}”`;
+    }
+
+    function finishEdit() {
+      if (editBefore === null) return;
+      const before = editBefore;
+      const dirty = editDirty;
+      const name = editName || `Edit table on “${noteName}”`;
+      editBefore = null;
+      editDirty = false;
+      editName = '';
+      if (dirty) pushStep(before, name, { tables: [note.anchor] });
+    }
+
+    function markEdit() {
+      editDirty = true;
+      persistTable();
+    }
+
+    function focusCell(row, column) {
+      const input = host.querySelector(`.wb-table-cell-input[data-row="${row}"][data-col="${column}"]`);
+      if (!input) return;
+      input.focus();
+      input.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+
+    function focusHeader(column) {
+      const input = host.querySelector(`.wb-table-header-input[data-col="${column}"]`);
+      input?.focus();
+    }
+
+    function addRow(focusColumn = 0) {
+      if (locked) return;
+      if (table.rows.length >= TABLE_MAX_ROWS) {
+        app.toast(`A table can hold at most ${TABLE_MAX_ROWS} rows`, 'warn', 2000);
+        return;
+      }
+      finishEdit();
+      const before = canvasSnapshot(true, [note.anchor]);
+      table.rows.push(table.columns.map(() => ''));
+      filterQuery = '';
+      sortColumn = -1;
+      persistTable();
+      pushStep(before, `Add row to table on “${noteName}”`, { tables: [note.anchor] });
+      render(() => focusCell(table.rows.length - 1, Math.min(focusColumn, table.columns.length - 1)));
+    }
+
+    function removeRow(index) {
+      if (locked || index < 0 || index >= table.rows.length) return;
+      finishEdit();
+      const before = canvasSnapshot(true, [note.anchor]);
+      table.rows.splice(index, 1);
+      persistTable();
+      pushStep(before, `Delete row from table on “${noteName}”`, { tables: [note.anchor] });
+      const nextRow = Math.min(index, table.rows.length - 1);
+      render(() => {
+        if (nextRow >= 0) focusCell(nextRow, 0);
+        else host.querySelector('.wb-table-add-row')?.focus();
+      });
+    }
+
+    function addColumn() {
+      if (locked) return;
+      if (table.columns.length >= TABLE_MAX_COLUMNS) {
+        app.toast(`A table can hold at most ${TABLE_MAX_COLUMNS} columns`, 'warn', 2000);
+        return;
+      }
+      finishEdit();
+      const before = canvasSnapshot(true, [note.anchor]);
+      table.columns.push('');
+      table.align.push('default');
+      for (const row of table.rows) row.push('');
+      filterQuery = '';
+      sortColumn = -1;
+      persistTable();
+      pushStep(before, `Add column to table on “${noteName}”`, { tables: [note.anchor] });
+      render(() => focusHeader(table.columns.length - 1));
+    }
+
+    function removeColumn(index) {
+      if (locked || table.columns.length <= 1 || index < 0 || index >= table.columns.length) return;
+      finishEdit();
+      const before = canvasSnapshot(true, [note.anchor]);
+      table.columns.splice(index, 1);
+      table.align.splice(index, 1);
+      for (const row of table.rows) row.splice(index, 1);
+      if (sortColumn === index) sortColumn = -1;
+      else if (sortColumn > index) sortColumn -= 1;
+      persistTable();
+      pushStep(before, `Delete column from table on “${noteName}”`, { tables: [note.anchor] });
+      render(() => focusHeader(Math.min(index, table.columns.length - 1)));
+    }
+
+    function cycleAlign(index) {
+      if (locked) return;
+      finishEdit();
+      const before = canvasSnapshot(true, [note.anchor]);
+      const current = table.align[index] ?? 'default';
+      const next = TABLE_ALIGNMENTS[(TABLE_ALIGNMENTS.indexOf(current) + 1) % TABLE_ALIGNMENTS.length];
+      table = setTableColumnAlign(table, index, next);
+      persistTable();
+      pushStep(before, `Align column ${index + 1} on “${noteName}”`, { tables: [note.anchor] });
+      render(() => focusHeader(index));
+    }
+
+    function selectTable(index) {
+      finishEdit();
+      selectedIndex = Math.max(0, index);
+      tableSelection.set(note.anchor, selectedIndex);
+      filterQuery = '';
+      sortColumn = -1;
+      readTable();
+      render();
+    }
+
+    function moveRow(from, to) {
+      if (locked || filterQuery.trim() || sortColumn >= 0) return;
+      finishEdit();
+      const before = canvasSnapshot(true, [note.anchor]);
+      table = moveTableRow(table, from, to);
+      persistTable();
+      pushStep(before, `Move row in table on “${noteName}”`, { tables: [note.anchor] });
+      render(() => focusRow(to));
+    }
+
+    function focusRow(index) {
+      const row = host.querySelector(`.wb-table tbody tr[data-source-row="${index}"]`);
+      const head = row?.querySelector('.wb-table-row-head');
+      head?.focus();
+      row?.scrollIntoView({ block: 'nearest' });
+    }
+
+    function pasteAt(row, column, text) {
+      if (locked) return false;
+      const block = parseTablePaste(text);
+      const width = Math.max(0, ...block.map((cells) => cells.length));
+      if (block.length < 2 && width < 2) return false;
+      beginEdit();
+      const clipped = block.length > TABLE_MAX_ROWS
+        || width > TABLE_MAX_COLUMNS
+        || row + block.length > TABLE_MAX_ROWS
+        || column + width > TABLE_MAX_COLUMNS;
+      table = pasteTableData(table, block, { row, column });
+      editName = `Paste into table on “${noteName}”`;
+      markEdit();
+      // A paste is a complete structural edit: record it now rather than
+      // waiting for a blur that may not arrive after the grid is rebuilt.
+      finishEdit();
+      const lastRow = Math.min(table.rows.length - 1, row + block.length - 1);
+      const lastColumn = Math.min(table.columns.length - 1, column + width - 1);
+      render(() => focusCell(Math.max(0, lastRow), Math.max(0, lastColumn)));
+      if (clipped) app.toast(`Paste was clipped to ${TABLE_MAX_ROWS} rows and ${TABLE_MAX_COLUMNS} columns`, 'warn', 2600);
+      return true;
+    }
+
+    function render(afterRender = null) {
+      const previousScroll = host.querySelector('.wb-table-scroll');
+      const scrollTop = previousScroll?.scrollTop ?? 0;
+      const scrollLeft = previousScroll?.scrollLeft ?? 0;
+      clear(host);
+
+      const scroller = el('div', { class: 'wb-table-scroll' });
+      const tableEl = el('table', {
+        class: 'wb-table',
+        'aria-label': `Table for ${noteName}`,
+        style: `min-width:${28 + table.columns.length * 68}px`,
+      });
+      const thead = el('thead');
+      const headRow = el('tr', {}, el('th', { class: 'wb-table-corner', scope: 'col', 'aria-label': 'Row number' }, '#'));
+      table.columns.forEach((value, column) => {
+        const alignment = table.align[column] ?? 'default';
+        const header = el('input', {
+          class: 'wb-table-header-input',
+          type: 'text',
+          value,
+          placeholder: `Heading ${column + 1}`,
+          maxlength: TABLE_HEADER_MAX_LENGTH,
+          spellcheck: 'false',
+          'aria-label': `Column ${column + 1} heading for ${noteName}`,
+          'data-col': column,
+          disabled: locked ? true : undefined,
+          title: locked ? lockNote : 'Edit this column heading',
+          style: alignment === 'center' ? 'text-align:center' : alignment === 'right' ? 'text-align:right' : undefined,
+        });
+        header.addEventListener('focus', beginEdit);
+        header.addEventListener('input', () => {
+          table.columns[column] = header.value;
+          markEdit();
+        });
+        header.addEventListener('blur', finishEdit);
+        header.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter') return;
+          event.preventDefault();
+          if (table.rows.length) focusCell(0, column);
+          else addRow(column);
+        });
+        const remove = el('button', {
+          class: 'wb-table-del',
+          type: 'button',
+          text: '×',
+          title: locked
+            ? lockNote
+            : table.columns.length <= 1
+              ? 'A table needs at least one column'
+              : 'Delete this column',
+          'aria-label': `Delete column ${column + 1}`,
+          disabled: locked || table.columns.length <= 1 ? true : undefined,
+          onclick: () => removeColumn(column),
+        });
+        const alignButton = el('button', {
+          class: `wb-table-align is-${alignment}`,
+          type: 'button',
+          text: alignment === 'center' ? '↔' : alignment === 'right' ? '→' : alignment === 'left' ? '←' : '—',
+          title: locked
+            ? lockNote
+            : `Column alignment: ${alignment} — click to cycle default, left, centre, right`,
+          'aria-label': `Alignment for column ${column + 1}: ${alignment}`,
+          disabled: locked ? true : undefined,
+          onclick: () => cycleAlign(column),
+        });
+        headRow.append(el('th', { class: 'wb-table-header-cell', scope: 'col' }, [
+          el('div', { class: 'wb-table-header-wrap' }, [header, alignButton, remove]),
+        ]));
+      });
+      thead.append(headRow);
+      tableEl.append(thead);
+
+      const tbody = el('tbody');
+      const viewActive = Boolean(filterQuery.trim()) || sortColumn >= 0;
+      const sourceRows = tableRowOrder(table, { query: filterQuery, sortColumn, sortDirection });
+      if (!sourceRows.length) {
+        tbody.append(el('tr', {}, el('td', { class: 'wb-table-empty', colspan: table.columns.length + 1 }, [
+          el('span', { text: viewActive ? 'No rows match this view' : 'No rows yet — paste or add one' }),
+        ])));
+      }
+      sourceRows.forEach((rowIndex) => {
+        const row = table.rows[rowIndex];
+        const reorderable = !locked && !viewActive;
+        const tr = el('tr', { dataset: { sourceRow: String(rowIndex) } });
+        const rowHead = el('th', {
+          class: 'wb-table-row-head',
+          scope: 'row',
+          tabindex: '0',
+          draggable: reorderable ? 'true' : undefined,
+          title: reorderable
+            ? 'Drag this row number to reorder — the markdown rows move with it'
+            : viewActive
+              ? 'Clear the sort and filter view to reorder rows'
+              : lockNote,
+        }, [
+          el('span', { class: 'wb-table-row-num', text: String(rowIndex + 1) }),
+          el('button', {
+            class: 'wb-table-del',
+            type: 'button',
+            text: '×',
+            title: locked ? lockNote : 'Delete this row',
+            'aria-label': `Delete row ${rowIndex + 1}`,
+            disabled: locked ? true : undefined,
+            onclick: () => removeRow(rowIndex),
+          }),
+        ]);
+        const remove = rowHead.querySelector('.wb-table-del');
+        remove?.addEventListener('dragstart', (event) => event.preventDefault());
+        if (reorderable) {
+          rowHead.addEventListener('dragstart', (event) => {
+            dragRow = rowIndex;
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', String(rowIndex));
+            tr.classList.add('is-row-dragging');
+          });
+          rowHead.addEventListener('dragend', () => {
+            dragRow = null;
+            host.querySelectorAll('.is-row-dragging, .is-row-drop').forEach((node) => node.classList.remove('is-row-dragging', 'is-row-drop'));
+          });
+          tr.addEventListener('dragover', (event) => {
+            if (dragRow === null || dragRow === rowIndex) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            tr.classList.add('is-row-drop');
+          });
+          tr.addEventListener('dragleave', () => tr.classList.remove('is-row-drop'));
+          tr.addEventListener('drop', (event) => {
+            event.preventDefault();
+            tr.classList.remove('is-row-drop');
+            if (dragRow === null || dragRow === rowIndex) return;
+            const from = dragRow;
+            dragRow = null;
+            moveRow(from, rowIndex);
+          });
+        }
+        tr.append(rowHead);
+        row.forEach((value, column) => {
+          const alignment = table.align[column] ?? 'default';
+          const input = el('input', {
+            class: 'wb-table-cell-input',
+            type: 'text',
+            value,
+            maxlength: TABLE_CELL_MAX_LENGTH,
+            spellcheck: 'false',
+            'aria-label': `Row ${rowIndex + 1}, column ${column + 1} for ${noteName}`,
+            'data-row': rowIndex,
+            'data-col': column,
+            disabled: locked ? true : undefined,
+            title: locked ? lockNote : undefined,
+            style: alignment === 'center' ? 'text-align:center' : alignment === 'right' ? 'text-align:right' : undefined,
+          });
+          input.addEventListener('focus', beginEdit);
+          input.addEventListener('input', () => {
+            table.rows[rowIndex][column] = input.value;
+            markEdit();
+          });
+          input.addEventListener('blur', finishEdit);
+          input.addEventListener('paste', (event) => {
+            const text = event.clipboardData?.getData('text/plain') ?? '';
+            if (!text.includes('\t') && !text.includes('\n') && !text.includes(',')) return;
+            if (pasteAt(rowIndex, column, text)) event.preventDefault();
+          });
+          input.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+              input.blur();
+              return;
+            }
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            const shownIndex = sourceRows.indexOf(rowIndex);
+            if (event.shiftKey) {
+              if (shownIndex > 0) focusCell(sourceRows[shownIndex - 1], column);
+            } else if (shownIndex >= 0 && shownIndex < sourceRows.length - 1) {
+              focusCell(sourceRows[shownIndex + 1], column);
+            } else if (!viewActive) {
+              addRow(column);
+            }
+          });
+          tr.append(el('td', {}, input));
+        });
+        tbody.append(tr);
+      });
+      tableEl.append(tbody);
+      scroller.append(tableEl);
+
+      const addRowButton = el('button', {
+        class: 'btn btn-ghost btn-mini wb-table-add-row',
+        type: 'button',
+        text: '+ Row',
+        title: locked
+          ? lockNote
+          : table.rows.length >= TABLE_MAX_ROWS
+            ? `A table can hold at most ${TABLE_MAX_ROWS} rows`
+            : 'Add a row at the bottom',
+        disabled: locked || table.rows.length >= TABLE_MAX_ROWS ? true : undefined,
+        onclick: () => addRow(0),
+      });
+      const addColumnButton = el('button', {
+        class: 'btn btn-ghost btn-mini',
+        type: 'button',
+        text: '+ Column',
+        title: locked
+          ? lockNote
+          : table.columns.length >= TABLE_MAX_COLUMNS
+            ? `A table can hold at most ${TABLE_MAX_COLUMNS} columns`
+            : 'Add a column on the right',
+        disabled: locked || table.columns.length >= TABLE_MAX_COLUMNS ? true : undefined,
+        onclick: addColumn,
+      });
+      const pickerTables = markdownTables(model?.notes.find((candidate) => candidate.anchor === note.anchor)?.body ?? note.body);
+      const picker = tableCount > 1 && pickerTables.length > 1
+        ? el('select', {
+            class: 'wb-table-picker',
+            'aria-label': `Table to edit in ${noteName}`,
+            title: 'This section has several markdown tables — each keeps its place',
+            onchange: (event) => selectTable(Number(event.currentTarget.value)),
+          }, pickerTables.map((hit, index) => el('option', {
+            value: String(index),
+            text: `Table ${index + 1}${hit.table.columns[0]?.trim() ? ` · ${hit.table.columns[0].trim()}` : ''}`,
+          })))
+        : null;
+      if (picker) picker.value = String(selectedIndex);
+
+      const filter = el('input', {
+        class: 'wb-table-filter',
+        type: 'search',
+        value: filterQuery,
+        placeholder: 'Filter rows…',
+        spellcheck: 'false',
+        'aria-label': `Filter rows in table for ${noteName}`,
+        title: 'Filter this view only — the markdown row order is unchanged',
+      });
+      filter.addEventListener('input', () => {
+        const caret = filter.selectionStart ?? filter.value.length;
+        filterQuery = filter.value;
+        render(() => {
+          const next = host.querySelector('.wb-table-filter');
+          next?.focus();
+          next?.setSelectionRange(caret, caret);
+        });
+      });
+      const sort = el('select', {
+        class: 'wb-table-sort',
+        'aria-label': `Sort rows in table for ${noteName}`,
+        title: 'Sort this view only — the markdown row order is unchanged',
+        onchange: (event) => {
+          sortColumn = Number(event.currentTarget.value);
+          render();
+        },
+      }, [
+        el('option', { value: '-1', text: 'Row order' }),
+        ...table.columns.map((column, index) => el('option', {
+          value: String(index),
+          text: `Sort: ${column.trim() || `Column ${index + 1}`}`,
+        })),
+      ]);
+      sort.value = String(sortColumn);
+      const sortDirectionButton = sortColumn >= 0
+        ? el('button', {
+            class: 'btn btn-ghost btn-mini wb-table-direction',
+            type: 'button',
+            text: sortDirection === 'asc' ? '↑' : '↓',
+            title: sortDirection === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending',
+            'aria-label': `Sort direction: ${sortDirection}`,
+            onclick: () => {
+              sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+              render();
+            },
+          })
+        : null;
+      const clearView = viewActive
+        ? el('button', {
+            class: 'btn btn-ghost btn-mini',
+            type: 'button',
+            text: 'Clear view',
+            title: 'Show every row in markdown order again',
+            onclick: () => {
+              filterQuery = '';
+              sortColumn = -1;
+              render();
+            },
+          })
+        : null;
+      const sourceBadge = el('span', {
+        class: 'wb-table-source',
+        text: 'markdown',
+        title: 'Read from and written to the markdown table — paste TSV/CSV into a cell, drag a row number to reorder, or use a heading arrow to change alignment',
+      });
+      const rowSummary = viewActive
+        ? `${sourceRows.length} of ${table.rows.length} rows`
+        : `${table.columns.length} × ${table.rows.length}`;
+      const bar = el('div', { class: 'wb-table-bar' }, [
+        addRowButton,
+        addColumnButton,
+        picker,
+        sourceBadge,
+        el('span', { class: 'wb-table-size', text: rowSummary }),
+      ]);
+      const viewBar = el('div', { class: 'wb-table-bar wb-table-view' }, [
+        filter,
+        sort,
+        sortDirectionButton,
+        clearView,
+      ]);
+      host.append(scroller, bar, viewBar);
+      scroller.scrollTop = scrollTop;
+      scroller.scrollLeft = scrollLeft;
+      if (afterRender) afterRender();
+      if (host.isConnected && isContentSized(note.anchor)) {
+        sizeCanvas();
+        scheduleEdges();
+      }
+    }
+
+    render();
+    return host;
+  }
+
   function buildCard(note, index) {
     const pos = positionOf(index);
     const accent = app.colorFor('section', { path: currentPath, anchor: note.anchor });
@@ -1476,8 +2275,14 @@ export function createWorldbuildPanel({ app, root }) {
     const mode = cardModeOf(note.anchor);
     const card = el('article', {
       class: `wb-card wb-level-${note.level}${mode === 'compact' ? ' is-mode-compact' : ''}${mode === 'thumbnail' ? ' is-mode-thumbnail' : ''}${isContentSized(note.anchor) ? ' is-content-sized' : ''}${isGroupHidden(note.anchor) ? ' is-group-hidden' : ''}${selected.has(note.anchor) ? ' is-selected' : ''}${locked ? ' is-locked' : ''}${notePinned ? ' is-pinned' : ''}${isFolded(note.anchor) ? ' is-folded' : ''}${searchMatches.some((m) => m.anchor === note.anchor) ? ' is-search-hit' : ''}${searchMatches[searchCurrent]?.anchor === note.anchor ? ' is-search-current' : ''}${isolatedAnchors && !isolatedAnchors.has(note.anchor) ? ' is-dimmed' : ''}`,
-      style: `left:${pos.x}px; top:${pos.y}px; border-left-color:${accent};`,
+      style: `left:${pos.x}px; top:${pos.y}px; border-left-color:${accent};${sizeStyleOf(note.anchor)}`,
       'data-note': String(index),
+      'data-anchor': note.anchor,
+      // A card is a keyboard stop of its own, so Shift+F10 can open its menu
+      // without having to tab through the controls in its head first.
+      tabindex: '0',
+      'aria-haspopup': 'menu',
+      'aria-keyshortcuts': 'Shift+F10',
       title: mode === 'thumbnail' ? note.title : undefined,
     });
 
@@ -1504,20 +2309,20 @@ export function createWorldbuildPanel({ app, root }) {
     }
     typeSelect.value = type.id;
     typeSelect.addEventListener('change', () => {
-      const label = NODE_TYPES.find((t) => t.id === typeSelect.value)?.label ?? typeSelect.value;
+      const nextId = typeSelect.value;
+      const label = NODE_TYPES.find((t) => t.id === nextId)?.label ?? nextId;
       // A type change is a canvas change like any other: one undo puts the
-      // old type (and its field values) back.
+      // old type (and its field values) back. Table is the one type whose
+      // markdown and grid meet. The markdown table is already canonical, so
+      // entering and leaving Table mode never has to copy a saved grid over
+      // the prose; the grid simply appears beside the table the section has.
       step(() => {
-        nodeTypes = app.setWorldNodeType(currentPath, note.anchor, typeSelect.value) ?? nodeTypes;
-        const chosen = NODE_TYPES.find((t) => t.id === typeSelect.value);
-        typeSelect.style.color = nodeColors[note.anchor] ?? chosen?.color ?? '';
-        paintTypeChip(typeSelect.value);
-        const prior = card.querySelector('.wb-fields');
-        const fresh = buildFieldsRow(note, typeSelect.value);
-        if (fresh) prior ? prior.replaceWith(fresh) : card.insertBefore(fresh, head.nextSibling);
-        else prior?.remove();
-        renderStats();
+        nodeTypes = app.setWorldNodeType(currentPath, note.anchor, nextId) ?? nodeTypes;
       }, `Set type on “${note.title || 'note'}” to ${label}`);
+      // The fields row and the prose editor are both type-specific (Table
+      // swaps the prose for a caption), so rebuild the card instead of only
+      // replacing the fields row.
+      build();
       app.toast(`“${note.title || 'note'}” is a ${label.toLowerCase()}`, 'ok', 1500);
     });
     // The node's embedded image, when it has one: a medium-sized icon in
@@ -1555,6 +2360,7 @@ export function createWorldbuildPanel({ app, root }) {
       disabled: contentLocked ? true : undefined,
     });
     const fold = foldToggle(note.anchor);
+    const linkFrom = linkHandle(note.anchor, `“${note.title || 'this card'}”`);
     const remove = el('button', {
       class: 'wb-card-del', type: 'button', title: locked ? lockTitle : 'Delete this note', text: '✕',
       disabled: locked ? true : undefined,
@@ -1568,6 +2374,7 @@ export function createWorldbuildPanel({ app, root }) {
       typeChip,
       typeSelect,
       title,
+      linkFrom,
       remove,
     ]);
     const fieldsRow = buildFieldsRow(note, type.id);
@@ -1575,23 +2382,39 @@ export function createWorldbuildPanel({ app, root }) {
     const body = el('textarea', {
       class: 'wb-card-body hidden',
       spellcheck: 'false',
-      'aria-label': `Prose for ${note.title}`,
+      'aria-label': type.id === 'table' ? `Caption for ${note.title}` : `Prose for ${note.title}`,
       disabled: contentLocked ? true : undefined,
     });
-    body.value = note.body;
+    const tableMode = type.id === 'table';
+    const sectionTables = tableMode ? markdownTables(note.body) : [];
+    const multiTable = sectionTables.length > 1;
+    body.value = tableMode && !multiTable ? tableCaptionOf(note.body) : note.body;
+    if (tableMode) {
+      body.classList.add('wb-table-caption-body');
+      body.placeholder = 'Write a caption in markdown. It stays outside the table.';
+    }
 
     // The prose rendered the way the reader shows it, until it is clicked.
     // Clicking (when not locked) swaps in the source textarea; leaving the
     // textarea swaps back, so the card reads as markdown at rest.
     const rendered = el('div', {
-      class: 'wb-card-rendered markdown-body',
-      'aria-label': `Rendered prose for ${note.title}`,
+      class: `wb-card-rendered markdown-body${tableMode ? ' wb-table-caption-preview' : ''}`,
+      'aria-label': tableMode ? `Rendered caption for ${note.title}` : `Rendered prose for ${note.title}`,
       tabindex: contentLocked ? undefined : '0',
       title: contentLocked ? lockTitle : 'Click to edit',
     });
     const paintRendered = () => {
       const live = model.notes[index];
-      const text = live ? live.body : note.body;
+      const raw = live ? live.body : note.body;
+      const text = tableMode ? tableCaptionOf(raw) : raw;
+      rendered.classList.toggle('is-caption-empty', tableMode && !text.trim());
+      if (tableMode && !text.trim()) {
+        clear(rendered).append(el('span', {
+          class: 'wb-caption-empty',
+          text: contentLocked ? 'No caption' : 'Add a caption in markdown…',
+        }));
+        return;
+      }
       const out = renderMarkdown(text, {
         currentPath,
         resolveLink: (link) => app.resolveLink(link, currentPath),
@@ -1616,6 +2439,8 @@ export function createWorldbuildPanel({ app, root }) {
         contentLockedToast(note.anchor);
         return;
       }
+      const live = model.notes[index];
+      body.value = tableMode ? tableCaptionOf(live?.body ?? note.body) : (live?.body ?? note.body);
       rendered.classList.add('hidden');
       body.classList.remove('hidden');
       body.focus();
@@ -1642,8 +2467,25 @@ export function createWorldbuildPanel({ app, root }) {
       if (!body.classList.contains('hidden')) doneEditing();
     });
     body.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') body.blur();
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        body.blur();
+      }
     });
+
+    const captionLabel = tableMode
+      ? el('div', { class: 'wb-caption-label' }, [
+          el('span', { text: 'Caption' }),
+          el('span', { class: 'wb-caption-hint', text: 'markdown outside the table' }),
+        ])
+      : null;
+    const multiTableNote = multiTable
+      ? el('div', { class: 'wb-table-note' }, [
+          el('strong', { text: `${sectionTables.length} markdown tables` }),
+          el('span', { text: ' — pick one above. Captions stay in the reader so every table keeps its place.' }),
+        ])
+      : null;
 
     const tagsRow = el('div', { class: 'wb-tags' });
     const words = el('span', { class: 'wb-words' });
@@ -1653,6 +2495,8 @@ export function createWorldbuildPanel({ app, root }) {
     const refreshWords = () => {
       const live = model.notes[index];
       if (live) words.textContent = `${countWords(live.title) + countWords(live.body)} words`;
+      refreshSemantic();
+      if (selected.has(note.anchor)) scheduleInspector();
     };
 
     // Thumbnail mode's face: the node's image full-bleed, or its initial
@@ -1690,6 +2534,46 @@ export function createWorldbuildPanel({ app, root }) {
           el('span', { text: `· ${note.body?.trim() ? `${note.body.trim().split(/\s+/).length} words` : 'no prose'}` }),
         ])
       : null;
+
+    // Below 1:1 the real card is too small to read, so it wears this summary
+    // instead. The tile is decorative and takes no pointer events; the card
+    // below still receives the drag, context menu and selection gestures.
+    const semantic = semanticTile({
+      icon: type.icon,
+      typeLabel: type.label,
+      title: note.title || 'Untitled',
+      accent,
+      typeColor: nodeColors[note.anchor] ?? type.color,
+      className: 'wb-card-semantic',
+      flags: [
+        noteLocked || locked
+          ? { glyph: '🔒', title: lockTitle ?? 'Locked' }
+          : notePinned ? { glyph: '📌', title: 'Pinned' } : null,
+      ].filter(Boolean),
+    });
+    const semanticLinks = el('span', { class: 'wb-semantic-count' });
+    const semanticWords = el('span', { class: 'wb-semantic-count' });
+    semantic.meta.append(
+      semanticLinks,
+      el('span', { class: 'wb-semantic-dot', text: '·' }),
+      semanticWords,
+    );
+    /** Keep the summary honest while a title or prose is edited at 1:1. */
+    function refreshSemantic() {
+      const live = model.notes[index];
+      if (!live) return;
+      const title = live.title || 'Untitled';
+      const links = live.links?.length ?? 0;
+      const words = countWords(live.title) + countWords(live.body);
+      const linkLabel = `${links} link${links === 1 ? '' : 's'}`;
+      const wordLabel = `${words} word${words === 1 ? '' : 's'}`;
+      semantic.title.textContent = title;
+      semanticLinks.textContent = linkLabel;
+      semanticLinks.title = linkLabel;
+      semanticWords.textContent = `${words}w`;
+      semanticWords.title = wordLabel;
+      semantic.tile.title = `${title} — ${type.label} · ${linkLabel} · ${wordLabel}`;
+    }
 
     // appendAll, not append: a note's fields row is null, and `append(null)`
     // inserts the literal text "null" (dom.js says so itself).
@@ -1751,7 +2635,66 @@ export function createWorldbuildPanel({ app, root }) {
       return wrap;
     })();
 
-    appendAll(card, [head, fieldsRow, metaLine, rendered, body, resourceStrip, foot, thumb]);
+    appendAll(card, [
+      head,
+      fieldsRow,
+      metaLine,
+      multiTable ? null : captionLabel,
+      multiTable ? null : rendered,
+      multiTable ? null : body,
+      multiTableNote,
+      resourceStrip,
+      foot,
+      thumb,
+      semantic.tile,
+    ]);
+
+    // The corner handle: a drag sizes this note; a double-click gives it the
+    // designed box back. Only full cards have a box to size (compact and
+    // thumbnail cards keep theirs, and a folded one is just its head).
+    if (mode === 'full') {
+      const resize = el('span', {
+        class: 'wb-resize',
+        title: 'Drag the corner to resize this note — double-click to reset its size',
+      });
+      resize.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const anchor = model.notes[index]?.anchor ?? note.anchor;
+        if (isAnchorLocked(anchor)) {
+          lockedToast(anchor);
+          return;
+        }
+        // One drag is one undo step, and the snapshot is taken before the
+        // first frame moves the corner.
+        beginStep('Resize note');
+        const box = rectOf(index);
+        resizing = {
+          index,
+          anchor,
+          el: card,
+          startW: box.width,
+          startH: box.height,
+          start: canvasPoint(event),
+          width: Math.round(box.width),
+          height: Math.round(box.height),
+          moved: false,
+        };
+        card.classList.add('is-resizing');
+      });
+      resize.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const anchor = model.notes[index]?.anchor ?? note.anchor;
+        if (!cardDims[anchor]) return;
+        step(() => {
+          cardDims = app.setWorldCardDims(currentPath, anchor, null) ?? cardDims;
+          build();
+        }, `Reset size of “${note.title || 'note'}”`);
+      });
+      card.append(resize);
+    }
 
     // A content-sized card's height is whatever its prose makes it — a
     // diagram, an image or a tag can change that after paint. Watch the card
@@ -1775,6 +2718,8 @@ export function createWorldbuildPanel({ app, root }) {
       if (before && after && before !== after) {
         if (positions.has(before)) positions.set(after, positions.get(before));
         positions.delete(before);
+        if (tableSelection.has(before)) tableSelection.set(after, tableSelection.get(before));
+        tableSelection.delete(before);
         relations = app.dropWorldRelations(currentPath, before) ?? relations;
         const moved = app.renameWorldAnchor(currentPath, before, after);
         if (moved) {
@@ -1787,6 +2732,7 @@ export function createWorldbuildPanel({ app, root }) {
           nodeLocked = moved.locked ?? nodeLocked;
           cardModes = moved.cardModes ?? cardModes;
           cardSizes = moved.cardSizes ?? cardSizes;
+          cardDims = moved.cardDims ?? cardDims;
           nodeResources = moved.resources ?? nodeResources;
           groups = moved.groups ?? groups;
         }
@@ -1798,7 +2744,11 @@ export function createWorldbuildPanel({ app, root }) {
     });
 
     body.addEventListener('input', () => {
-      model = updateNote(model, index, { body: body.value });
+      const live = model.notes[index];
+      const bodyText = tableMode
+        ? replaceTableCaption(live?.body ?? '', body.value)
+        : body.value;
+      model = updateNote(model, index, { body: bodyText });
       commit();
       refreshWords();
       refreshTags();
@@ -1852,7 +2802,11 @@ export function createWorldbuildPanel({ app, root }) {
         void cleanupOrphanedAttachments().catch(() => {});
     });
 
-    head.addEventListener('pointerdown', (event) => {
+    /** Start a card grab: Ctrl+click picks it, otherwise drag it (and the
+     * picked set it belongs to). Below 1:1 a plain grab also picks the card,
+     * because its content no longer takes clicks of its own. */
+    function grabCard(event) {
+      if (event.button !== 0) return;
       if (event.target.closest?.('input, button, select, textarea')) return;
       // Ctrl+click picks the node (again to unpick); it never starts a drag.
       if (event.ctrlKey) {
@@ -1862,6 +2816,7 @@ export function createWorldbuildPanel({ app, root }) {
         event.preventDefault();
         return;
       }
+      if (isOverviewZoom() && !selected.has(note.anchor)) setSelection(new Set([note.anchor]));
       // A picked card can carry the whole selection with it; a solo card
       // moves on its own, and dropping it inside or outside a group's box
       // decides its membership. The tab is the handle that moves a nest.
@@ -1876,6 +2831,14 @@ export function createWorldbuildPanel({ app, root }) {
         return;
       }
       dragMembers(anchors, event, card, { joinable: !pickingSelection, selection: pickingSelection });
+    }
+    head.addEventListener('pointerdown', grabCard);
+    // Below 1:1 the card content is inert, so the body becomes a grab surface
+    // as well: drag it, or Ctrl+click to add it to the selection.
+    card.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !isOverviewZoom()) return;
+      if (event.target.closest?.('.wb-card-head, .wb-resize, .wb-fold-toggle')) return;
+      grabCard(event);
     });
     // Double-click the head to centre the card in the viewport.
     head.addEventListener('dblclick', (event) => {
@@ -1986,16 +2949,36 @@ export function createWorldbuildPanel({ app, root }) {
       'aria-label': 'Prose before the first heading',
     });
     area.value = model.intro;
+    const semantic = semanticTile({
+      icon: '¶',
+      typeLabel: 'Intro',
+      title: 'Before the first heading',
+      accent: 'var(--accent)',
+      typeColor: 'var(--text-dim)',
+      className: 'wb-intro-semantic',
+    });
+    const semanticWords = el('span', { class: 'wb-semantic-count' });
+    semantic.meta.append(semanticWords);
+    const refreshIntroSemantic = () => {
+      const words = countWords(model.intro);
+      const label = `${words} word${words === 1 ? '' : 's'}`;
+      semanticWords.textContent = `${words}w`;
+      semanticWords.title = label;
+      semantic.tile.title = `Before the first heading — Intro · ${label}`;
+    };
     area.addEventListener('input', () => {
       model = updateIntro(model, area.value);
+      refreshIntroSemantic();
       commit();
     });
+    refreshIntroSemantic();
     card.append(
       el('div', { class: 'wb-card-head' }, [
         el('span', { class: 'wb-level', text: 'intro' }),
         el('span', { class: 'wb-card-title static', text: 'Before the first heading' }),
       ]),
       area,
+      semantic.tile,
     );
     return card;
   }
@@ -2007,7 +2990,7 @@ export function createWorldbuildPanel({ app, root }) {
     }, [
       el('strong', { text: 'This vein has no headings yet' }),
       el('p', { text: 'A note is a heading plus its prose. Add one and it is written into the markdown for you.' }),
-      el('button', { class: 'btn btn-primary', type: 'button', text: '+ First note', onclick: addNewNote }),
+      el('button', { class: 'btn btn-primary', type: 'button', text: '+ First note', title: 'Create this vein’s first note', onclick: addNewNote }),
     ]);
   }
 
@@ -2017,9 +3000,7 @@ export function createWorldbuildPanel({ app, root }) {
     model = added.model;
     commit();
     build();
-    const input = cardEls[added.index]?.querySelector('.wb-card-title');
-    input?.focus();
-    input?.select();
+    focusNewNote(added.index);
   }
 
   /**
@@ -2041,11 +3022,24 @@ export function createWorldbuildPanel({ app, root }) {
     relations = app.setWorldRelation(currentPath, model.notes[fromIndex].anchor, target.anchor, kind) ?? relations;
     commit();
     build();
-    const input = cardEls[added.index]?.querySelector('.wb-card-title');
-    input?.focus();
-    input?.select();
+    focusNewNote(added.index);
     const label = RELATION_KINDS.find((k) => k.id === kind)?.label ?? kind;
     app.toast(`Created “${target.title}” — ${label.toLowerCase()} this note`, 'ok', 1800);
+  }
+
+  /**
+   * Bring a just-added note into view and start editing its title.
+   *
+   * A new note is appended to the end of the grid, which is often below the
+   * viewport, so the camera follows it — at the reader's current zoom, the way
+   * every other "go to this card" move works — before its title is selected
+   * for typing.
+   */
+  function focusNewNote(index) {
+    centreOn(index);
+    const input = cardEls[index]?.querySelector('.wb-card-title');
+    input?.focus();
+    input?.select();
   }
 
   /* -------------------------------------------------------------- canvas -- */
@@ -2096,7 +3090,55 @@ export function createWorldbuildPanel({ app, root }) {
    * slight overpan past the canvas edges so wires there stay reachable. */
   function applyView() {
     view = clampView(view, canvas.clientWidth, canvas.clientHeight, stage.clientWidth, stage.clientHeight);
+    if (isOverviewZoom() !== stage.classList.contains('is-zoomed-out')) syncOverviewInteraction();
+    stage.classList.toggle('is-semantic-zoom', isSemanticZoom());
+    // The semantic face is laid out in screen pixels: the canvas scale shrinks
+    // its box, while its own inverse scale keeps its type and counts legible.
+    canvas.style.setProperty('--wb-zoom', String(view.s));
+    canvas.style.setProperty('--wb-inv-zoom', String(1 / view.s));
     canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.s})`;
+  }
+
+  /** Show the current scale for a moment; a continuous wheel keeps it up. */
+  function showZoomHud() {
+    if (!Number.isFinite(view.s) || view.s <= 0) return;
+    zoomHudValue.textContent = `${Math.round(view.s * 100)}%`;
+    zoomHud.classList.add('is-visible');
+    clearTimeout(zoomHudTimer);
+    zoomHudTimer = setTimeout(() => zoomHud.classList.remove('is-visible'), 1100);
+  }
+
+  /**
+   * Below 1:1 card prose and controls are too small to read or aim at. The
+   * CSS makes their contents transparent to the pointer; this also takes the
+   * controls out of the Tab order. Dragging, resizing, folding and the card's
+   * right-click menu stay available.
+   */
+  function syncOverviewInteraction() {
+    const wasOverview = stage.classList.contains('is-zoomed-out');
+    const overview = isOverviewZoom();
+    stage.classList.toggle('is-zoomed-out', overview);
+    if (overview && !wasOverview) {
+      const active = document.activeElement;
+      if (active && active !== document.body && stage.contains(active)) active.blur();
+    }
+    const controls = stage.querySelectorAll(
+      '.wb-card input, .wb-card select, .wb-card textarea, .wb-card button, .wb-card a[href], .wb-card [contenteditable="true"], .wb-card [tabindex]',
+    );
+    for (const control of controls) {
+      if (control.classList.contains('wb-fold-toggle')) continue;
+      if (overview) {
+        if (!control.hasAttribute('data-detail-tabindex')) {
+          control.dataset.detailTabindex = control.getAttribute('tabindex') ?? '';
+        }
+        control.setAttribute('tabindex', '-1');
+      } else if (control.hasAttribute('data-detail-tabindex')) {
+        const previous = control.dataset.detailTabindex;
+        delete control.dataset.detailTabindex;
+        if (previous) control.setAttribute('tabindex', previous);
+        else control.removeAttribute('tabindex');
+      }
+    }
   }
 
   /** Draw the smart guides a drag matched, or hide them when it matched
@@ -2195,6 +3237,7 @@ export function createWorldbuildPanel({ app, root }) {
     view = fitted;
     persistView();
     applyView();
+    showZoomHud();
   }
 
   /** Fit just the Ctrl-clicked selection into the viewport. */
@@ -2208,6 +3251,7 @@ export function createWorldbuildPanel({ app, root }) {
     view = fitted;
     persistView();
     applyView();
+    showZoomHud();
   }
 
   /** Centre one card in the viewport at the current zoom. */
@@ -2593,6 +3637,12 @@ export function createWorldbuildPanel({ app, root }) {
 
   /* ------------------------------------------------- selection & grouping -- */
 
+  /** A pointer event in canvas coordinates (the inverse of the view transform). */
+  function canvasPoint(event) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: (event.clientX - rect.left) / view.s, y: (event.clientY - rect.top) / view.s };
+  }
+
     /** Begin dragging a set of notes (one card, the Ctrl-click selection, or
    * a whole group) from a grab. A solo card's drag can change membership;
    * a whole-nest drag from a tab can, too — its group can nest into another
@@ -2783,12 +3833,256 @@ export function createWorldbuildPanel({ app, root }) {
     return depths;
   }
 
-  /** Put the selection on screen: card outlines and the Fit button. */
+  /** Put the selection on screen: card outlines, the Fit button, the inspector. */
   function syncSelectionUi() {
     (model?.notes ?? []).forEach((note, index) => {
       cardEls[index]?.classList.toggle('is-selected', selected.has(note.anchor));
     });
-    toolbar.querySelector('[data-fit-selection]')?.toggleAttribute('disabled', !selected.size);
+    moreMenuEl?.querySelector('[data-fit-selection]')?.toggleAttribute('disabled', !selected.size);
+    renderInspector();
+  }
+
+  /* ---------------------------------------------------------- inspector -- */
+
+  /** Let the selection go and return focus to the first card it held. */
+  function closeInspector() {
+    const anchor = [...selected][0] ?? null;
+    setSelection([]);
+    const index = anchor && model ? model.notes.findIndex((note) => note.anchor === anchor) : -1;
+    if (index >= 0) cardEls[index]?.focus();
+  }
+
+  /** Coalesce inspector updates while the selected card's prose changes. */
+  function scheduleInspector() {
+    if (inspectorTimer) return;
+    inspectorTimer = setTimeout(() => {
+      inspectorTimer = 0;
+      renderInspector();
+    }, 0);
+  }
+
+  function inspectorColor(anchor) {
+    return app.colorFor('section', { path: currentPath, anchor });
+  }
+
+  /**
+   * The links and bonds around one card, split by direction. Prose links stay
+   * prose links; a stated relationship strengthens the label rather than
+   * replacing what the note itself says.
+   */
+  function inspectorConnections(note) {
+    const notes = model?.notes ?? [];
+    const byAnchor = new Map(notes.map((entry, index) => [entry.anchor, index]));
+    const out = new Map();
+    const incoming = new Map();
+    const add = (map, other, kind) => {
+      if (!other || other.anchor === note.anchor) return;
+      if (!map.has(other.anchor)) {
+        map.set(other.anchor, {
+          anchor: other.anchor,
+          title: other.title || 'Untitled',
+          color: inspectorColor(other.anchor),
+          kinds: [],
+        });
+      }
+      const row = map.get(other.anchor);
+      if (kind && !row.kinds.includes(kind)) row.kinds.push(kind);
+    };
+    for (const edge of noteEdges(model, relations)) {
+      const from = notes[edge.from];
+      const to = notes[edge.to];
+      if (!from || !to) continue;
+      const relation = relationKind(edge.relation);
+      const extra = relation && relation.id !== DEFAULT_RELATION ? ` · ${relation.label.toLowerCase()}` : '';
+      const kind = `${edge.kind === 'section' ? 'section link' : 'mention'}${extra}`;
+      if (from.anchor === note.anchor) add(out, to, kind);
+      else if (to.anchor === note.anchor) add(incoming, from, kind);
+    }
+    for (const edge of bondEdges(model, relations)) {
+      const from = notes[byAnchor.get(edge.from)];
+      const to = notes[byAnchor.get(edge.to)];
+      if (!from || !to) continue;
+      const kind = (relationKind(edge.relation)?.label ?? 'bond').toLowerCase();
+      if (from.anchor === note.anchor) add(out, to, kind);
+      else if (to.anchor === note.anchor) add(incoming, from, kind);
+    }
+    const rows = (map) => [...map.values()]
+      .map((row) => ({ ...row, label: row.kinds.join(' · ') }))
+      .sort((a, b) => a.title.localeCompare(b.title));
+    return { outgoing: rows(out), incoming: rows(incoming) };
+  }
+
+  function inspectorLink(entry) {
+    return el('button', {
+      class: 'wb-inspector-link',
+      type: 'button',
+      title: `Select “${entry.title}” and centre it`,
+      onclick: () => {
+        const index = (model?.notes ?? []).findIndex((note) => note.anchor === entry.anchor);
+        if (index < 0) return;
+        setSelection([entry.anchor]);
+        centreOn(index);
+      },
+    }, [
+      el('span', { class: 'wb-inspector-link-dot', style: `background:${entry.color || 'var(--text-faint)'}` }),
+      el('span', { class: 'wb-inspector-link-name', text: entry.title }),
+      el('span', { class: 'wb-inspector-link-kind', text: entry.label }),
+    ]);
+  }
+
+  function inspectorSection(title, content, count = null) {
+    return el('section', { class: 'wb-inspector-section' }, [
+      el('div', { class: 'wb-inspector-section-head' }, [
+        el('span', { class: 'wb-inspector-section-title', text: title }),
+        count === null ? null : el('span', { class: 'wb-inspector-section-count', text: String(count) }),
+      ]),
+      content,
+    ]);
+  }
+
+  function inspectorEmpty(text) {
+    return el('p', { class: 'wb-inspector-empty', text });
+  }
+
+  function renderInspector() {
+    if (!model || !selected.size) {
+      inspector.classList.add('hidden');
+      clear(inspectorBody);
+      return;
+    }
+    const notes = model.notes ?? [];
+    const picked = notes.filter((note) => selected.has(note.anchor));
+    if (!picked.length) {
+      inspector.classList.add('hidden');
+      clear(inspectorBody);
+      return;
+    }
+    clear(inspectorBody);
+
+    if (picked.length > 1) {
+      inspector.setAttribute('aria-label', `${picked.length} selected cards`);
+      const kinds = new Map();
+      for (const note of picked) {
+        const label = nodeTypeOf(nodeTypes, note.anchor).label;
+        kinds.set(label, (kinds.get(label) ?? 0) + 1);
+      }
+      const summary = el('div', { class: 'wb-inspector-summary' }, [
+        el('strong', { text: `${picked.length} cards selected` }),
+        el('span', { text: [...kinds].map(([label, count]) => `${count} ${label.toLowerCase()}${count === 1 ? '' : 's'}`).join(' · ') }),
+      ]);
+      const list = el('div', { class: 'wb-inspector-list' });
+      for (const note of picked) {
+        const index = notes.findIndex((entry) => entry.anchor === note.anchor);
+        const type = nodeTypeOf(nodeTypes, note.anchor);
+        list.append(el('button', {
+          class: 'wb-inspector-picked',
+          type: 'button',
+          title: `Inspect “${note.title || 'Untitled'}”`,
+          onclick: () => {
+            setSelection([note.anchor]);
+            centreOn(index);
+          },
+        }, [
+          el('span', { class: 'wb-inspector-link-dot', style: `background:${inspectorColor(note.anchor)}` }),
+          el('span', { class: 'wb-inspector-picked-name', text: note.title || 'Untitled' }),
+          el('span', { class: 'wb-inspector-picked-type', text: `${type.icon} ${type.label}` }),
+        ]));
+      }
+      const actions = el('div', { class: 'wb-inspector-actions' }, [
+        el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Fit selection', title: 'Zoom to fit every selected card', onclick: zoomToFitSelection }),
+        el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear selection', title: 'Clear the selection and close the inspector', onclick: closeInspector }),
+      ]);
+      inspectorBody.append(summary, inspectorSection('Selected cards', list, picked.length), actions);
+      inspector.classList.remove('hidden');
+      return;
+    }
+
+    const note = picked[0];
+    const index = notes.findIndex((entry) => entry.anchor === note.anchor);
+    const type = nodeTypeOf(nodeTypes, note.anchor);
+    const typeColor = nodeColors[note.anchor] ?? type.color ?? 'var(--text-dim)';
+    const group = groupOf(note.anchor);
+    const links = inspectorConnections(note);
+    const mode = cardModeOf(note.anchor);
+    const modeLabel = mode === 'full' ? null : (mode === 'compact' ? 'Compact card' : 'Thumbnail card');
+    inspector.setAttribute('aria-label', `Inspector for ${note.title || 'Untitled'}`);
+
+    const titleRow = el('div', { class: 'wb-inspector-title-row' }, [
+      el('span', { class: 'wb-inspector-type-icon', style: `color:${typeColor}`, text: type.icon, title: type.label }),
+      el('h3', { class: 'wb-inspector-title', text: note.title || 'Untitled' }),
+    ]);
+    const badges = el('div', { class: 'wb-inspector-badges' }, [
+      el('span', { class: 'wb-inspector-badge', style: `color:${typeColor}`, text: type.label }),
+      el('span', { class: 'wb-inspector-badge', text: `H${note.level}` }),
+      modeLabel ? el('span', { class: 'wb-inspector-badge', text: modeLabel }) : null,
+      isFolded(note.anchor) ? el('span', { class: 'wb-inspector-badge', text: 'Folded' }) : null,
+      isAnchorPinned(note.anchor) ? el('span', { class: 'wb-inspector-badge', text: 'Pinned' }) : null,
+      isNodeLocked(note.anchor) ? el('span', { class: 'wb-inspector-badge', text: 'Locked' }) : null,
+      lockedGroupOf(note.anchor) ? el('span', { class: 'wb-inspector-badge', text: 'Group locked' }) : null,
+    ]);
+    const words = countWords(note.title) + countWords(note.body);
+    const meta = el('div', { class: 'wb-inspector-meta' }, [
+      el('span', { text: `${words} words` }),
+      el('span', { text: `${links.outgoing.length} out · ${links.incoming.length} in` }),
+    ]);
+    const actions = el('div', { class: 'wb-inspector-actions' }, [
+      el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Focus', title: 'Centre this card in the canvas', onclick: () => centreOn(index) }),
+      el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear', title: 'Clear the selection and close the inspector', onclick: closeInspector }),
+    ]);
+
+    const pieces = [titleRow, badges, meta, actions];
+
+    const tags = note.tags ?? [];
+    if (tags.length) {
+      pieces.push(inspectorSection('Tags', el('div', { class: 'wb-inspector-tags' },
+        tags.map((tag) => el('span', { class: 'wb-inspector-tag', text: `#${tag}` }))), tags.length));
+    }
+
+    const fieldRows = [];
+    for (const field of nodeFields(type.id)) {
+      if (field.kind === 'table') continue;
+      const value = nodeFieldOf(fieldValues, note.anchor, field.id);
+      if (!value) continue;
+      fieldRows.push(el('div', { class: 'wb-inspector-field' }, [
+        el('span', { class: 'wb-inspector-field-label', text: field.label }),
+        el('span', { class: 'wb-inspector-field-value', text: value }),
+      ]));
+    }
+    const tableCount = type.id === 'table' ? markdownTables(note.body).length : 0;
+    if (tableCount) {
+      fieldRows.push(el('div', { class: 'wb-inspector-field' }, [
+        el('span', { class: 'wb-inspector-field-label', text: 'Table' }),
+        el('span', { class: 'wb-inspector-field-value', text: `${tableCount} markdown table${tableCount === 1 ? '' : 's'}` }),
+      ]));
+    }
+    if (fieldRows.length) pieces.push(inspectorSection('Fields', el('div', { class: 'wb-inspector-fields' }, fieldRows), fieldRows.length));
+
+    if (group) {
+      const memberCount = effectiveMembers(group).size;
+      pieces.push(inspectorSection('Group', el('div', { class: 'wb-inspector-group' }, [
+        el('strong', { text: group.name || 'Group' }),
+        el('span', { text: `${memberCount} card${memberCount === 1 ? '' : 's'}` }),
+      ])));
+    }
+
+    const connectionBody = el('div', { class: 'wb-inspector-connections' });
+    const totalLinks = links.outgoing.length + links.incoming.length;
+    if (!totalLinks) {
+      connectionBody.append(inspectorEmpty('No prose links or canvas bonds in this vein.'));
+    } else {
+      for (const [label, rows] of [['Outgoing', links.outgoing], ['Incoming', links.incoming]]) {
+        if (!rows.length) continue;
+        connectionBody.append(el('div', { class: 'wb-inspector-subhead' }, [
+          el('span', { text: label }),
+          el('span', { text: String(rows.length) }),
+        ]));
+        rows.forEach((entry) => connectionBody.append(inspectorLink(entry)));
+      }
+    }
+    pieces.push(inspectorSection('Connections', connectionBody, totalLinks));
+
+    inspectorBody.append(...pieces);
+    inspector.classList.remove('hidden');
   }
 
   /** Toggle the canvas search bar. */
@@ -3093,6 +4387,7 @@ export function createWorldbuildPanel({ app, root }) {
     }));
     items.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: 'Clear selection',
+      title: 'Unpick every card',
       onclick: () => {
         closeSelectMenu();
         setSelection([]);
@@ -3493,6 +4788,7 @@ export function createWorldbuildPanel({ app, root }) {
     }
     items.push(el('button', {
       class: 'wb-menu-item', type: 'button', text: '‹ Back',
+      title: 'Back to the arrange scopes',
       onclick: () => showArrangeScopes(button),
     }));
     arrangeMenuShell(button, items);
@@ -3701,6 +4997,34 @@ export function createWorldbuildPanel({ app, root }) {
     menu.focus();
   }
 
+  /** The enabled buttons an open menu moves between with the arrow keys. */
+  function menuKeyboardItems(menu) {
+    return [...menu.querySelectorAll('button:not([disabled])')]
+      .filter((button) => button.getClientRects().length > 0);
+  }
+
+  /**
+   * Roving keyboard focus for the right-click menu and its submenus. Arrow
+   * keys, Home and End move between buttons; native controls such as the
+   * relationship selectors keep their own arrow-key behaviour.
+   */
+  function moveMenuFocus(event, menu) {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    if (event.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+    const items = menuKeyboardItems(menu);
+    if (!items.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const current = items.indexOf(document.activeElement);
+    let next = 0;
+    if (event.key === 'End') next = items.length - 1;
+    else if (event.key === 'ArrowUp') next = current <= 0 ? items.length - 1 : current - 1;
+    else if (current === -1 || current === items.length - 1) next = 0;
+    else next = current + 1;
+    items[next]?.focus();
+  }
+
   /** Hand focus back to the control that opened a menu, if it still exists. */
   function focusMenuTrigger(trigger) {
     if (trigger?.isConnected) trigger.focus();
@@ -3714,24 +5038,47 @@ export function createWorldbuildPanel({ app, root }) {
   function closeMenu({ returnFocus = 'auto' } = {}) {
     if (!menuEl) return;
     const trigger = menuEl._trigger ?? null;
-    const hadFocus = menuEl.contains(document.activeElement);
+    const origin = menuEl._focusOrigin ?? null;
+    const originAnchor = menuEl._focusOriginAnchor ?? null;
+    const originGroup = menuEl._focusOriginGroup ?? null;
+    const originInTargetCard = Boolean(originAnchor) && origin?.closest?.('.wb-card')?.dataset.anchor === originAnchor;
+    const hadFocus = menuEl.contains(document.activeElement) || Boolean(submenuEl?.contains(document.activeElement));
     closeSubmenu();
     menuEl.remove();
     menuEl = null;
     // A toggle may have been rebuilt since it opened; clear every one.
-    document.querySelectorAll('[data-legend-toggle], [data-export-toggle], [data-help-toggle], [data-history-toggle], [data-health-toggle]')
+    document.querySelectorAll('[data-legend-toggle], [data-export-toggle], [data-help-toggle], [data-history-toggle], [data-health-toggle], [data-more-toggle], [data-views-toggle]')
       .forEach((button) => button.setAttribute('aria-expanded', 'false'));
     document.removeEventListener('pointerdown', dismissMenu, true);
-    document.removeEventListener('keydown', escapeMenu);
-    if (returnFocus === true || (returnFocus === 'auto' && hadFocus)) focusMenuTrigger(trigger);
+    document.removeEventListener('keydown', escapeMenu, true);
+    if (returnFocus === true || (returnFocus === 'auto' && hadFocus)) {
+      if (trigger) focusMenuTrigger(trigger);
+      else if (originAnchor) {
+        if (originInTargetCard && origin?.isConnected && origin !== document.body) origin.focus();
+        else {
+          const card = [...document.querySelectorAll('.wb-card')].find((element) => element.dataset.anchor === originAnchor);
+          if (card?.offsetParent !== null) {
+            card.tabIndex = 0;
+            card.focus();
+          }
+        }
+      } else if (originGroup) {
+        // A group action redraws its tab, so focus the replacement rather
+        // than the disconnected element that opened the menu.
+        const tab = [...document.querySelectorAll('.wb-group-tab')]
+          .find((element) => element.dataset.groupId === originGroup);
+        if (tab?.offsetParent !== null) tab.focus();
+      } else if (origin?.isConnected && origin !== document.body) origin.focus();
+    }
   }
 
-  function closeSubmenu() {
+  function closeSubmenu({ returnFocus = false } = {}) {
     if (!submenuEl) return;
     const trigger = submenuEl._trigger;
     trigger?.setAttribute('aria-expanded', 'false');
     submenuEl.remove();
     submenuEl = null;
+    if (returnFocus) trigger?.focus();
   }
 
   function positionSubmenu(trigger, panel) {
@@ -3747,7 +5094,7 @@ export function createWorldbuildPanel({ app, root }) {
 
   function openSubmenu(trigger, label, children) {
     if (submenuEl?._trigger === trigger) {
-      closeSubmenu();
+      closeSubmenu({ returnFocus: true });
       return;
     }
     closeSubmenu();
@@ -3756,6 +5103,15 @@ export function createWorldbuildPanel({ app, root }) {
       role: 'menu',
       'aria-label': label,
     }, children);
+    panel.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeSubmenu({ returnFocus: true });
+        return;
+      }
+      moveMenuFocus(event, panel);
+    });
     panel._trigger = trigger;
     document.body.append(panel);
     submenuEl = panel;
@@ -3790,14 +5146,34 @@ export function createWorldbuildPanel({ app, root }) {
     return button;
   }
 
+  /** A submenu whose every control is unavailable: disable its parent row. */
+  function disableSubmenu(trigger, reason) {
+    trigger.disabled = true;
+    trigger.title = reason;
+    trigger.setAttribute('aria-label', `${trigger.getAttribute('aria-label') || trigger.textContent.trim()} — ${reason}`);
+    return trigger;
+  }
+
   /** Show a right-click menu at the cursor and keep it until dismissed. */
   function showMenu(event, items) {
     menuEl = el('div', { class: 'wb-menu', role: 'menu' }, items);
+    menuEl._focusOrigin = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const originCard = event.target.closest?.('.wb-card')
+      ?? menuEl._focusOrigin?.closest?.('.wb-card')
+      ?? null;
+    menuEl._focusOriginAnchor = originCard?.dataset.anchor ?? null;
+    menuEl._focusOriginGroup = event.target.closest?.('[data-group-id]')?.getAttribute('data-group-id')
+      ?? menuEl._focusOrigin?.closest?.('[data-group-id]')?.getAttribute('data-group-id')
+      ?? null;
+    menuEl.addEventListener('keydown', (event) => moveMenuFocus(event, menuEl));
     document.body.append(menuEl);
     menuEl.style.left = `${Math.min(event.clientX, window.innerWidth - menuEl.offsetWidth - 8)}px`;
     menuEl.style.top = `${Math.min(event.clientY, window.innerHeight - menuEl.offsetHeight - 8)}px`;
+    focusMenuStart(menuEl);
     document.addEventListener('pointerdown', dismissMenu, true);
-    document.addEventListener('keydown', escapeMenu);
+    // Capture, so closing the menu with Escape cannot also leave edit or
+    // worldbuilding mode through the app-level Escape handler.
+    document.addEventListener('keydown', escapeMenu, true);
   }
 
   // Outside the menu, the next pointer-down — or Escape — dismisses it.
@@ -3807,21 +5183,50 @@ export function createWorldbuildPanel({ app, root }) {
     if (event.target.closest?.('.wb-menu')) return;
     // The dropdown buttons toggle, so their press must reach the handler;
     // dismissing here would close and reopen the menu at once.
-    if (event.target.closest?.('[data-legend-toggle], [data-export-toggle], [data-help-toggle], [data-history-toggle], [data-health-toggle]')) return;
+    if (event.target.closest?.('[data-legend-toggle], [data-export-toggle], [data-help-toggle], [data-history-toggle], [data-health-toggle], [data-more-toggle], [data-views-toggle]')) return;
     // The pointer, not the menu, decides where focus goes next.
     closeMenu({ returnFocus: false });
   }
 
   function escapeMenu(event) {
     if (event.key !== 'Escape') return;
+    if (!menuEl) return;
+    event.preventDefault();
+    event.stopPropagation();
     if (submenuEl) {
-      const trigger = submenuEl._trigger;
-      closeSubmenu();
-      trigger?.focus();
+      closeSubmenu({ returnFocus: true });
     } else {
       closeMenu({ returnFocus: true });
     }
   }
+
+  /**
+   * Shift+F10 and the keyboard's Menu key open the card or group menu on the
+   * focused target. A field keeps its native editing menu; the card itself is
+   * a focus stop, so the canvas menu is always one Shift+Tab away.
+   */
+  function openMenuFromKeyboard(event) {
+    if (!model) return;
+    const menuKey = event.key === 'ContextMenu'
+      || event.key === 'Apps'
+      || event.code === 'ContextMenu'
+      || (event.key === 'F10' && event.shiftKey);
+    if (!menuKey) return;
+    const target = event.target.closest?.('.wb-card, .wb-group-tab');
+    if (!target) return;
+    if (event.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = target.getBoundingClientRect();
+    openMenu({
+      target,
+      clientX: rect.left + Math.min(24, rect.width / 2),
+      clientY: rect.top + Math.min(24, rect.height / 2),
+      preventDefault: () => event.preventDefault(),
+    });
+  }
+
+  stage.addEventListener('keydown', openMenuFromKeyboard);
 
   /** A small drawn sample of one line style, so the legend shows the wire. */
   function legendSample(cls) {
@@ -3846,13 +5251,14 @@ export function createWorldbuildPanel({ app, root }) {
       legendRow(legendSample('wb-edge wb-edge-section'), 'Solid', 'a link in the prose — [[#Heading]] — between two notes.'),
       legendRow(legendSample('wb-edge wb-edge-mention'), 'Green and faint', 'a mention, [[Another note]], reaching across the vault.'),
       legendRow(legendSample('wb-edge wb-edge-section wb-rel-affects'), 'A word on the line', 'is its relationship: associate, member of, template, parent, child, contains, controls, affects, and on to ally and foe — thickening as it strengthens. Click the word to step it.'),
-      legendRow(legendSample('wb-edge wb-edge-bond wb-rel-ally'), 'No prose link', 'a bond stated on the canvas itself, and drawn like any other bond of its kind.'),
-      legendRow(legendSample('wb-edge wb-edge-group wb-rel-ally'), 'To a group', 'drawn at twice the weight of a note bond of the same kind, and coloured as it is.'),
+      legendRow(legendSample('wb-edge wb-edge-bond wb-rel-ally'), 'Dashed', 'a canvas bond asserted from a link dot — no prose link stands behind it.'),
+      legendRow(legendSample('wb-edge wb-edge-group wb-rel-ally'), 'Dashed and doubled', 'a canvas bond to a group, drawn at twice the weight of a card bond of the same kind.'),
       el('div', { class: 'wb-menu-label', text: 'Colour' }),
       legendRow(legendSample('wb-edge wb-rel-ally'), 'Green', 'ally, and mentions; red is a foe. Every other kind rides on the accent.'),
       el('div', { class: 'wb-menu-label', text: 'Icons' }),
       legendRow('⠿', 'The grip', 'drag it to move the card, or a group’s tab to move the whole group.'),
       legendRow('▾', 'Fold', 'collapse a card to its header.'),
+      legendRow('◉', 'A link dot', 'in a card’s head, a group’s tab or a collapsed group’s summary — drag it to another card or group and choose the relationship on release.'),
       legendRow('✕', 'Delete', 'click once to arm, again to delete the note.'),
       legendRow('⌂', 'A type', 'a coloured icon — Place, Person, Thing, Scene, Stat, Skill, and more — chosen from the drop-down on the card.'),
       legendRow('⁂', 'A group icon', '⁂ until one is picked; then whatever the group’s menu set, in the group’s colour.'),
@@ -3886,6 +5292,148 @@ export function createWorldbuildPanel({ app, root }) {
     toggleDropdown(button, 'wb-legend', 'Worldbuilding legend', legendRows());
   }
 
+  /* ---------------------------------------------------------- saved views -- */
+
+  /** What a saved lens stores in the toolbar menu, in one quiet line. */
+  function savedViewSummary(saved) {
+    const bits = [];
+    const query = saved.filters?.query;
+    if (query) bits.push(`filter “${query}”`);
+    if (saved.isolated?.length) bits.push(`${saved.isolated.length} isolated`);
+    const folded = Object.keys(saved.collapsedGroups ?? {}).length;
+    if (folded) bits.push(`${folded} group${folded === 1 ? '' : 's'} folded`);
+    bits.push(`camera ${Math.round((saved.view?.s ?? 1) * 100)}%`);
+    return bits.join(' · ');
+  }
+
+  function newSavedViewId() {
+    return `view-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  /** Apply a lens: its filters, isolation, folded groups and camera together. */
+  function applySavedView(saved) {
+    if (!model || !currentPath || !saved) return;
+    const liveAnchors = new Set(model.notes.map((note) => note.anchor));
+    const liveGroups = new Set(Object.keys(groups ?? {}));
+    const collapsed = Object.fromEntries(
+      Object.entries(saved.collapsedGroups ?? {})
+        .filter(([id, on]) => on && liveGroups.has(id)),
+    );
+    collapsedGroups = app.saveWorldCollapsedGroups?.(currentPath, collapsed) ?? collapsed;
+
+    const query = String(saved.filters?.query ?? '');
+    searchInput.value = query;
+    searchMatches = query ? canvasSearch(model, { types: nodeTypes, fields: fieldValues, colors: nodeColors, groups }, query) : [];
+    searchCurrent = searchMatches.length ? 0 : -1;
+    const isolated = Array.isArray(saved.isolated)
+      ? new Set(saved.isolated.filter((anchor) => liveAnchors.has(anchor)))
+      : null;
+    isolatedAnchors = isolated?.size ? isolated : null;
+    searchBar.classList.toggle('hidden', !query);
+
+    const camera = viewOfAnchor(saved.view);
+    if (camera) view = camera;
+    overviewFolded = null;
+    build();
+    syncSearchUi();
+    renderSearchResults();
+    persistView();
+    app.toast(`View “${saved.name}”`, 'ok', 1600);
+  }
+
+  function deleteSavedView(saved) {
+    if (!currentPath || !saved) return;
+    const next = savedViews.filter((view) => view.id !== saved.id);
+    savedViews = app.saveWorldViews?.(currentPath, next) ?? cleanSavedViews(next);
+    closeMenu({ returnFocus: false });
+    app.toast(`Deleted view “${saved.name}”`, 'info', 1600);
+  }
+
+  /** Save the current camera and canvas lens under a name; a repeat name updates it. */
+  async function saveCurrentViewAs() {
+    closeMenu({ returnFocus: false });
+    if (!model || !currentPath) return;
+    const name = await askText({
+      title: 'Save canvas view',
+      label: 'View name',
+      hint: 'Stores the current filter, isolation, collapsed groups and camera. Saving an existing name updates that view.',
+      confirmLabel: 'Save view',
+    });
+    const trimmed = String(name ?? '').trim();
+    if (!trimmed) return;
+
+    const liveAnchors = new Set(model.notes.map((note) => note.anchor));
+    const liveGroups = new Set(Object.keys(groups ?? {}));
+    const existing = savedViews.find((view) => view.name.toLowerCase() === trimmed.toLowerCase());
+    const next = {
+      id: existing?.id ?? newSavedViewId(),
+      name: trimmed,
+      filters: { query: searchInput.value.trim() },
+      isolated: isolatedAnchors
+        ? [...isolatedAnchors].filter((anchor) => liveAnchors.has(anchor))
+        : null,
+      collapsedGroups: Object.fromEntries(
+        Object.entries(collapsedGroups ?? {}).filter(([id, on]) => on && liveGroups.has(id)),
+      ),
+      view: anchorOfView(view),
+    };
+    if (!next.isolated?.length) next.isolated = null;
+    const merged = existing
+      ? savedViews.map((view) => (view.id === existing.id ? next : view))
+      : [...savedViews, next];
+    savedViews = app.saveWorldViews?.(currentPath, merged) ?? cleanSavedViews(merged);
+    app.toast(existing ? `Updated view “${trimmed}”` : `Saved view “${trimmed}”`, 'ok', 1800);
+  }
+
+  /** The Views drop-down: switch a saved lens, remove one, or save this one. */
+  function savedViewRows() {
+    const rows = [el('div', { class: 'wb-menu-label', text: 'Saved views' })];
+    if (!savedViews.length) {
+      rows.push(el('span', {
+        class: 'wb-menu-note',
+        text: 'No saved views for this vein yet. Set up a filter, isolation or folded groups, then save the lens.',
+      }));
+    }
+    for (const saved of savedViews) {
+      const summary = savedViewSummary(saved);
+      rows.push(el('div', { class: 'wb-saved-view-row' }, [
+        el('button', {
+          class: 'wb-menu-item wb-saved-view-apply',
+          type: 'button',
+          icon: false,
+          title: `Apply “${saved.name}” — ${summary}`,
+          onclick: () => {
+            closeMenu({ returnFocus: false });
+            applySavedView(saved);
+          },
+        }, [
+          el('span', { class: 'wb-saved-view-name', text: saved.name }),
+          el('span', { class: 'wb-saved-view-meta', text: summary }),
+        ]),
+        el('button', {
+          class: 'wb-menu-icon wb-saved-view-del',
+          type: 'button',
+          text: '✕',
+          title: `Delete saved view “${saved.name}”`,
+          'aria-label': `Delete saved view “${saved.name}”`,
+          onclick: () => deleteSavedView(saved),
+        }),
+      ]));
+    }
+    rows.push(el('button', {
+      class: 'wb-menu-item',
+      type: 'button',
+      text: 'Save current view…',
+      title: 'Save the current filter, isolation, collapsed groups and camera as a named view',
+      onclick: () => { void saveCurrentViewAs(); },
+    }));
+    return rows;
+  }
+
+  function toggleViewsMenu(button) {
+    toggleDropdown(button, 'wb-saved-views', 'Saved canvas views', savedViewRows());
+  }
+
   /** The gestures the canvas runs on, one cheatsheet row each. */
   function helpRows() {
     return [
@@ -3896,6 +5444,7 @@ export function createWorldbuildPanel({ app, root }) {
       legendRow('Right-click', 'A card', 'opens its menu: link it to another card or group, add a linked note, relate it, and set its colour, image, mode, pin or lock. On a selection it also groups or bonds it. Right-click a group to rename, fold, lock or split it.'),
       legendRow('2× click', 'A group’s tab', 'renames the group in place.'),
       el('div', { class: 'wb-menu-label', text: 'Connectors' }),
+      legendRow('◉', 'A link dot', 'drag it to another card or group and choose the relationship on release. That asserts a dashed canvas bond without writing prose; a pair already joined by a markdown link is left to that wire.'),
       legendRow('Click', 'The word on a line', 'steps its relationship to the next kind — associate, member of, template, parent, child, contains, controls, affects, ally, foe.'),
       legendRow('◇', 'A cut-off wire', 'a wire longer than a screen ends in a diamond; click it to reveal the far card if it is inside a collapsed group, then centre the view on it. Otherwise the view centres on the card directly. Trim on the toolbar switches this on.'),
       el('div', { class: 'wb-menu-label', text: 'Fold' }),
@@ -3978,7 +5527,20 @@ export function createWorldbuildPanel({ app, root }) {
         folded: isFolded(note.anchor),
         meta: `${links} link${links === 1 ? '' : 's'} · ${words} words`,
         fields: nodeFields(type.id)
-          .map((field) => ({ label: field.label, value: nodeFieldOf(fieldValues, note.anchor, field.id) }))
+          .map((field) => {
+            if (field.kind === 'table') {
+              const tables = markdownTables(note.body);
+              return {
+                label: field.label,
+                value: tables.length ? `${tables.length > 1 ? `${tables.length} tables · ` : ''}${tableSummary(tables[0].table)}` : '',
+              };
+            }
+            const value = nodeFieldOf(fieldValues, note.anchor, field.id);
+            return {
+              label: field.label,
+              value,
+            };
+          })
           .filter((field) => field.value),
         body: note.body,
         hidden: isGroupHidden(note.anchor),
@@ -4071,8 +5633,8 @@ export function createWorldbuildPanel({ app, root }) {
           opacity = 0.42;
         } else if (relation?.id === 'ally') color = theme.ok;
         else if (relation?.id === 'foe') color = theme.error;
-        if (edge.kind === 'bond') opacity = 0.62;
-        if (edge.kind === 'group') { width *= 2; opacity = 0.62; }
+        if (edge.kind === 'bond') { opacity = 0.72; dashed = true; }
+        if (edge.kind === 'group') { width *= 2; opacity = 0.72; dashed = true; }
         const showLabel = relation && relation.id !== DEFAULT_RELATION && !stacked;
         connectors.push({
           from: edge.from,
@@ -4926,9 +6488,7 @@ export function createWorldbuildPanel({ app, root }) {
       (group) => !isGroupLocked(group) && !effectiveMembers(group).has(anchor),
     );
     if (!anchor || !options.length) return [];
-    return [
-      el('span', { class: 'wb-menu-label', text: 'Add to group' }),
-      ...options.map((group) => el('button', {
+    return [submenuItem('Add to group', options.map((group) => el('button', {
         class: 'wb-menu-item',
         type: 'button',
         text: group.name || 'Group',
@@ -4952,9 +6512,248 @@ export function createWorldbuildPanel({ app, root }) {
             : `Added “${noteTitle(anchor)}” to ${joined.name || 'the group'}`,
             'ok', 1600);
         },
-      })),
-    ];
+      })))];
   }
+
+  /* ------------------------------------------------------ direct linking -- */
+
+  /**
+   * The little port in a card's head, a group's tab, or a collapsed group's
+   * summary. Dragging from one is the direct way to assert a canvas bond;
+   * like the grip it is a pointer affordance (the card and group menus remain
+   * the keyboard path for linking), so it stays out of the Tab order.
+   */
+  function linkHandle(endpoint, label, className = '') {
+    const handle = el('span', {
+      class: `wb-link-handle${className ? ` ${className}` : ''}`,
+      title: `Drag to link ${label} to another card or group`,
+      'aria-hidden': 'true',
+      dataset: { linkEndpoint: endpoint },
+    }, [el('span', { class: 'wb-link-handle-core', 'aria-hidden': 'true' })]);
+    handle.addEventListener('pointerdown', (event) => startLinkDrag(event, endpoint, handle));
+    handle.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    return handle;
+  }
+
+  /** The innermost visible group under a canvas point, including locked ones. */
+  function linkGroupAtPoint(point) {
+    const depths = groupDepths();
+    let hit = null;
+    for (const group of Object.values(groups ?? {})) {
+      if (hasCollapsedAncestor(group.id)) continue;
+      const box = collapsedGroups[group.id] ? summaryRect(group) : groupBox(group);
+      if (!box) continue;
+      const pad = collapsedGroups[group.id] ? 0 : BOX_PAD;
+      if (point.x < box.x - pad || point.x > box.x + box.width + pad) continue;
+      if (point.y < box.y - pad || point.y > box.y + box.height + pad) continue;
+      if (!hit || (depths.get(group.id) ?? 0) > (depths.get(hit.id) ?? 0)) hit = group;
+    }
+    return hit;
+  }
+
+  /**
+   * What a link drag would land on. A card or group chrome wins over the
+   * group box behind it; only empty space inside a group resolves to the
+   * group itself. The source end is never a target.
+   */
+  function linkTargetAt(clientX, clientY) {
+    if (!linkDrag || !model) return null;
+    const box = stage.getBoundingClientRect();
+    if (clientX < box.left || clientX > box.right || clientY < box.top || clientY > box.bottom) return null;
+    const element = document.elementFromPoint(clientX, clientY);
+    if (!element) return null;
+    const card = element.closest?.('.wb-card');
+    if (card) {
+      const anchor = model.notes[Number(card.dataset.note)]?.anchor ?? null;
+      return anchor && anchor !== linkDrag.from ? anchor : null;
+    }
+    const groupEl = element.closest?.('[data-group-id]');
+    if (groupEl) {
+      const endpoint = groupEndpoint(groupEl.getAttribute('data-group-id'));
+      return endpoint !== linkDrag.from ? endpoint : null;
+    }
+    const group = linkGroupAtPoint(canvasPoint({ clientX, clientY }));
+    if (!group) return null;
+    const endpoint = groupEndpoint(group.id);
+    return endpoint !== linkDrag.from ? endpoint : null;
+  }
+
+  /** Light the target a release would use, and only that target. */
+  function paintLinkTarget(target) {
+    if (!linkDrag || linkDrag.target === target) return;
+    linkDrag.target = target;
+    stage.querySelectorAll('.is-link-target').forEach((node) => node.classList.remove('is-link-target'));
+    linkOverlay.classList.toggle('is-over-target', Boolean(target));
+    if (!target) return;
+    if (target.startsWith('group:')) {
+      const id = target.slice('group:'.length);
+      stage.querySelectorAll('[data-group-id]').forEach((node) => {
+        if (node.getAttribute('data-group-id') === id) node.classList.add('is-link-target');
+      });
+      edgeSvg.querySelectorAll('.wb-box[data-link-group]').forEach((node) => {
+        if (node.getAttribute('data-link-group') === id) node.classList.add('is-link-target');
+      });
+      return;
+    }
+    const index = model.notes.findIndex((note) => note.anchor === target);
+    if (index >= 0) cardEls[index]?.classList.add('is-link-target');
+  }
+
+  /** Draw the dashed rubber-band from the source handle to the pointer. */
+  function updateLinkPreview(clientX, clientY) {
+    if (!linkDrag) return;
+    const box = stage.getBoundingClientRect();
+    const endX = clientX - box.left;
+    const endY = clientY - box.top;
+    const startX = linkDrag.startX;
+    const startY = linkDrag.startY;
+    const bend = Math.max(42, Math.abs(endX - startX) * 0.45) * (endX >= startX ? 1 : -1);
+    linkPreviewLine.setAttribute('d', `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`);
+    linkPreviewDot.setAttribute('cx', String(endX));
+    linkPreviewDot.setAttribute('cy', String(endY));
+  }
+
+  function startLinkDrag(event, from, handle) {
+    if (event.button !== 0 || !currentPath || !model || isOverviewZoom()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeMenu();
+    const box = stage.getBoundingClientRect();
+    const grip = handle.getBoundingClientRect();
+    linkDrag = {
+      from,
+      handle,
+      target: null,
+      startX: grip.left + grip.width / 2 - box.left,
+      startY: grip.top + grip.height / 2 - box.top,
+    };
+    handle.classList.add('is-linking');
+    stage.classList.add('is-linking');
+    linkOverlay.classList.remove('hidden', 'is-over-target');
+    updateLinkPreview(event.clientX, event.clientY);
+  }
+
+  function finishLinkDrag() {
+    if (!linkDrag) return null;
+    const done = linkDrag;
+    linkDrag = null;
+    done.handle.classList.remove('is-linking');
+    stage.classList.remove('is-linking');
+    linkOverlay.classList.add('hidden');
+    linkOverlay.classList.remove('is-over-target');
+    stage.querySelectorAll('.is-link-target').forEach((node) => node.classList.remove('is-link-target'));
+    return done;
+  }
+
+  function cancelLinkDrag() {
+    finishLinkDrag();
+  }
+
+  /**
+   * The relationship chooser opens at the drop point. Canvas bonds are only
+   * for pairs with no prose link: a prose link already owns the line between
+   * its notes, and duplicating it here would leave two contradictory wires.
+   */
+  function openCanvasLinkMenu(event, from, to) {
+    if (!model || !currentPath || !from || !to || from === to) return;
+    if (proseLinkBetween(model, from, to)) {
+      app.toast(
+        `“${endpointTitle(from)}” and “${endpointTitle(to)}” are already joined by a markdown link — click its word on the wire to change the relationship`,
+        'info',
+        4200,
+      );
+      return;
+    }
+    const fromTitle = endpointTitle(from);
+    const toTitle = endpointTitle(to);
+    const forwardKey = relationKey(from, to);
+    const hasForward = forwardKey in (relations ?? {});
+    const hasReverse = !hasForward && relationKey(to, from) in (relations ?? {});
+    const current = hasForward ? relationOf(relations, from, to) : null;
+    const items = [
+      el('div', { class: 'wb-menu-label', text: `${fromTitle} → ${toTitle}` }),
+      el('span', { class: 'wb-menu-note', text: 'Canvas bond — no link is written into either note.' }),
+    ];
+    if (hasReverse) {
+      items.push(el('span', {
+        class: 'wb-menu-note',
+        text: 'A bond already runs the other way; choosing a kind replaces its direction.',
+      }));
+    }
+    for (const kind of RELATION_KINDS) {
+      items.push(el('button', {
+        class: `wb-menu-item wb-submenu-choice${current?.id === kind.id ? ' is-current' : ''}`,
+        type: 'button',
+        'aria-current': current?.id === kind.id ? 'true' : undefined,
+        title: `Assert “${fromTitle}” ${kind.label.toLowerCase()} “${toTitle}”`,
+        onclick: () => {
+          closeMenu();
+          assertCanvasBond(from, to, kind.id, { replaceReverse: hasReverse });
+        },
+      }, [
+        el('span', { class: 'wb-submenu-choice-label', text: kind.label }),
+        el('span', { class: 'wb-menu-check', 'aria-hidden': 'true', text: current?.id === kind.id ? '✓' : '' }),
+      ]));
+    }
+    showMenu(event, items);
+  }
+
+  /** Assert a canvas-owned bond as one named, undoable step. */
+  function assertCanvasBond(from, to, kindId, { replaceReverse = false } = {}) {
+    if (!currentPath || !from || !to || from === to) return;
+    const kind = relationKind(kindId);
+    if (!kind) return;
+    if (proseLinkBetween(model, from, to)) {
+      app.toast(
+        `“${endpointTitle(from)}” and “${endpointTitle(to)}” already share a prose link — its relationship belongs on that wire`,
+        'info',
+        3400,
+      );
+      return;
+    }
+    const forwardKey = relationKey(from, to);
+    if (!replaceReverse && forwardKey in (relations ?? {}) && relationOf(relations, from, to).id === kind.id) {
+      app.toast(`“${endpointTitle(from)}” already ${kind.label.toLowerCase()} “${endpointTitle(to)}”`, 'info', 1800);
+      return;
+    }
+    step(() => {
+      if (replaceReverse) relations = app.removeWorldRelation(currentPath, to, from) ?? relations;
+      relations = app.setWorldRelation(currentPath, from, to, kind.id) ?? relations;
+      drawEdges();
+      build();
+    }, `Link “${endpointTitle(from)}” ${kind.label.toLowerCase()} “${endpointTitle(to)}”`);
+    app.toast(`Canvas bond: “${endpointTitle(from)}” ${kind.label.toLowerCase()} “${endpointTitle(to)}”`, 'ok', 2200);
+  }
+
+  window.addEventListener('pointermove', (event) => {
+    if (!linkDrag) return;
+    updateLinkPreview(event.clientX, event.clientY);
+    paintLinkTarget(linkTargetAt(event.clientX, event.clientY));
+  });
+
+  window.addEventListener('pointerup', (event) => {
+    if (!linkDrag) return;
+    const target = linkTargetAt(event.clientX, event.clientY);
+    const done = finishLinkDrag();
+    if (!done || !target) return;
+    openCanvasLinkMenu(event, done.from, target);
+  });
+
+  window.addEventListener('pointercancel', () => {
+    if (linkDrag) cancelLinkDrag();
+  });
+  window.addEventListener('blur', () => {
+    if (linkDrag) cancelLinkDrag();
+  });
+  window.addEventListener('keydown', (event) => {
+    if (!linkDrag || event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelLinkDrag();
+  }, true);
 
   /** What an end of a relationship is called: a note's title, or a group's name. */
   function endpointTitle(endpoint) {
@@ -5033,7 +6832,6 @@ export function createWorldbuildPanel({ app, root }) {
         .filter((group) => groupEndpoint(group.id) !== own)
         .map((group) => el('option', { value: groupEndpoint(group.id), text: group.name || 'Group' })),
     ]);
-    items.push(el('span', { class: 'wb-menu-label', text: label }));
     items.push(el('div', { class: 'wb-menu-relationship' }, [kind, target, el('button', {
       class: 'wb-menu-item',
       type: 'button',
@@ -5059,7 +6857,7 @@ export function createWorldbuildPanel({ app, root }) {
         closeMenu();
       },
     }));
-    return items;
+    return [submenuItem(label, items, rows.length ? `${rows.length} bond${rows.length === 1 ? '' : 's'}` : '')];
   }
 
   /**
@@ -5108,7 +6906,7 @@ export function createWorldbuildPanel({ app, root }) {
     const index = model.notes.findIndex((note) => note.anchor === anchor);
     const note = model.notes[index];
     if (!note) return [];
-    const items = [el('span', { class: 'wb-menu-label', text: 'Link to' })];
+    const items = [];
     const rows = noteLinkRows(note);
     for (const row of rows) {
       items.push(el('button', {
@@ -5156,7 +6954,7 @@ export function createWorldbuildPanel({ app, root }) {
         createLinkedNote(index);
       },
     }));
-    return items;
+    return [submenuItem('Link to', items, rows.length ? `${rows.length} link${rows.length === 1 ? '' : 's'}` : '')];
   }
 
   /**
@@ -5211,8 +7009,8 @@ export function createWorldbuildPanel({ app, root }) {
     if (edge.kind === 'contains') return 'Hierarchy';
     if (edge.kind === 'section') return 'Section link';
     if (edge.kind === 'mention') return 'Mention';
-    if (edge.kind === 'group') return 'Group relationship';
-    return 'Bond';
+    if (edge.kind === 'group') return 'Group bond';
+    return 'Canvas bond';
   }
 
   function selectConnectorEndpoint(endpoint) {
@@ -5550,8 +7348,10 @@ export function createWorldbuildPanel({ app, root }) {
       const lockNote = isNodeLocked(anchor) && !isAnchorLocked(anchor)
         ? 'This node’s content is locked — unlock it to change it'
         : 'Locked group contents cannot be recoloured';
-      items.push(el('span', { class: 'wb-menu-label', text: 'Node colour' }));
-      items.push(el('div', { class: 'wb-menu-swatches' }, GROUP_COLORS.map((color) => el('button', {
+      const lockedContentNote = isNodeLocked(anchor) && !isAnchorLocked(anchor)
+        ? 'This node’s content is locked — unlock it to change it'
+        : 'Locked group contents cannot be changed';
+      const colorItems = [el('div', { class: 'wb-menu-swatches' }, GROUP_COLORS.map((color) => el('button', {
         class: `wb-menu-swatch${nodeColors[anchor] === color ? ' is-current' : ''}`,
         type: 'button',
         style: `background:${color}`,
@@ -5559,44 +7359,46 @@ export function createWorldbuildPanel({ app, root }) {
         disabled: anchorLocked ? true : undefined,
         title: anchorLocked ? lockNote : undefined,
         onclick: () => setNodeColor(anchor, color),
-      }))));
+      })))];
       if (nodeColors[anchor]) {
-        items.push(el('button', {
+        colorItems.push(el('button', {
           class: 'wb-menu-item', type: 'button', text: 'Use the type colour',
           title: anchorLocked ? 'Locked group contents cannot be recoloured' : 'Drop this node’s custom colour, back to its type’s',
           disabled: anchorLocked ? true : undefined,
           onclick: () => setNodeColor(anchor, null),
         }));
       }
-      items.push(el('span', { class: 'wb-menu-label', text: 'Node image' }));
-      items.push(el('button', {
+      const colorMenu = submenuItem('Node colour', colorItems, nodeColors[anchor] ? 'Custom' : 'Type colour');
+      items.push(anchorLocked ? disableSubmenu(colorMenu, lockNote) : colorMenu);
+      const imageItems = [el('button', {
         class: 'wb-menu-item', type: 'button',
         text: nodeImages[anchor] ? 'Replace image…' : 'Add image…',
         title: anchorLocked ? 'Locked group contents cannot change image' : 'Use an image file as this node’s icon — stored with the vein, drawn in its head',
         disabled: anchorLocked ? true : undefined,
         onclick: () => pickNodeImage(anchor),
-      }));
+      })];
       if (nodeImages[anchor]) {
-        items.push(el('button', {
+        imageItems.push(el('button', {
           class: 'wb-menu-item', type: 'button', text: 'Remove image',
           title: anchorLocked ? 'Locked group contents cannot change image' : 'Take this node’s image back off',
           disabled: anchorLocked ? true : undefined,
           onclick: () => setNodeImage(anchor, null),
         }));
       }
-      items.push(el('span', { class: 'wb-menu-label', text: 'Attachments' }));
-      items.push(el('button', {
+      const imageMenu = submenuItem('Node image', imageItems, nodeImages[anchor] ? 'Set' : '');
+      items.push(anchorLocked ? disableSubmenu(imageMenu, lockedContentNote) : imageMenu);
+      const attachmentMenu = submenuItem('Attachments', [el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Attach file…',
         title: anchorLocked ? lockNote : 'Copy a file into this vault and attach it to this node',
         disabled: anchorLocked ? true : undefined,
         onclick: () => attachFileToNode(anchor),
-      }));
-      items.push(el('button', {
+      }), el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Add web URL…',
         title: anchorLocked ? lockNote : 'Attach an http(s) address to this node',
         disabled: anchorLocked ? true : undefined,
         onclick: () => addNodeUrl(anchor),
-      }));
+      })]);
+      items.push(anchorLocked ? disableSubmenu(attachmentMenu, lockedContentNote) : attachmentMenu);
       items.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Rename node',
         title: anchorLocked ? 'Locked group contents cannot be renamed' : 'Edit this note’s title in place',
@@ -5610,9 +7412,9 @@ export function createWorldbuildPanel({ app, root }) {
           input.select();
         },
       }));
-      items.push(el('span', { class: 'wb-menu-label', text: 'Card mode' }));
+      const modeItems = [];
       for (const [label, mode] of [['Full card', 'full'], ['Compact card', 'compact'], ['Card thumbnail', 'thumbnail']]) {
-        items.push(el('button', {
+        modeItems.push(el('button', {
           class: `wb-menu-item${cardModeOf(anchor) === mode ? ' is-current' : ''}`,
           type: 'button',
           text: label,
@@ -5620,12 +7422,13 @@ export function createWorldbuildPanel({ app, root }) {
           onclick: () => { setCardMode(anchor, mode); closeMenu(); },
         }));
       }
-      items.push(el('span', { class: 'wb-menu-label', text: 'Card height' }));
+      items.push(submenuItem('Card mode', modeItems, { full: 'Full card', compact: 'Compact card', thumbnail: 'Thumbnail' }[cardModeOf(anchor)] ?? ''));
+      const heightItems = [];
       for (const [label, size, hint] of [
         ['Fit to content', 'content', 'Grow this card to its prose — the whole note shows, no scrolling'],
         ['Fixed height', 'fixed', 'Keep the standard card box; its prose scrolls'],
       ]) {
-        items.push(el('button', {
+        heightItems.push(el('button', {
           class: `wb-menu-item${cardSizeOf(anchor) === size ? ' is-current' : ''}`,
           type: 'button',
           text: label,
@@ -5633,6 +7436,7 @@ export function createWorldbuildPanel({ app, root }) {
           onclick: () => { setCardSize(anchor, size); closeMenu(); },
         }));
       }
+      items.push(submenuItem('Card height', heightItems, cardSizeOf(anchor) === 'content' ? 'Fit to content' : 'Fixed height'));
       items.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: pinned[anchor] ? 'Unpin node' : 'Pin node',
         title: pinned[anchor]
@@ -5649,28 +7453,27 @@ export function createWorldbuildPanel({ app, root }) {
       }));
     }
     if (group) {
-      items.push(el('span', { class: 'wb-menu-label', text: 'Group colour' }));
-      items.push(el('div', { class: 'wb-menu-swatches' }, GROUP_COLORS.map((color) => el('button', {
+      items.push(submenuItem('Group colour', [el('div', { class: 'wb-menu-swatches' }, GROUP_COLORS.map((color) => el('button', {
         class: 'wb-menu-swatch',
         type: 'button',
         style: `background:${color}`,
         'aria-label': `Group colour ${color}`,
         onclick: () => setGroupColor(group.id, color),
-      }))));
-      items.push(el('span', { class: 'wb-menu-label', text: 'Group icon' }));
+      })))]));
       const currentIcon = group.icon || GROUP_GENERIC_ICON;
-      items.push(el('div', { class: 'wb-menu-icons' }, GROUP_ICONS.map((icon) => el('button', {
+      items.push(submenuItem('Group icon', [el('div', { class: 'wb-menu-icons' }, GROUP_ICONS.map((icon) => el('button', {
         class: `wb-menu-icon${icon === currentIcon ? ' is-current' : ''}`,
         type: 'button',
         text: icon,
         'aria-label': `Group icon ${icon}`,
         onclick: () => setGroupIcon(group.id, icon),
-      }))));
-      items.push(el('button', {
+      })))], currentIcon));
+      const groupItems = [];
+      groupItems.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Rename group',
         onclick: () => { closeMenu(); renameGroup(group.id); },
       }));
-      items.push(el('button', {
+      groupItems.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Split into progression columns',
         title: isGroupLocked(group)
           ? 'Locked group contents cannot be rearranged'
@@ -5681,21 +7484,21 @@ export function createWorldbuildPanel({ app, root }) {
           splitGroupProgression(group.id);
         },
       }));
-      items.push(el('button', {
+      groupItems.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: collapsedGroups[group.id] ? 'Expand group' : 'Collapse to summary',
         title: collapsedGroups[group.id]
           ? 'Show the group’s cards again'
           : 'Hide the group’s cards behind one summary card — name, count, types, links',
         onclick: () => { setGroupCollapsed(group.id, !collapsedGroups[group.id]); closeMenu(); },
       }));
-      items.push(el('button', {
+      groupItems.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: group.locked ? 'Unlock group' : 'Lock group',
         title: group.locked
           ? 'Unlock this group’s contents — relationships to the group stay in place'
           : 'Lock this group’s contents against moving, regrouping, and removal — relationships in and out still work',
         onclick: () => toggleGroupLock(group.id),
       }));
-      items.push(el('button', {
+      groupItems.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: group.pinned ? 'Unpin group' : 'Pin group',
         title: group.pinned
           ? 'Unpin this group — Arrange may move its contents again'
@@ -5708,14 +7511,17 @@ export function createWorldbuildPanel({ app, root }) {
         onclick: () => ungroup(group.id),
       });
       if (isGroupLocked(group)) ungroupButton.disabled = true;
-      items.push(ungroupButton);
+      groupItems.push(ungroupButton);
       // A member card can move to another group, or simply leave this one —
-      // unless the group is locked, when its contents stay put.
-      if (!isGroupLocked(group)) items.push(...addToGroupItems(anchor));
-      if (anchor && !isGroupLocked(group)) {
-        items.push(el('button', {
+      // unless the group is locked, when its contents stay put. Keep the row
+      // visible when locked, disabled, so the reason is legible instead of the
+      // action silently vanishing from the submenu.
+      if (anchor) {
+        const removeButton = el('button', {
           class: 'wb-menu-item', type: 'button', text: `Remove from ${group.name || 'group'}`,
-          title: 'Take this note out of the group — every other card stays put',
+          title: isGroupLocked(group)
+            ? 'Locked group contents cannot be removed'
+            : 'Take this note out of the group — every other card stays put',
           onclick: () => {
             let left = null;
             step(() => {
@@ -5734,8 +7540,12 @@ export function createWorldbuildPanel({ app, root }) {
               : `“${noteTitle(anchor)}” left ${left.name || 'the group'}`,
               'ok', 1600);
           },
-        }));
+        });
+        if (isGroupLocked(group)) removeButton.disabled = true;
+        groupItems.push(removeButton);
       }
+      items.push(submenuItem('Group', groupItems));
+      if (!isGroupLocked(group)) items.push(...addToGroupItems(anchor));
     } else {
       const groupButton = el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Group',
@@ -5747,7 +7557,15 @@ export function createWorldbuildPanel({ app, root }) {
       items.push(...addToGroupItems(anchor));
     }
     if (selected.size >= 2) {
-      items.push(el('span', { class: 'wb-menu-label', text: `Align & distribute (${selected.size})` }));
+      const movableCount = [...selected].filter((anchor) => !isAnchorLocked(anchor)).length;
+      const canAlign = movableCount >= 2;
+      const canDistribute = movableCount >= 3;
+      const alignLockNote = 'Select at least two unlocked cards to align or distribute';
+      const distributeLockNote = 'Select at least three unlocked cards to distribute';
+      const layoutTargets = movableCount === selected.size
+        ? `the ${selected.size} selected cards`
+        : `the ${movableCount} unlocked cards in this selection`;
+      const layoutItems = [];
       const layouts = [
         ['Align left', 'left'],
         ['Align centres', 'center-x'],
@@ -5761,12 +7579,21 @@ export function createWorldbuildPanel({ app, root }) {
         layouts.push(['Distribute vertically', 'distribute-y']);
       }
       for (const [label, mode] of layouts) {
-        items.push(el('button', {
+        const isDistribute = mode === 'distribute-x' || mode === 'distribute-y';
+        const blocked = !canAlign || (isDistribute && !canDistribute);
+        const reason = !canAlign ? alignLockNote : distributeLockNote;
+        layoutItems.push(el('button', {
           class: 'wb-menu-item', type: 'button', text: label,
-          title: `Lay out the ${selected.size} selected cards: ${label.toLowerCase()}`,
+          title: blocked ? reason : `Lay out ${layoutTargets}: ${label.toLowerCase()}`,
+          disabled: blocked || undefined,
           onclick: () => { closeMenu(); applySelectionLayout(mode, label); },
         }));
       }
+      const layoutValue = movableCount === selected.size
+        ? `${selected.size} cards`
+        : `${movableCount} of ${selected.size} cards`;
+      const layoutMenu = submenuItem('Align & distribute', layoutItems, layoutValue);
+      items.push(canAlign ? layoutMenu : disableSubmenu(layoutMenu, alignLockNote));
     }
     if (selected.size) {
       items.push(el('button', {
@@ -5967,6 +7794,27 @@ export function createWorldbuildPanel({ app, root }) {
       links += note.links?.length ?? 0;
     }
     const breakdown = [...typeCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([label, count]) => `${count} ${label.toLowerCase()}${count === 1 ? '' : 's'}`).join(' · ');
+    const semantic = semanticTile({
+      icon: group.icon || GROUP_GENERIC_ICON,
+      typeLabel: 'Group',
+      title: group.name || 'Group',
+      accent: color,
+      typeColor: color,
+      className: 'wb-group-semantic',
+      flags: [
+        isGroupLocked(group)
+          ? { glyph: '🔒', title: 'Locked' }
+          : group.pinned ? { glyph: '📌', title: 'Pinned' } : null,
+      ].filter(Boolean),
+    });
+    const cardCount = `${members.length} card${members.length === 1 ? '' : 's'}`;
+    const linkCount = `${links} link${links === 1 ? '' : 's'}`;
+    semantic.meta.append(
+      el('span', { class: 'wb-semantic-count', text: cardCount, title: cardCount }),
+      el('span', { class: 'wb-semantic-dot', text: '·' }),
+      el('span', { class: 'wb-semantic-count', text: linkCount, title: linkCount }),
+    );
+    semantic.tile.title = `${group.name || 'Group'} — ${cardCount}${breakdown ? ` · ${breakdown}` : ''} · ${linkCount}`;
     const summary = el('div', {
       class: `wb-group-summary${isGroupLocked(group) ? ' is-locked' : ''}${group.pinned ? ' is-pinned' : ''}`,
       dataset: { groupId: group.id },
@@ -5976,12 +7824,15 @@ export function createWorldbuildPanel({ app, root }) {
       el('span', { class: 'wb-group-summary-name', text: group.name || 'Group' }),
       el('span', { class: 'wb-group-summary-meta', text: `${members.length} card${members.length === 1 ? '' : 's'}${breakdown ? ` · ${breakdown}` : ''} · ${links} link${links === 1 ? '' : 's'}` }),
       el('span', { class: 'wb-group-summary-hint', text: 'Double-click to expand' }),
+      linkHandle(groupEndpoint(group.id), `“${group.name || 'Group'}”`, 'wb-group-link-handle'),
+      semantic.tile,
     ]);
     summary.style.left = `${rect.x}px`;
     summary.style.top = `${rect.y}px`;
     summary.style.borderLeftColor = color;
     summary.addEventListener('pointerdown', (event) => {
       event.stopPropagation();
+      if (event.button !== 0) return;
       if (isGroupLocked(group)) {
         app.toast(`“${group.name || 'Group'}” is locked — unlock it before moving its contents`, 'warn', 2200);
         event.preventDefault();
@@ -6031,6 +7882,7 @@ export function createWorldbuildPanel({ app, root }) {
       const boxHeight = box.height + topPad + pad;
       edgeSvg.append(svgNode('rect', {
         class: `wb-box${dropTargetId === group.id ? ' is-drop-target' : ''}${isGroupLocked(group) ? ' is-locked' : ''}${group.pinned ? ' is-pinned' : ''}`,
+        'data-link-group': group.id,
         x: boxX,
         y: boxY,
         width: box.width + pad * 2,
@@ -6083,6 +7935,9 @@ export function createWorldbuildPanel({ app, root }) {
       const tab = el('div', {
         class: `wb-group-tab${isGroupLocked(group) ? ' is-locked' : ''}${group.pinned ? ' is-pinned' : ''}`,
         dataset: { groupId: group.id },
+        tabindex: '0',
+        'aria-haspopup': 'menu',
+        'aria-keyshortcuts': 'Shift+F10',
         title: isGroupLocked(group)
           ? `${name} — locked; unlock from its menu`
           : group.pinned ? `${name} — pinned; Arrange works around it` : `${name} — drag to move the group`,
@@ -6098,12 +7953,14 @@ export function createWorldbuildPanel({ app, root }) {
           title: group.icon ? `Icon: ${group.icon}` : 'No icon set',
         }),
         el('span', { class: 'wb-card-title static', text: name }),
+        linkHandle(groupEndpoint(group.id), `“${name}”`, 'wb-group-link-handle'),
       ]);
       tab.style.left = `${boxX}px`;
       tab.style.top = `${boxY - 12}px`;
       tab.style.borderLeft = `3px solid ${color}`;
       tab.addEventListener('pointerdown', (event) => {
         event.stopPropagation();
+        if (event.button !== 0) return;
         if (isGroupLocked(group)) {
           app.toast(`“${name}” is locked — unlock it before moving its contents`, 'warn', 2200);
           event.preventDefault();
@@ -6191,9 +8048,10 @@ export function createWorldbuildPanel({ app, root }) {
           : {}),
       });
       const title = svgNode('title');
-      title.textContent = relation
+      const kindPrefix = edge.kind === 'bond' ? 'Canvas bond · ' : isGroup ? 'Group bond · ' : '';
+      title.textContent = kindPrefix + (relation
         ? `${endpointTitle(edge.from)} ${relation.label.toLowerCase()} ${endpointTitle(edge.to)}`
-        : `${endpointTitle(edge.from)} → ${endpointTitle(edge.to)}`;
+        : `${endpointTitle(edge.from)} → ${endpointTitle(edge.to)}`);
       line.append(title);
       edgeSvg.append(line);
       // Put the invisible fat twin over the visible wire, so the whole wire
@@ -6366,6 +8224,17 @@ export function createWorldbuildPanel({ app, root }) {
   document.fonts?.addEventListener?.('loadingdone', relayoutLabels);
 
   window.addEventListener('pointermove', (event) => {
+    if (resizing) {
+      const point = canvasPoint(event);
+      resizing.width = Math.round(Math.min(CARD_MAX_W, Math.max(CARD_MIN_W, resizing.startW + (point.x - resizing.start.x))));
+      resizing.height = Math.round(Math.min(CARD_MAX_H, Math.max(CARD_MIN_H, resizing.startH + (point.y - resizing.start.y))));
+      resizing.moved = true;
+      resizing.el.style.width = `${resizing.width}px`;
+      resizing.el.style.height = `${resizing.height}px`;
+      sizeCanvas();
+      scheduleEdges();
+      return;
+    }
     if (marquee) {
       const rect = stage.getBoundingClientRect();
       const left = Math.min(marquee.startX, event.clientX) - rect.left;
@@ -6453,8 +8322,11 @@ export function createWorldbuildPanel({ app, root }) {
   stage.addEventListener('wheel', (event) => {
     event.preventDefault();
     const rect = stage.getBoundingClientRect();
-    view = zoomViewAt(view, event.clientX - rect.left, event.clientY - rect.top, Math.exp(-event.deltaY * 0.002));
+    const px = event.clientX - rect.left;
+    const py = event.clientY - rect.top;
+    view = snapZoomView(view, px, py, Math.exp(-event.deltaY * 0.002));
     applyView();
+    showZoomHud();
     // Zooming moves the saved anchor too; the save is debounced underneath,
     // so a pinch stream collapses into one write.
     persistView();
@@ -6472,6 +8344,23 @@ export function createWorldbuildPanel({ app, root }) {
       panning = null;
       stage.classList.remove('is-panning');
       persistView();
+    }
+    if (resizing) {
+      const done = resizing;
+      resizing = null;
+      done.el.classList.remove('is-resizing');
+      if (done.moved) {
+        // A dragged box is a fixed one: content height yields to the corner,
+        // so the height the reader just chose is the height they get.
+        if (cardSizeOf(done.anchor) === 'content') {
+          cardSizes = app.setWorldCardSize(currentPath, done.anchor, 'fixed') ?? cardSizes;
+          done.el.classList.remove('is-content-sized');
+        }
+        cardDims = app.setWorldCardDims(currentPath, done.anchor, { width: done.width, height: done.height }) ?? cardDims;
+        sizeCanvas();
+        drawEdges();
+      }
+      commitStep(done.moved ? 'Resize note' : undefined);
     }
     if (!dragging) return;
     const drop = dragging;

@@ -29,6 +29,21 @@ sequenceDiagram
   Field->>Field: update [[Chambers/Fieldwork/Macusanite Occurrence]]
 ```
 
+## Schedule
+
+```mermaid
+gantt
+  title Field season
+  dateFormat YYYY-MM-DD
+  axisFormat %b %d
+  section Reconnaissance
+  North ridge :done, t1, 2026-05-04, 5d
+  Dry wash :active, t2, after t1, 4d
+  section Collection
+  Plateau :t3, after t2, 6d
+  Lab handoff :milestone, m1, after t3, 0d
+```
+
 ## Risks
 
 - Rind formation if samples stand wet overnight.

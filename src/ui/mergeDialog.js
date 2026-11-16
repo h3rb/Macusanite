@@ -47,7 +47,7 @@ export function askMerge({ name, merge }) {
       el('header', { class: 'merge-head' }, [
         el('h2', { class: 'md-dialog-title', text: `“${name}” changed on disk` }),
         el('div', { class: 'spacer' }),
-        el('button', { type: 'button', class: 'icon-btn', text: '✕', title: 'Keep my draft', onclick: closable }),
+        el('button', { type: 'button', class: 'icon-btn ui-icon-only', icon: 'close', iconLabel: 'Close', title: 'Keep my draft', onclick: closable }),
       ]),
       el('p', { class: 'md-hint', text: intro }),
       el('div', { class: 'merge-summary' }, [
@@ -63,14 +63,15 @@ export function askMerge({ name, merge }) {
         ? el('p', { class: 'md-hint', text: 'The marked regions are in the text you will edit. Resolve them — autosave stays out of the way until you do — and the vein is saved with Ctrl+S.' })
         : null,
       el('div', { class: 'md-dialog-actions' }, [
-        el('button', { type: 'button', class: 'btn', text: 'Keep my draft', onclick: () => finish('keep') }),
-        el('button', { type: 'button', class: 'btn', text: 'Use the disk version', onclick: () => finish('disk') }),
+        el('button', { type: 'button', class: 'btn', text: 'Keep my draft', title: 'Save the text in the editor, discarding the version on disk', onclick: () => finish('keep') }),
+        el('button', { type: 'button', class: 'btn', text: 'Use the disk version', title: 'Load the file from disk, discarding the draft', onclick: () => finish('disk') }),
         merge.unchanged || !merge.supported
           ? null
           : el('button', {
             type: 'button',
             class: 'btn btn-primary',
             text: merge.conflicts ? `Merge, marking ${merge.conflicts === 1 ? 'the conflict' : `${merge.conflicts} conflicts`}` : 'Merge into my draft',
+            title: 'Combine the disk changes with your draft in the editor',
             onclick: () => finish('merge'),
           }),
       ]),

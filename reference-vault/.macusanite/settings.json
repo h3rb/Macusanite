@@ -1,6 +1,12 @@
 {
   "version": 1,
   "theme": "dark",
+  "themeHues": {
+    "background": 0,
+    "chrome": 0,
+    "text": 0
+  },
+  "icons": true,
   "autosave": true,
   "autosaveDelayMs": 800,
   "fontSize": 16,
@@ -78,6 +84,10 @@
   "editor": {
     "enabled": true,
     "livePreview": true
+  },
+  "worldbuild": {
+    "cardSize": "fixed",
+    "units": []
   },
   "updates": {
     "autoCheck": true

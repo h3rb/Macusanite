@@ -83,7 +83,7 @@ My Vault/
 | **Second bar** | back and forward, the current file location, chips for recently visited veins, and undo/redo buttons that name what they would change |
 | **Left** | two panes behind tabs: **Chambers** (the vault tree, chambers fold open, a filter box narrows it) and **Search** |
 | **Centre** | the rendered vein: a colour swatch beside the page title, every heading and every wiki link, edit mode with autosave, and backlinks at the bottom |
-| **Right** | the concept graph — sections, linked veins, unwritten "ghost" pages and tags, with pan, zoom, drag and depth toggles |
+| **Right** | the concept graph — sections, linked veins, unwritten "ghost" pages and tags, with pan, zoom, drag and depth toggles; fold it to a vertical rail or click the rail to unfold it |
 
 Reading:
 
@@ -166,6 +166,10 @@ Edge kinds: solid = a wiki link, dotted = *contains* (a page and its sections), 
 sections, tags, ghost pages and vault context are toggles at the bottom of the pane. Drag a node to
 rearrange, drag the background to pan, scroll to zoom, click a node to navigate. `graph` returns the
 same structure as data.
+
+The **hide** button folds the pane to a narrow vertical rail on the right; the centre widens to use
+the space. Click the rail — or the **Graph** button in the top bar — to unfold it again. The folded
+state is remembered with the rest of the vault's layout.
 
 ## Undo and redo
 
@@ -317,6 +321,7 @@ desktop app or the CLI for images and other non-text files.
 | `Ctrl+K` | quick jump to a vein by name |
 | `Ctrl+F` | search the whole vault |
 | `F3` / `Shift+F3` | next / previous search hit in the open vein |
+| `Shift+F10` / Menu key | open the focused card or group’s canvas menu; arrows move through it and `→` / `←` open or leave a submenu |
 | `Alt+←` / `Alt+→` | back / forward through navigation history |
 | `Esc` | clear the search, close the search pane, or leave edit mode |
 
@@ -375,8 +380,8 @@ job or a tool call needs.
 
 ## The Worldbuilding canvas
 
-A vein marked as **Worldbuilding** (the switch at the top right of the centre pane, or the
-**★ Mark** button on the canvas toolbar) opens not as lines but as cards on a canvas — one card
+A vein marked as **Worldbuilding** (the switch at the top right of the centre pane, or
+**More ▾ → Mark as Worldbuilding** in the canvas toolbar) opens not as lines but as cards on a canvas — one card
 per heading of the vein, editing the same markdown the reader sees. Switching to **Markdown**
 never loses the layout, and unmarking a vein keeps every card's place and bonds until it is marked
 again.
@@ -390,21 +395,27 @@ through the CLI and over MCP.
 ### Gestures
 
 * **Drag** a card by its grip to move it; snap guides line it up with its neighbours. Dragging the
-  background pans the canvas, and the wheel zooms around the pointer.
+  background pans the canvas, the wheel zooms around the pointer, and a small badge reports the zoom
+  percentage while it changes.
+* **Zoom out from 1:1** keeps the full cards for the first two wheel notches. At about 55% — the
+  third notch out — they become semantic summaries: the type, title and link and word counts stay at
+  a readable screen size while full prose and fields step aside. Collapsed groups show their name and
+  card count. Card controls are inert below 1:1 as before; dragging, folding, resizing, selection and
+  connector selection keep working, and editing waits until you zoom back to 1:1 or closer.
 * **Right-click** a card for everything it can be: link it, relate it, colour it, give it an image,
   choose its type, fold it, pin it or lock it. Right-click a group for the group's own menu, and a
   connector for its relationship and routing.
 * **Ctrl+click** picks cards into a set that drags as one; **Shift+drag** on the background
-  box-selects. **Select ▾** offers quick picks, and the selection's menu aligns and distributes it.
+  box-selects. **More ▾ → Quick select** offers quick picks, and the selection's menu aligns and distributes it.
 * **Arrange ▾** lays out the selection, a group, a connected component, one type, or the whole vein.
-* The **?** button opens the gesture cheatsheet, **Legend ▾** explains every wire and icon, and
-  **Export ▾** writes the canvas out as SVG, PNG or Mermaid.
+* **More ▾** carries the rest: **Canvas gestures** opens the cheatsheet, **Legend** explains every
+  wire and icon, and **Export** writes the canvas out as SVG, PNG or Mermaid.
 
 ### Undoing canvas changes
 
 The canvas keeps its own undo, separate from the markdown editor's. The toolbar's **↶** and **↷**
 arrows undo and redo one step and name it in their tooltip; **Ctrl+Z** and **Ctrl+Shift+Z** (or
-**Ctrl+Y**) do the same while the canvas has focus, and **History** beside the arrows lists the
+**Ctrl+Y**) do the same while the canvas has focus, and **More ▾ → History** lists the
 whole stack — redo above the current point, undo below — with a click to jump anywhere in it. Each
 vein keeps its own stack, saved with its canvas record, so the steps are still there when the vault
 is closed and reopened. A step is one canvas change: a move, a group, a bond, a fold, a type, a
@@ -471,6 +482,7 @@ icon and colour and, for the game-like types, its structured fields:
 | **Ability** | a minimum and maximum, unbounded |
 | **Attribute** | key, value and unit — the unit box autocompletes from units used or typed earlier in the vault |
 | **Property** | key and value |
+| **Table** | an editable spreadsheet grid with named columns and rows |
 | **Rating** | one value, 0–10 |
 | **Note, Place, Person, Thing, Location, Locale, Biome, Scene, Perk, Effect, Condition** | prose, like a note |
 
@@ -478,7 +490,25 @@ icon and colour and, for the game-like types, its structured fields:
 
 Fields are stored with the vein's canvas record, not written into the prose, and a numeric field
 clamps to its range on the way in. A type change is one undo step and rewrites the card's fields
-row in place; the values already stored for the new type are kept.
+row in place; the values already stored for the new type are kept. **Tables are the exception**:
+their content is the markdown table itself, so the reader, CLI and MCP never work against a
+second saved copy.
+
+A **Table** opens as a grid: click a column heading or cell to type, use **+ Row** and **+ Column**
+to grow it, and the small **×** controls remove a row or column. **Enter** moves down a row, adding
+one at the bottom when needed; the table scrolls when it outgrows the card. The grid is read
+from the GitHub-flavoured markdown table in that section on every build, so an edit made in the
+reader, by the CLI or by MCP appears here instead of being overwritten by a stale canvas copy.
+A section with several tables gets a selector and every table keeps its place; captions then stay
+in the reader so no prose between tables can be moved by accident. Changing a **Note** to
+**Table** reads the markdown already there, and changing it back needs no write: markdown was
+always the source.
+
+Fast entry: paste a TSV or CSV block straight into a cell (rows and columns grow to fit), drag a
+row number to reorder actual markdown rows, and cycle a column's alignment with the small arrow in
+its heading — alignment is written into the markdown delimiter row. The filter and sort controls
+are **views only**; they never rewrite row order, and **Clear view** returns to the markdown order.
+Canvas undo carries the markdown it changed, so a table edit and its grid come back together.
 
 ### Colour and image
 
@@ -504,9 +534,12 @@ makes it clickable, counts it in the stats bar, and offers to open the card it n
 **Wires come from the prose first.** A dotted wire is the vein's own outline — each card
 nested under its nearest shallower heading. A solid wire is a `[[#Heading]]` link written in a
 note, and a faint green wire is a mention of another vein, `[[Another note]]`. A bond asserted on
-the canvas itself is drawn like any other bond of its kind, and a wire to a group is drawn at twice
-the weight. If removing a bond leaves its prose link drawing the same line, the notice offers to
-remove that markdown link too, as a normal prose edit.
+the canvas itself is a **dashed canvas bond**; a link dot in a card's head, a group's tab or a
+collapsed group's summary starts one — drag it to another card or group and choose the
+relationship on release. No markdown link is written into either note. A wire to a group is
+dashed at twice the weight. A pair already joined by a prose link is left to that wire. If removing
+a bond leaves a prose link drawing the same line, the notice offers to remove that markdown link
+too, as a normal prose edit.
 
 ### Wires and relationships
 
@@ -515,7 +548,7 @@ contains/contained by, controls/controlled by, affects/affected by, ally and foe
 strengthens. **Click the word on the wire** to step to the next kind. Right-click a connector for
 **Cycle relationship**, **Reverse relationship**, **Remove asserted relationship**, curve style,
 end selection and **Trace upstream/downstream**. Dragging from a selected set's menu, or
-**Relate to…** in a card's menu, asserts a bond between cards or a group endpoint.
+**Relate to…** in a card's menu, or dragging a **link dot**, asserts a bond between cards or a group endpoint. A link dot is refused for a pair a prose link already joins, so the dashed and solid wires never duplicate each other.
 
 ### Groups
 
@@ -527,8 +560,9 @@ dissolved; dragging a card into a group's box adds it, and dragging it out remov
   a member count and link total; **Collapse all groups** does the whole vein.
 * **Split into progression columns** turns a group into lanes — the group's top cards on the left,
   their subsections a tier to the right, and so on, each lane headed by its **Tier**.
-* **Group colour**, **Group icon**, **Rename group**, **Pin group** and **Lock group** are in the
-  group's right-click menu, beside **Ungroup** (keep the cards) and **Remove from group**.
+* **Group colour** and **Group icon** sit at the top of the group's right-click menu. **Rename group**,
+  **Split into progression columns**, **Collapse/Expand**, **Lock group**, **Pin group**, **Ungroup**
+  (keep the cards) and **Remove from group** are together under its **Group** submenu.
 
 ### Annotations
 
@@ -570,9 +604,10 @@ step.
 
 ### Routing
 
-**Elbow** switches selected connectors (or the whole vein) between curves and
-right-angle bends; **Arrows** adds arrowheads; **Trim** ends a wire longer than a screen in a
-diamond that faces the far card. Click it to reveal the far card if it is inside a collapsed group,
+**Elbow routing** switches selected connectors (or the whole vein) between curves and
+right-angle bends; **Arrowheads** adds arrowheads; **Trim long wires** ends a wire longer than a screen in a
+diamond that faces the far card. All three sit under **More ▾**, and the connector bar offers them
+for a selection directly. Click it to reveal the far card if it is inside a collapsed group,
 then centre the view on it; otherwise the view centres on the card directly. A connector's
 right-click menu overrides routing for that wire alone or sends it back to the vein default.
 
@@ -580,9 +615,9 @@ right-click menu overrides routing for that wire alone or sends it back to the v
 
 **Search** filters the canvas live across titles, types, fields, colours and
 group names, with previous/next jumps, **Select all** and **Isolate** (dim everything outside the
-matches' connected subgraph). **Health** lists orphans and groups holding fewer than two cards,
-and clicking a row selects and centres it. The **Legend ▾** and **?** popovers explain the rest in
-place.
+matches' connected subgraph). **More ▾ → Health** lists orphans and groups holding fewer than two cards,
+and clicking a row selects and centres it. **More ▾** also holds **Legend** and **Canvas gestures**,
+which explain the rest in place.
 
 ## Canvas history, exports and health
 
@@ -1707,4 +1742,4 @@ macusanite docs --sections
 
 ---
 
-49 commands · generated 2026-11-14
+49 commands · generated 2026-11-16

@@ -112,6 +112,13 @@ struct CreateResult {
     created: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct MoveResult {
+    path: String,
+    from: String,
+    moved: bool,
+}
+
 /* ── vault lifecycle ───────────────────────────────────────────────────── */
 
 #[tauri::command]
@@ -350,6 +357,105 @@ fn create_chamber(
     std::fs::create_dir_all(&path).map_err(|e| format!("{rel}: {e}"))?;
     meta::append_log(&root, "info", &format!("chamber ready: {rel}"));
     Ok(CreateResult { path: rel, created })
+}
+
+#[tauri::command]
+fn rename_vein(app: AppHandle, from: String, to: String, state: State<'_, VaultState>) -> Result<MoveResult, String> {
+    let root = state.root()?;
+    if from.trim().is_empty() || to.trim().is_empty() || !vault::is_markdown(&from) || !vault::is_markdown(&to) {
+        return Err("vein names must use a Markdown extension".to_string());
+    }
+    let source = vault::resolve_in_vault(&root, &from)?;
+    let target = vault::resolve_in_vault(&root, &to)?;
+    if source == target {
+        return Ok(MoveResult { path: to, from, moved: false });
+    }
+    let contents = std::fs::read_to_string(&source).map_err(|e| format!("{from}: {e}"))?;
+    if target.exists() {
+        return Err(format!("vein already exists: {to}"));
+    }
+    if let Some(parent) = target.parent() {
+        if !parent.is_dir() {
+            return Err(format!("chamber does not exist: {}", parent.display()));
+        }
+    }
+    remember_write(&app, &from);
+    remember_write(&app, &to);
+    std::fs::rename(&source, &target).map_err(|e| format!("{from} -> {to}: {e}"))?;
+    history::record(&root, &to, &format!("rename {from} -> {to}"), None, &contents)?;
+    history::record(&root, &from, &format!("rename {from} -> {to}"), Some(contents), "")?;
+    meta::append_log(&root, "info", &format!("vein renamed: {from} -> {to}"));
+    Ok(MoveResult { path: to, from, moved: true })
+}
+
+#[tauri::command]
+fn delete_vein(app: AppHandle, rel: String, state: State<'_, VaultState>) -> Result<bool, String> {
+    let root = state.root()?;
+    if !vault::is_markdown(&rel) {
+        return Err(format!("not a Markdown vein: {rel}"));
+    }
+    let path = vault::resolve_in_vault(&root, &rel)?;
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("{rel}: {error}")),
+    };
+    remember_write(&app, &rel);
+    std::fs::remove_file(&path).map_err(|e| format!("{rel}: {e}"))?;
+    history::record(&root, &rel, &format!("delete {rel}"), Some(contents), "")?;
+    meta::append_log(&root, "info", &format!("vein deleted: {rel}"));
+    Ok(true)
+}
+
+#[tauri::command]
+fn rename_chamber(app: AppHandle, from: String, to: String, state: State<'_, VaultState>) -> Result<MoveResult, String> {
+    let root = state.root()?;
+    if from.trim().is_empty() || to.trim().is_empty() {
+        return Err("chamber name cannot be empty".to_string());
+    }
+    if from.split('/').any(|part| part.starts_with('.')) || to.split('/').any(|part| part.starts_with('.')) {
+        return Err("chamber names cannot start with a dot".to_string());
+    }
+    let source = vault::resolve_in_vault(&root, &from)?;
+    let target = vault::resolve_in_vault(&root, &to)?;
+    if source == root || target == root || target.starts_with(&source) {
+        return Err("invalid chamber rename".to_string());
+    }
+    if !source.is_dir() {
+        return Err(format!("chamber not found: {from}"));
+    }
+    if target.exists() {
+        return Err(format!("chamber or file already exists: {to}"));
+    }
+    if let Some(parent) = target.parent() {
+        if !parent.is_dir() {
+            return Err(format!("parent chamber does not exist: {}", parent.display()));
+        }
+    }
+    remember_write(&app, &from);
+    remember_write(&app, &to);
+    std::fs::rename(&source, &target).map_err(|e| format!("{from} -> {to}: {e}"))?;
+    meta::append_log(&root, "info", &format!("chamber renamed: {from} -> {to}"));
+    Ok(MoveResult { path: to, from, moved: true })
+}
+
+#[tauri::command]
+fn delete_chamber(app: AppHandle, rel: String, state: State<'_, VaultState>) -> Result<bool, String> {
+    let root = state.root()?;
+    let path = vault::resolve_in_vault(&root, &rel)?;
+    if path == root {
+        return Err("cannot delete the vault root".to_string());
+    }
+    if !path.is_dir() {
+        return Ok(false);
+    }
+    if std::fs::read_dir(&path).map_err(|e| format!("{rel}: {e}"))?.next().is_some() {
+        return Err(format!("chamber is not empty: {rel}"));
+    }
+    remember_write(&app, &rel);
+    std::fs::remove_dir(&path).map_err(|e| format!("{rel}: {e}"))?;
+    meta::append_log(&root, "info", &format!("empty chamber deleted: {rel}"));
+    Ok(true)
 }
 
 /* ── .macusanite metadata ──────────────────────────────────────────────── */
@@ -692,6 +798,10 @@ pub fn run() {
             write_vein,
             create_vein,
             create_chamber,
+            rename_vein,
+            delete_vein,
+            rename_chamber,
+            delete_chamber,
             read_meta,
             write_meta,
             delete_meta,

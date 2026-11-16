@@ -230,6 +230,7 @@ export const NODE_TYPES = [
   { id: 'ability', label: 'Ability', color: '#da70d6', icon: '✦' },
   { id: 'attribute', label: 'Attribute', color: '#d29922', icon: '≡' },
   { id: 'property', label: 'Property', color: '#8b949e', icon: '⚙' },
+  { id: 'table', label: 'Table', color: '#8ecae6', icon: '▦' },
   { id: 'rating', label: 'Rating', color: '#9575cd', icon: '★' },
   // Places of the world: where things happen and what stands there.
   { id: 'place', label: 'Place', color: '#45c4b0', icon: '⌂' },
@@ -396,6 +397,437 @@ export function unitSuggestions(fields = {}, learned = []) {
 // An attribute is a key/value pair with a unit: "temper — 1200 °C".
 const ATTRIBUTE = [...KEY_VALUE, { id: 'unit', label: 'Unit', kind: 'unit' }];
 
+// A Table's grid lives in the markdown table itself. These limits are shared
+// by the parser, the editor and the paste path so every route clamps alike.
+export const TABLE_MAX_COLUMNS = 8;
+export const TABLE_MAX_ROWS = 50;
+export const TABLE_HEADER_MAX_LENGTH = 64;
+export const TABLE_CELL_MAX_LENGTH = 200;
+export const TABLE_ALIGNMENTS = ['default', 'left', 'center', 'right'];
+
+/** A fresh table: three empty columns and three empty rows. */
+export function blankTable({ columns = 3, rows = 3 } = {}) {
+  const count = Number.isFinite(Number(columns)) ? Number(columns) : 3;
+  const columnCount = Math.max(1, Math.min(TABLE_MAX_COLUMNS, Math.floor(count)));
+  const rowInput = Number.isFinite(Number(rows)) ? Number(rows) : 3;
+  const rowCount = Math.max(0, Math.min(TABLE_MAX_ROWS, Math.floor(rowInput)));
+  const headers = Array.from({ length: columnCount }, () => '');
+  return {
+    columns: headers,
+    rows: Array.from({ length: rowCount }, () => Array.from({ length: columnCount }, () => '')),
+    align: Array.from({ length: columnCount }, () => 'default'),
+  };
+}
+
+/**
+ * Normalise a table from its stored JSON string or an in-memory object. Bad
+ * data falls back to a fresh table; rows and columns are clipped to the same
+ * limits the editor enforces, and cells are always strings.
+ */
+export function normalizeTable(value) {
+  let raw = value;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return blankTable();
+    try {
+      raw = JSON.parse(trimmed);
+    } catch {
+      return blankTable();
+    }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return blankTable();
+  const rawColumns = Array.isArray(raw.columns) ? raw.columns.slice(0, TABLE_MAX_COLUMNS) : [];
+  if (!rawColumns.length) return blankTable();
+  const columns = rawColumns.map((column) => String(column ?? '').slice(0, TABLE_HEADER_MAX_LENGTH));
+  const rawAlign = Array.isArray(raw.align) ? raw.align : [];
+  const align = columns.map((_, index) => (TABLE_ALIGNMENTS.includes(rawAlign[index]) ? rawAlign[index] : 'default'));
+  const rawRows = Array.isArray(raw.rows) ? raw.rows.slice(0, TABLE_MAX_ROWS) : [];
+  const rows = rawRows.map((row) => {
+    const cells = Array.isArray(row) ? row : [];
+    return columns.map((_, index) => String(cells[index] ?? '').slice(0, TABLE_CELL_MAX_LENGTH));
+  });
+  return { columns, rows, align };
+}
+
+/** The legacy stored JSON form; live table content is canonical in markdown. */
+export function serializeTable(value) {
+  return JSON.stringify(normalizeTable(value));
+}
+
+/** Human-readable table text for search (never the stored JSON). */
+export function tableText(value) {
+  const table = normalizeTable(value);
+  const parts = table.columns.filter((column) => String(column).trim());
+  for (const row of table.rows) {
+    for (const cell of row) if (String(cell).trim()) parts.push(cell);
+  }
+  return parts.join(' ');
+}
+
+/** A compact table description for the canvas SVG export. */
+export function tableSummary(value) {
+  const table = normalizeTable(value);
+  const headers = table.columns.map((column, index) => String(column).trim() || `Column ${index + 1}`);
+  const shown = headers.slice(0, 3).join(', ') + (headers.length > 3 ? ` +${headers.length - 3}` : '');
+  return `${shown} · ${table.rows.length} row${table.rows.length === 1 ? '' : 's'}`;
+}
+
+/* ------------------------------------------------------ markdown tables -- */
+
+/** A GFM delimiter cell: three-or-so dashes with optional alignment colons. */
+function isTableDelimiterCell(cell) {
+  return /^:?-{1,}:?$/.test(String(cell ?? '').trim());
+}
+
+/**
+ * Split one GitHub-flavoured table row into cell text.
+ *
+ * Pipes inside an escaped pair (`\|`), an inline code span, or a wiki-link
+ * alias (`[[Target|label]]`) belong to the cell, not to the table's shape.
+ * The edge pipes that make a row look like `| A | B |` are optional; an empty
+ * cell between two separators is preserved. Returns null when the line has no
+ * unescaped table pipe at all.
+ */
+export function splitMarkdownTableRow(line) {
+  const text = String(line ?? '').replace(/\r$/, '');
+  const cells = [];
+  let cell = '';
+  let ticks = 0;
+  let wikilinks = 0;
+  let sawPipe = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '\\' && text[i + 1] === '|') {
+      cell += '|';
+      i += 1;
+      continue;
+    }
+    if (ch === '`') {
+      let run = 1;
+      while (text[i + run] === '`') run += 1;
+      if (!ticks) ticks = run;
+      else if (ticks === run) ticks = 0;
+      cell += '`'.repeat(run);
+      i += run - 1;
+      continue;
+    }
+    if (!ticks && ch === '[' && text[i + 1] === '[') {
+      wikilinks += 1;
+      cell += '[[';
+      i += 1;
+      continue;
+    }
+    if (!ticks && ch === ']' && text[i + 1] === ']' && wikilinks) {
+      wikilinks -= 1;
+      cell += ']]';
+      i += 1;
+      continue;
+    }
+    if (ch === '|' && !ticks && !wikilinks) {
+      cells.push(cell.trim());
+      cell = '';
+      sawPipe = true;
+      continue;
+    }
+    cell += ch;
+  }
+  cells.push(cell.trim());
+  if (!sawPipe) return null;
+
+  const trimmed = text.trim();
+  if (trimmed.startsWith('|') && cells.length && cells[0] === '') cells.shift();
+  if (trimmed.endsWith('|') && cells.length && cells[cells.length - 1] === '') cells.pop();
+  return cells;
+}
+
+/** The cells of a GFM header-separator row, or null when the line is not one. */
+function tableDelimiter(line) {
+  const cells = splitMarkdownTableRow(line);
+  if (!cells?.length || !cells.every(isTableDelimiterCell)) return null;
+  return cells;
+}
+
+/** The alignment a GFM delimiter cell declares. */
+function alignmentOfDelimiter(cell) {
+  const value = String(cell ?? '').trim();
+  if (/^:-+:$/.test(value)) return 'center';
+  if (/^:-+$/.test(value)) return 'left';
+  if (/^-+:$/.test(value)) return 'right';
+  return 'default';
+}
+
+/**
+ * Find every GFM table in a note body. Fenced code is skipped, and each table
+ * must have a header row plus a matching delimiter row. Body rows run until a
+ * blank line. The returned range makes a table replaceable while leaving the
+ * markdown around it — including any other tables — alone.
+ *
+ * Markdown is the table's canonical representation: the editor reads this
+ * list on every build, so an external edit is never hidden behind a stale
+ * saved grid.
+ *
+ * @returns {Array<{table: object, start: number, end: number, before: string,
+ *            after: string}>}
+ */
+export function markdownTables(text) {
+  const src = String(text ?? '');
+  const rawLines = src.split('\n');
+  const lines = [];
+  let offset = 0;
+  for (const raw of rawLines) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    lines.push({ text: line, start: offset, end: offset + line.length });
+    offset += raw.length + 1;
+  }
+
+  let fence = null;
+  const hits = [];
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const line = lines[i].text;
+    const fenceHit = /^[ \t]*(`{3,}|~{3,})/.exec(line);
+    if (fenceHit) {
+      if (!fence) fence = fenceHit[1][0];
+      else if (fenceHit[1][0] === fence) fence = null;
+      continue;
+    }
+    if (fence || !line.includes('|')) continue;
+
+    const delimiter = tableDelimiter(lines[i + 1]?.text);
+    if (!delimiter) continue;
+    const headers = splitMarkdownTableRow(line);
+    if (!headers || headers.length !== delimiter.length) continue;
+
+    const rows = [];
+    let last = i + 1;
+    for (let j = i + 2; j < lines.length; j += 1) {
+      const candidate = lines[j].text;
+      if (!candidate.trim() || !candidate.includes('|')) break;
+      if (/^[ \t]*(`{3,}|~{3,})/.test(candidate)) break;
+      const cells = splitMarkdownTableRow(candidate);
+      if (!cells) break;
+      rows.push(headers.map((_, column) => cells[column] ?? ''));
+      last = j;
+    }
+
+    const start = lines[i].start;
+    const end = lines[last].end;
+    hits.push({
+      table: normalizeTable({ columns: headers, rows, align: delimiter.map(alignmentOfDelimiter) }),
+      start,
+      end,
+      before: src.slice(0, start),
+      after: src.slice(end),
+    });
+    // Continue after this table rather than inside its body rows.
+    i = last;
+  }
+  return hits;
+}
+
+/** One markdown table by position, or null when the note has no such table. */
+export function markdownTableAt(text, index = 0) {
+  return markdownTables(text)[Math.max(0, Math.floor(Number(index) || 0))] ?? null;
+}
+
+/** One markdown table as table data, or null when the note has no such table. */
+export function tableFromMarkdown(text, index = 0) {
+  return markdownTableAt(text, index)?.table ?? null;
+}
+
+/** True when the note's whole body is exactly one markdown table. */
+export function markdownTableOnly(text) {
+  const hits = markdownTables(text);
+  const hit = hits[0];
+  return Boolean(hits.length === 1 && hit && !String(hit.before).trim() && !String(hit.after).trim());
+}
+
+/** Write table data as a GFM table, headings and alignment row included. */
+export function markdownFromTable(value) {
+  const table = normalizeTable(value);
+  const row = (cells) => `| ${cells
+    .map((cell) => String(cell ?? '').replace(/\r?\n/g, ' ').replace(/\|/g, '\\|').trim())
+    .join(' | ')} |`;
+  const delimiter = (align) => {
+    if (align === 'center') return ':---:';
+    if (align === 'right') return '---:';
+    if (align === 'left') return ':---';
+    return '---';
+  };
+  return [
+    row(table.columns),
+    `| ${table.align.map(delimiter).join(' | ')} |`,
+    ...table.rows.map(row),
+  ].join('\n');
+}
+
+/**
+ * The markdown outside a single table: Table mode's caption. A section with
+ * several tables has no single caption to edit safely, so it returns an empty
+ * string and the card sends the writer to the reader instead.
+ */
+export function tableCaptionOf(text) {
+  const hits = markdownTables(text);
+  const hit = hits[0];
+  if (!hit) return String(text ?? '').trim();
+  if (hits.length > 1) return '';
+  return [hit.before, hit.after]
+    .map((part) => String(part ?? '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+/**
+ * Replace the prose outside the table without touching the table itself. A
+ * table-less body is all caption, so it becomes exactly the new caption.
+ */
+export function replaceTableCaption(text, caption) {
+  const body = String(text ?? '');
+  const next = String(caption ?? '').trim();
+  const hits = markdownTables(body);
+  const hit = hits[0];
+  if (!hit) return next;
+  if (hits.length > 1) return body;
+  const table = body.slice(hit.start, hit.end).trim();
+  return [next, table].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Write one table into the prose at its position, leaving the caption and
+ * every other table untouched. This is the editor's only commit path.
+ */
+export function syncTableMarkdown(text, table, index = 0) {
+  const body = String(text ?? '');
+  const markdown = markdownFromTable(table);
+  const hits = markdownTables(body);
+  if (!hits.length) return [body.trim(), markdown].filter(Boolean).join('\n\n');
+  const at = Math.min(Math.max(0, Math.floor(Number(index) || 0)), hits.length - 1);
+  const hit = hits[at];
+  return `${body.slice(0, hit.start)}${markdown}${body.slice(hit.end)}`;
+}
+
+/**
+ * Parse TSV/CSV copied from a spreadsheet. Tabs win when present, otherwise
+ * commas. RFC 4180 quoting, doubled quotes and newlines inside quoted fields
+ * are understood, so a paste is not shredded by a comma in a cell.
+ */
+export function parseTablePaste(text) {
+  let src = String(text ?? '').replace(/\r\n?/g, '\n');
+  if (!src) return [];
+  if (src.endsWith('\n')) src = src.slice(0, -1);
+  const delimiter = src.includes('\t') ? '\t' : ',';
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (quoted) {
+      if (ch === '"' && src[i + 1] === '"') {
+        cell += '"';
+        i += 1;
+      } else if (ch === '"') {
+        quoted = false;
+      } else {
+        cell += ch;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      quoted = true;
+    } else if (ch === delimiter) {
+      row.push(cell.trim());
+      cell = '';
+    } else if (ch === '\n') {
+      row.push(cell.trim());
+      rows.push(row);
+      row = [];
+      cell = '';
+    } else {
+      cell += ch;
+    }
+  }
+  row.push(cell.trim());
+  rows.push(row);
+  return rows;
+}
+
+/**
+ * Stamp a pasted block into a table at one cell. Rows and columns grow to fit
+ * the block, within the same limits the editor enforces; existing content is
+ * overwritten only where the block lands.
+ */
+export function pasteTableData(table, pasted, { row = 0, column = 0 } = {}) {
+  const base = normalizeTable(table);
+  const block = Array.isArray(pasted) ? pasted : [];
+  if (!block.length) return base;
+  const startRow = Math.max(0, Math.floor(Number(row) || 0));
+  const startColumn = Math.max(0, Math.floor(Number(column) || 0));
+  if (startRow >= TABLE_MAX_ROWS || startColumn >= TABLE_MAX_COLUMNS) return base;
+  const width = Math.max(base.columns.length, startColumn + Math.max(...block.map((cells) => (Array.isArray(cells) ? cells.length : 1))));
+  const height = Math.max(base.rows.length, startRow + block.length);
+  const columnCount = Math.min(TABLE_MAX_COLUMNS, width);
+  const rowCount = Math.min(TABLE_MAX_ROWS, height);
+  const next = {
+    columns: Array.from({ length: columnCount }, (_, index) => base.columns[index] ?? ''),
+    align: Array.from({ length: columnCount }, (_, index) => base.align[index] ?? 'default'),
+    rows: Array.from({ length: rowCount }, (_, index) => Array.from(
+      { length: columnCount },
+      (_, columnIndex) => base.rows[index]?.[columnIndex] ?? '',
+    )),
+  };
+  block.forEach((cells, rowOffset) => {
+    const targetRow = startRow + rowOffset;
+    if (targetRow >= rowCount) return;
+    (Array.isArray(cells) ? cells : [cells]).forEach((value, columnOffset) => {
+      const targetColumn = startColumn + columnOffset;
+      if (targetColumn >= columnCount) return;
+      next.rows[targetRow][targetColumn] = String(value ?? '');
+    });
+  });
+  return normalizeTable(next);
+}
+
+/** Reorder one table row, as a new table. */
+export function moveTableRow(table, from, to) {
+  const next = normalizeTable(table);
+  const source = Math.floor(Number(from));
+  const target = Math.floor(Number(to));
+  if (!Number.isInteger(source) || !Number.isInteger(target)) return next;
+  if (source < 0 || source >= next.rows.length || target < 0 || target >= next.rows.length || source === target) return next;
+  const [row] = next.rows.splice(source, 1);
+  next.rows.splice(target, 0, row);
+  return next;
+}
+
+/** Set one column's alignment; the delimiter row is the stored form. */
+export function setTableColumnAlign(table, column, align) {
+  const next = normalizeTable(table);
+  const index = Math.floor(Number(column));
+  if (!Number.isInteger(index) || index < 0 || index >= next.columns.length) return next;
+  next.align[index] = TABLE_ALIGNMENTS.includes(align) ? align : 'default';
+  return next;
+}
+
+/**
+ * The source row indexes a table view shows. Sorting and filtering are views,
+ * never rewrites: the markdown row order stays exactly as written.
+ */
+export function tableRowOrder(table, { query = '', sortColumn = -1, sortDirection = 'asc' } = {}) {
+  const rows = normalizeTable(table).rows.map((row, index) => ({ row, index }));
+  const needle = String(query ?? '').trim().toLowerCase();
+  const shown = needle
+    ? rows.filter(({ row }) => row.some((cell) => String(cell).toLowerCase().includes(needle)))
+    : rows;
+  const column = Math.floor(Number(sortColumn));
+  if (!Number.isInteger(column) || column < 0 || column >= (normalizeTable(table).columns.length)) return shown.map(({ index }) => index);
+  const direction = sortDirection === 'desc' ? -1 : 1;
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  return [...shown]
+    .sort((a, b) => direction * collator.compare(String(a.row[column] ?? ''), String(b.row[column] ?? '')) || a.index - b.index)
+    .map(({ index }) => index);
+}
+
 export const NODE_FIELDS = {
   note: [],
   stat: [{ id: 'value', label: 'Value', kind: 'text' }],
@@ -403,6 +835,7 @@ export const NODE_FIELDS = {
   ability: MIN_MAX,
   attribute: ATTRIBUTE,
   property: KEY_VALUE,
+  table: [{ id: 'table', label: 'Table', kind: 'table' }],
   rating: RATING,
   // Place-like types are prose cards like notes: their content is markdown.
   place: [],
@@ -471,11 +904,13 @@ function clampToRange(value, field) {
 export function setNodeField(fields = {}, type, anchor, field, value) {
   const spec = nodeFields(type).find((f) => f.id === field);
   if (!anchor || !spec) return fields;
-  const stored = spec.kind === 'unit'
-    ? normalizeUnit(value)
-    : spec.kind === 'number' && String(value).trim() !== ''
-      ? clampToRange(value, spec)
-      : String(value);
+  const stored = spec.kind === 'table'
+    ? serializeTable(value)
+    : spec.kind === 'unit'
+      ? normalizeUnit(value)
+      : spec.kind === 'number' && String(value).trim() !== ''
+        ? clampToRange(value, spec)
+        : String(value);
   const pair = { ...(fields[anchor] ?? {}), [field]: stored };
   if (spec.kind === 'number' && (field === 'min' || field === 'max') && stored.trim() !== '') {
     const other = field === 'min' ? 'max' : 'min';
@@ -486,6 +921,17 @@ export function setNodeField(fields = {}, type, anchor, field, value) {
     if (partner && String(partner).trim() !== '' && crossed) pair[other] = stored;
   }
   return { ...fields, [anchor]: pair };
+}
+
+/** Forget one stored field, removing the anchor when nothing else remains. */
+export function dropNodeField(fields = {}, anchor, field) {
+  if (!fields[anchor] || !(field in fields[anchor])) return fields;
+  const pair = { ...fields[anchor] };
+  delete pair[field];
+  const next = { ...fields };
+  if (Object.keys(pair).length) next[anchor] = pair;
+  else delete next[anchor];
+  return next;
 }
 
 const RELATION_BY_ID = indexById(RELATION_KINDS);
@@ -991,10 +1437,83 @@ export function cleanCardSizes(sizes = {}) {
   return out;
 }
 
+/** How small and how large a card may be dragged, in canvas pixels. */
+export const CARD_MIN_W = 180;
+export const CARD_MIN_H = 120;
+export const CARD_MAX_W = 1200;
+export const CARD_MAX_H = 2000;
+
+/**
+ * Explicit card sizes, by note anchor: `{ width, height }` in canvas pixels.
+ * A card without an entry keeps its designed box (or grows to its prose), so
+ * only dragged cards ever appear here.
+ */
+export function cleanCardDims(dims = {}) {
+  const out = {};
+  for (const [anchor, value] of Object.entries(dims ?? {})) {
+    if (!anchor || !value) continue;
+    const width = Math.round(Number(value.width));
+    const height = Math.round(Number(value.height));
+    if (!Number.isFinite(width) || !Number.isFinite(height)) continue;
+    out[anchor] = {
+      width: Math.min(CARD_MAX_W, Math.max(CARD_MIN_W, width)),
+      height: Math.min(CARD_MAX_H, Math.max(CARD_MIN_H, height)),
+    };
+  }
+  return out;
+}
+
 export function cleanCollapsedGroups(collapsed = {}) {
   const out = {};
   for (const [id, value] of Object.entries(collapsed ?? {})) {
     if (id && value === true) out[id] = true;
+  }
+  return out;
+}
+
+/** Names on saved canvas views, capped so a menu row stays readable. */
+const SAVED_VIEW_NAME_MAX = 80;
+const SAVED_VIEW_QUERY_MAX = 500;
+
+/**
+ * Named canvas lenses kept beside a vein's layout. Each stores its search
+ * filter, the anchors isolated at save time, its collapsed groups and the
+ * camera anchor. Values are normalised here so old or hand-edited state
+ * cannot put junk back on the canvas; duplicate names and unusable cameras
+ * are dropped.
+ */
+export function cleanSavedViews(views = []) {
+  if (!Array.isArray(views)) return [];
+  const out = [];
+  const names = new Set();
+  const ids = new Set();
+  for (const raw of views) {
+    if (!raw || typeof raw !== 'object') continue;
+    const name = String(raw.name ?? '').trim().slice(0, SAVED_VIEW_NAME_MAX);
+    const key = name.toLowerCase();
+    if (!name || names.has(key)) continue;
+    const camera = cleanView(raw.view);
+    if (!camera) continue;
+    const query = String(raw.filters?.query ?? '').trim().slice(0, SAVED_VIEW_QUERY_MAX);
+    const isolated = Array.isArray(raw.isolated)
+      ? [...new Set(raw.isolated.filter((anchor) => typeof anchor === 'string' && anchor))]
+      : null;
+    let id = String(raw.id ?? '').trim();
+    if (!id || ids.has(id)) {
+      let n = out.length + 1;
+      while (ids.has(`view-${n}`)) n += 1;
+      id = `view-${n}`;
+    }
+    names.add(key);
+    ids.add(id);
+    out.push({
+      id,
+      name,
+      filters: { query },
+      isolated,
+      collapsedGroups: cleanCollapsedGroups(raw.collapsedGroups),
+      view: camera,
+    });
   }
   return out;
 }
@@ -1014,8 +1533,12 @@ export function canvasSnapshot(state = {}) {
     locked: state.locked ?? {},
     cardModes: cleanCardModes(state.cardModes),
     cardSizes: cleanCardSizes(state.cardSizes),
+    cardDims: cleanCardDims(state.cardDims),
     collapsedGroups: cleanCollapsedGroups(state.collapsedGroups),
     annotations: cleanAnnotations(state.annotations),
+    // Markdown is a table's source of truth. Table edit steps carry the prose
+    // they changed, so canvas undo restores the same grid the card showed.
+    ...(state.tables ? { tables: state.tables } : {}),
     view: state.view ?? { x: 0, y: 0, s: 1 },
   });
 }
@@ -1101,8 +1624,10 @@ export function pruneSnapshotAnchors(snap, live) {
     ...(snap.locked ? { locked: anchors(snap.locked) } : {}),
     ...(snap.cardModes ? { cardModes: anchors(snap.cardModes) } : {}),
     ...(snap.cardSizes ? { cardSizes: anchors(snap.cardSizes) } : {}),
+    ...(snap.cardDims ? { cardDims: anchors(snap.cardDims) } : {}),
     ...(snap.collapsedGroups ? { collapsedGroups } : {}),
     ...(snap.annotations ? { annotations: cleanAnnotations(snap.annotations) } : {}),
+    ...(snap.tables ? { tables: anchors(snap.tables) } : {}),
   };
 }
 
@@ -1151,8 +1676,10 @@ export function restoreSnapshot(snap, live, current = {}) {
     locked: pruned.locked ?? current.locked ?? {},
     cardModes: cleanCardModes(pruned.cardModes ?? current.cardModes),
     cardSizes: cleanCardSizes(pruned.cardSizes ?? current.cardSizes),
+    cardDims: cleanCardDims(pruned.cardDims ?? current.cardDims),
     collapsedGroups: cleanCollapsedGroups(pruned.collapsedGroups ?? current.collapsedGroups),
     annotations: pruned.annotations ?? cleanAnnotations(current.annotations),
+    tables: pruned.tables ?? null,
     view: cleanView(pruned.view, current.view ?? null),
   };
 }
@@ -1163,7 +1690,7 @@ export function restoreSnapshot(snap, live, current = {}) {
  * always; types, fields and colours only when the step carries them; the
  * camera only when the step has a usable view.
  */
-export function canvasRecordPatch({ positions = {}, groups = {}, relations = {}, folded = {}, types = null, fields = null, colors = null, images = null, resources = null, pinned = null, locked = null, cardModes = null, cardSizes = null, collapsedGroups = null, annotations = null, view = null } = {}) {
+export function canvasRecordPatch({ positions = {}, groups = {}, relations = {}, folded = {}, types = null, fields = null, colors = null, images = null, resources = null, pinned = null, locked = null, cardModes = null, cardSizes = null, cardDims = null, collapsedGroups = null, annotations = null, view = null } = {}) {
   const patch = { positions, groups, relations, folded };
   if (types) patch.types = types;
   if (fields) patch.fields = fields;
@@ -1174,6 +1701,7 @@ export function canvasRecordPatch({ positions = {}, groups = {}, relations = {},
   if (locked) patch.locked = locked;
   if (cardModes) patch.cardModes = cleanCardModes(cardModes);
   if (cardSizes) patch.cardSizes = cleanCardSizes(cardSizes);
+  if (cardDims) patch.cardDims = cleanCardDims(cardDims);
   if (collapsedGroups) patch.collapsedGroups = cleanCollapsedGroups(collapsedGroups);
   if (annotations) patch.annotations = cleanAnnotations(annotations);
   const cleaned = cleanView(view);
@@ -1341,6 +1869,7 @@ export function renameAnchorIn(snap, before, after) {
     folded: move(snap.folded),
     cardModes: move(snap.cardModes),
     cardSizes: move(snap.cardSizes),
+    cardDims: move(snap.cardDims),
     relations,
     groups,
     ...(snap.types ? { types: move(snap.types) } : {}),
@@ -1350,6 +1879,7 @@ export function renameAnchorIn(snap, before, after) {
     ...(snap.resources ? { resources: move(snap.resources) } : {}),
     ...(snap.pinned ? { pinned: move(snap.pinned) } : {}),
     ...(snap.locked ? { locked: move(snap.locked) } : {}),
+    ...(snap.tables ? { tables: move(snap.tables) } : {}),
   };
 }
 
@@ -1852,13 +2382,24 @@ export function canvasSearch(model = {}, record = {}, query = '') {
     const type = nodeTypeOf(types, note.anchor);
     const stored = fields[note.anchor] ?? {};
     const fieldTexts = [];
+    // A saved table field is legacy in every type. Never let an old JSON grid
+    // make a locked card searchable after its markdown moved on.
+    const tableFields = new Set(['table']);
     for (const field of nodeFields(type.id)) {
       const value = stored[field.id];
-      if (value !== undefined && value !== null && String(value).trim() !== '') {
+      if (field.kind === 'table') {
+        // The markdown table is canonical; a stale saved field is ignored.
+        const text = markdownTables(note.body)
+          .map((hit) => tableText(hit.table))
+          .filter(Boolean)
+          .join(' ');
+        if (text) fieldTexts.push(`${field.label} ${text}`);
+      } else if (value !== undefined && value !== null && String(value).trim() !== '') {
         fieldTexts.push(`${field.label} ${value}`);
       }
     }
-    for (const value of Object.values(stored)) {
+    for (const [fieldId, value] of Object.entries(stored)) {
+      if (tableFields.has(fieldId)) continue;
       if (String(value ?? '').trim() !== '') fieldTexts.push(String(value));
     }
     const searchable = [
@@ -1899,6 +2440,22 @@ export function connectorList(model = {}, groups = {}, relations = {}) {
 /** A connector's stable identity, for selection and routing overrides. */
 export function connectorKey(edge) {
   return `${edge?.kind ?? 'bond'}:${edge?.from}->${edge?.to}`;
+}
+
+/**
+ * The next connector selection after a canvas click. A plain click picks one
+ * connector, and a second plain click on that sole pick clears it. Ctrl/Cmd
+ * toggles the clicked connector without dropping the others.
+ */
+export function nextConnectorSelection(selected, key, additive = false) {
+  if (additive) {
+    const next = new Set(selected);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  }
+  if (selected.size === 1 && selected.has(key)) return new Set();
+  return new Set([key]);
 }
 
 /**
@@ -2703,19 +3260,43 @@ export function clampView(view, canvasW, canvasH, vpW, vpH) {
 }
 
 /**
- * Zoom a view by a factor around a viewport point (the pointer): the canvas
- * point under the pointer stays under the pointer. Unclamped — the caller
- * runs the result through {@link clampView}.
+ * Put a view at one exact scale around a viewport point (the pointer): the
+ * canvas point under the pointer stays under the pointer. Internal because
+ * callers normally have a factor in hand, not a scale.
  */
-export function zoomViewAt(view, px, py, factor) {
+function viewAtScale(view, px, py, scale) {
   // The scale is clamped here rather than left to clampView: the anchor math
   // below must run against the scale that will actually be applied.
-  const s = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.s * factor));
+  const s = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, scale));
   return {
     x: px - (s * (px - view.x)) / view.s,
     y: py - (s * (py - view.y)) / view.s,
     s,
   };
+}
+
+/**
+ * Zoom a view by a factor around a viewport point (the pointer): the canvas
+ * point under the pointer stays under the pointer. Unclamped — the caller
+ * runs the result through {@link clampView}.
+ */
+export function zoomViewAt(view, px, py, factor) {
+  return viewAtScale(view, px, py, view.s * factor);
+}
+
+/** How near a crossing wheel step must land to be pulled onto 100%. */
+const ZOOM_SNAP_RADIUS = 0.3;
+
+/**
+ * Zoom around a pointer, with 100% as a detent. A wheel step that crosses
+ * 100% and lands close enough stops exactly there; the next step leaves
+ * freely. A long fling that lands well past 100% passes through unchanged.
+ */
+export function snapZoomView(view, px, py, factor) {
+  const next = zoomViewAt(view, px, py, factor);
+  const crossed100 = (view.s < 1 && next.s >= 1) || (view.s > 1 && next.s <= 1);
+  if (!crossed100 || Math.abs(next.s - 1) > ZOOM_SNAP_RADIUS) return next;
+  return viewAtScale(view, px, py, 1);
 }
 
 /**

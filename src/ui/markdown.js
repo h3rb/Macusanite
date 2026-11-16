@@ -230,6 +230,16 @@ export async function renderMermaidIn(root, blocks, mermaidApi) {
       const { svg } = await mermaidApi.render(`mmd-${id}`, source);
       host.innerHTML = svg;
       host.classList.add('mermaid-ready');
+      const rendered = host.querySelector('svg');
+      const naturalWidth = rendered?.viewBox?.baseVal?.width;
+      // Wide diagrams (Gantt, timeline) get squeezed to a fraction of their
+      // natural width in a narrow reading pane, which takes 12px labels down
+      // to 5–8px. Keep their natural size and let the figure scroll instead.
+      if (Number.isFinite(naturalWidth) && host.clientWidth > 0 && naturalWidth > host.clientWidth * 1.25) {
+        rendered.style.width = `${Math.ceil(naturalWidth)}px`;
+        rendered.style.maxWidth = 'none';
+        host.classList.add('mermaid-wide');
+      }
     } catch (error) {
       host.innerHTML = `<div class="mermaid-error"><strong>Mermaid could not render this diagram</strong>` +
         `<pre class="mermaid-error-message">${escapeHtml(error?.message ?? error)}</pre>` +

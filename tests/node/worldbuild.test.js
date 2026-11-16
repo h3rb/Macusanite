@@ -7,8 +7,11 @@ import {
   RELATION_KINDS, DEFAULT_RELATION, relationKind, relationKey,
   setRelation, dropRelations, relationOf, groupEndpoint, groupRelationEdges, bondEdges,
   NODE_TYPES, DEFAULT_NODE_TYPE, nodeType, nodeTypeOf, setNodeType,
-  NODE_FIELDS, nodeFields, nodeFieldOf, setNodeField, fieldRangeHint, UNIT_SUGGESTIONS, normalizeUnit, rememberUnit, UNIT_VOCABULARY_LIMIT, unitSuggestions,
-  ZOOM_MIN, ZOOM_MAX, clampView, zoomViewAt, anchorOfView, viewOfAnchor,
+  NODE_FIELDS, nodeFields, nodeFieldOf, setNodeField, dropNodeField, fieldRangeHint, UNIT_SUGGESTIONS, normalizeUnit, rememberUnit, UNIT_VOCABULARY_LIMIT, unitSuggestions,
+  blankTable, normalizeTable, serializeTable, tableText, tableSummary, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_CELL_MAX_LENGTH, TABLE_ALIGNMENTS,
+  splitMarkdownTableRow, markdownTableAt, markdownTables, tableFromMarkdown, markdownTableOnly, markdownFromTable, tableCaptionOf, replaceTableCaption, syncTableMarkdown,
+  parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
+  ZOOM_MIN, ZOOM_MAX, clampView, zoomViewAt, snapZoomView, anchorOfView, viewOfAnchor,
   DROP_MIN_PX, dropMembershipKind,
   canvasSnapshot, pruneSnapshotAnchors, renameAnchorIn,
   DEFAULT_STEP_NAME, normalizeHistoryEntry, cleanHistoryStack, historyJump, historyKey,
@@ -22,7 +25,8 @@ import {
   referencedNodeFileMetaNames, orphanedNodeFileMetaNames, cleanNodeResources, normalizeWebUrl,
   lockedContentAnchors, sourceSectionRanges, enforceLockedSource, lockedRangeAt,
   connectedAnchors, lineageAnchors, anchorsInRect, relationshipDepths, canvasSearch,
-  connectorList, connectorKey, pathAnchors, effectiveRouting, cleanCardModes, cleanCollapsedGroups, proseLinkBetween, unlinkProseBetween,
+  connectorList, connectorKey, nextConnectorSelection, pathAnchors, effectiveRouting, cleanCardModes, cleanCardDims, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
+  CARD_MIN_W, CARD_MIN_H, CARD_MAX_W, CARD_MAX_H,
   arrangeCandidateOrigins, findArrangeOrigin,
   progressionColumns, layoutProgressionColumns, placeConnectorLabels,
 } from '../../src/lib/worldbuild.js';
@@ -297,16 +301,23 @@ test('relationshipDepths layers a chain by longest path', () => {
 });
 
 test('canvasSearch matches titles, types, fields, colours and group names', () => {
-  const model = parseNotes('# Alpha\n\nBody.\n\n## Beta\n\nMore.\n\n## Gamma\n\nLast.\n');
+  const model = parseNotes('# Alpha\n\nBody.\n\n## Beta\n\nMore.\n\n## Gamma\n\n| Mineral |\n| --- |\n| Obsidian |\n');
   const record = {
-    types: { beta: 'stat' },
-    fields: { beta: { value: '42' } },
+    types: { beta: 'stat', gamma: 'table' },
+    fields: {
+      beta: { value: '42' },
+      // A stale JSON grid must not beat the markdown now that markdown is canonical.
+      gamma: { table: serializeTable({ columns: ['Mineral'], rows: [['Stale']] }) },
+    },
     colors: { gamma: '#58a6ff' },
     groups: { g1: { id: 'g1', name: 'Guild', members: ['alpha', 'beta'], children: [] } },
   };
   assert.deepEqual(canvasSearch(model, record, 'alpha').map((m) => m.anchor), ['alpha']);
   assert.deepEqual(canvasSearch(model, record, 'stat').map((m) => m.anchor), ['beta']);
   assert.deepEqual(canvasSearch(model, record, '42').map((m) => m.anchor), ['beta']);
+  assert.deepEqual(canvasSearch(model, record, 'obsidian').map((m) => m.anchor), ['gamma']);
+  assert.deepEqual(canvasSearch(model, record, 'mineral').map((m) => m.anchor), ['gamma']);
+  assert.deepEqual(canvasSearch(model, record, 'stale').map((m) => m.anchor), []);
   assert.deepEqual(canvasSearch(model, record, '58a6ff').map((m) => m.anchor), ['gamma']);
   assert.deepEqual(canvasSearch(model, record, 'guild').map((m) => m.anchor), ['alpha', 'beta']);
   // Terms are ANDed: alpha is in the Guild, gamma is not.
@@ -320,6 +331,31 @@ test('connectorList names every drawn connector and keys them stably', () => {
   const list = connectorList(model, {}, {});
   assert.deepEqual(list.map(connectorKey).sort(), ['contains:a->b', 'section:a->b']);
   assert.equal(connectorKey({ kind: 'bond', from: 'a', to: 'group:g1' }), 'bond:a->group:g1');
+});
+
+test('connector clicks select, re-click to deselect, switch, and Ctrl/Cmd toggle', () => {
+  const first = 'contains:a->b';
+  const second = 'contains:b->c';
+
+  const selected = nextConnectorSelection(new Set(), first);
+  assert.deepEqual([...selected], [first], 'a plain click selects the connector');
+
+  const deselected = nextConnectorSelection(selected, first);
+  assert.deepEqual([...deselected], [], 'a second plain click clears the sole selection');
+
+  const switched = nextConnectorSelection(selected, second);
+  assert.deepEqual([...switched], [second], 'a plain click on another connector replaces the selection');
+
+  const added = nextConnectorSelection(selected, second, true);
+  assert.deepEqual([...added], [first, second], 'Ctrl/Cmd+click adds a connector');
+  const removed = nextConnectorSelection(added, first, true);
+  assert.deepEqual([...removed], [second], 'Ctrl/Cmd+click removes a selected connector');
+  const toggledOff = nextConnectorSelection(new Set([second]), second, true);
+  assert.deepEqual([...toggledOff], [], 'Ctrl/Cmd+click clears its last selected connector');
+
+  // The helper is pure: the caller's selection is left untouched.
+  assert.deepEqual([...selected], [first]);
+  assert.deepEqual([...added], [first, second]);
 });
 
 test('proseLinkBetween reports the markdown link a bond removal leaves behind', () => {
@@ -378,9 +414,72 @@ test('cleanCardModes keeps only compact and thumbnail', () => {
   assert.deepEqual(cleanCardModes(null), {});
 });
 
+test('cleanCardDims keeps dragged boxes, rounded and inside the draggable range', () => {
+  assert.deepEqual(cleanCardDims({ a: { width: 420.4, height: 339.6 } }), { a: { width: 420, height: 340 } });
+  // A corner dragged past the limits stops at them, rather than losing the box.
+  assert.deepEqual(cleanCardDims({ a: { width: 20, height: 40 }, b: { width: 5000, height: 9000 } }), {
+    a: { width: CARD_MIN_W, height: CARD_MIN_H },
+    b: { width: CARD_MAX_W, height: CARD_MAX_H },
+  });
+  // Only a real pair of numbers is a box; junk is dropped.
+  assert.deepEqual(cleanCardDims({
+    '': { width: 300, height: 260 },
+    missing: null,
+    empty: {},
+    text: { width: 'wide', height: 260 },
+    half: { width: 300 },
+  }), {});
+  // Nothing else a stored entry carries leaks into the record.
+  assert.deepEqual(cleanCardDims({ a: { width: 300, height: 260, left: 10 } }), { a: { width: 300, height: 260 } });
+  assert.deepEqual(cleanCardDims(null), {});
+  assert.deepEqual(cleanCardDims(), {});
+});
+
 test('cleanCollapsedGroups keeps only true entries', () => {
   assert.deepEqual(cleanCollapsedGroups({ g1: true, g2: false, g3: 'yes' }), { g1: true });
   assert.deepEqual(cleanCollapsedGroups(null), {});
+});
+
+test('cleanSavedViews keeps named filters, isolation, groups and cameras', () => {
+  const views = cleanSavedViews([
+    {
+      id: 'factions',
+      name: ' Factions ',
+      filters: { query: ' faction ' },
+      isolated: ['alpha', 'alpha', 'beta', '', 7],
+      collapsedGroups: { g1: true, g2: false },
+      view: { x: 12, y: -4, s: 1.5 },
+    },
+    { id: 'no-name', name: '   ', view: { x: 0, y: 0, s: 1 } },
+    { id: 'no-camera', name: 'No camera', view: null },
+    { id: 'places', name: 'factions', view: { x: 1, y: 2, s: 1 } },
+    {
+      name: 'Places',
+      filters: { query: 'town' },
+      isolated: null,
+      collapsedGroups: { g3: true },
+      view: { x: 0, y: 0, s: 2 },
+    },
+  ]);
+  assert.deepEqual(views, [
+    {
+      id: 'factions',
+      name: 'Factions',
+      filters: { query: 'faction' },
+      isolated: ['alpha', 'beta'],
+      collapsedGroups: { g1: true },
+      view: { x: 12, y: -4, s: 1.5 },
+    },
+    {
+      id: 'view-2',
+      name: 'Places',
+      filters: { query: 'town' },
+      isolated: null,
+      collapsedGroups: { g3: true },
+      view: { x: 0, y: 0, s: 2 },
+    },
+  ]);
+  assert.deepEqual(cleanSavedViews(null), []);
 });
 
 test('canvas snapshots carry card modes and group collapse through an undo', () => {
@@ -396,6 +495,24 @@ test('canvas snapshots carry card modes and group collapse through an undo', () 
   const legacy = restoreSnapshot(JSON.stringify({ positions: { a: { x: 1, y: 2 } } }), new Set(['a']), {});
   assert.deepEqual(legacy.cardModes, {});
   assert.deepEqual(legacy.collapsedGroups, {});
+});
+
+test('canvas snapshots carry dragged card sizes through an undo and a prune', () => {
+  const snap = canvasSnapshot({
+    positions: { a: { x: 1, y: 2 }, gone: { x: 3, y: 4 } },
+    cardDims: { a: { width: 420, height: 340 }, gone: { width: 500, height: 400 } },
+  });
+  const restored = restoreSnapshot(snap, new Set(['a']), {});
+  assert.deepEqual(restored.cardDims, { a: { width: 420, height: 340 } });
+  // Rewriting a snapshot after a delete drops the dead card's box with it.
+  assert.deepEqual(pruneSnapshotAnchors(JSON.parse(snap), new Set(['a'])).cardDims, { a: { width: 420, height: 340 } });
+  // A snapshot written before sizes existed restores the boxes in hand.
+  const legacy = JSON.stringify({ positions: { a: { x: 1, y: 2 } } });
+  assert.deepEqual(
+    restoreSnapshot(legacy, new Set(['a']), { cardDims: { a: { width: 300, height: 260 } } }).cardDims,
+    { a: { width: 300, height: 260 } },
+  );
+  assert.deepEqual(restoreSnapshot(legacy, new Set(['a'])).cardDims, {});
 });
 
 test('arrangement search keeps going past a huge blocker', () => {
@@ -542,7 +659,7 @@ test('node types default to note and validate on the way in', () => {
   assert.equal(DEFAULT_NODE_TYPE, 'note');
   assert.deepEqual(
     NODE_TYPES.map((t) => t.id),
-    ['note', 'stat', 'skill', 'ability', 'attribute', 'property', 'rating', 'place', 'person', 'thing', 'prop', 'location', 'scene', 'sound', 'image', 'animation', 'mode', 'actor', 'voiceover', 'dialog', 'line', 'action', 'locale', 'biome', 'perk', 'effect', 'condition'],
+    ['note', 'stat', 'skill', 'ability', 'attribute', 'property', 'table', 'rating', 'place', 'person', 'thing', 'prop', 'location', 'scene', 'sound', 'image', 'animation', 'mode', 'actor', 'voiceover', 'dialog', 'line', 'action', 'locale', 'biome', 'perk', 'effect', 'condition'],
   );
   // Every typed node reads at a glance in its own colour; notes stay plain.
   const colors = NODE_TYPES.filter((t) => t.id !== 'note').map((t) => t.color);
@@ -587,6 +704,8 @@ test('non-note types take structured fields; notes take none', () => {
   );
   assert.deepEqual(nodeFields('attribute').map((f) => f.id), ['key', 'value', 'unit']);
   assert.deepEqual(nodeFields('property').map((f) => f.id), ['key', 'value']);
+  assert.deepEqual(nodeFields('table').map((f) => f.id), ['table']);
+  assert.equal(nodeFields('table')[0].kind, 'table');
   let fields = setNodeField({}, 'stat', 'a', 'value', '42');
   assert.equal(nodeFieldOf(fields, 'a', 'value'), '42');
   fields = setNodeField(fields, 'attribute', 'a', 'key', 'temper');
@@ -702,6 +821,204 @@ test('an ability keeps its min/max pair ordered, last edit winning', () => {
   assert.equal(fieldRangeHint(nodeFields('ability')[0]), null);
 });
 
+test('table grids normalize, serialize and respect their limits', () => {
+  const blank = blankTable();
+  assert.equal(blank.columns.length, 3);
+  assert.equal(blank.rows.length, 3);
+  assert.deepEqual(blank.rows[0], ['', '', '']);
+
+  const parsed = normalizeTable(JSON.stringify({
+    columns: ['Item', 'Qty', 'Notes', 'Extra'],
+    rows: [['Basalt', '3'], ['Obsidian', '5', 'Glassy', 'x']],
+  }));
+  assert.deepEqual(parsed.columns, ['Item', 'Qty', 'Notes', 'Extra']);
+  assert.deepEqual(parsed.rows, [
+    ['Basalt', '3', '', ''],
+    ['Obsidian', '5', 'Glassy', 'x'],
+  ]);
+
+  const wide = normalizeTable({
+    columns: Array.from({ length: 12 }, (_, index) => `c${index}`),
+    rows: Array.from({ length: 60 }, () => Array.from({ length: 12 }, () => 'x')),
+  });
+  assert.equal(wide.columns.length, TABLE_MAX_COLUMNS);
+  assert.equal(wide.rows.length, TABLE_MAX_ROWS);
+  assert.equal(wide.rows[0].length, TABLE_MAX_COLUMNS);
+
+  const clipped = normalizeTable({ columns: ['A'], rows: [['x'.repeat(TABLE_CELL_MAX_LENGTH + 20)]] });
+  assert.equal(clipped.rows[0][0].length, TABLE_CELL_MAX_LENGTH);
+  assert.equal(normalizeTable('not json').columns.length, 3);
+  assert.equal(normalizeTable(null).rows.length, 3);
+
+  let fields = setNodeField({}, 'table', 'a', 'table', {
+    columns: ['Item', 'Qty'],
+    rows: [['Basalt', '3']],
+  });
+  const stored = nodeFieldOf(fields, 'a', 'table');
+  assert.equal(typeof stored, 'string');
+  assert.deepEqual(normalizeTable(stored), {
+    columns: ['Item', 'Qty'],
+    rows: [['Basalt', '3']],
+    align: ['default', 'default'],
+  });
+  assert.equal(tableText(stored), 'Item Qty Basalt 3');
+  assert.equal(tableSummary(stored), 'Item, Qty · 1 row');
+  assert.equal(tableSummary(serializeTable(blankTable({ columns: 2, rows: 0 }))), 'Column 1, Column 2 · 0 rows');
+  assert.equal(setNodeField(fields, 'note', 'a', 'table', '{}'), fields);
+});
+
+test('markdown tables import their column headings, rows and caption', () => {
+  const source = [
+    'The three panes, at a glance.',
+    '',
+    '| Pane | What it does |',
+    '| :--- | ---: |',
+    '| Left | Vault tree |',
+    '| Centre | Rendered vein |',
+    '| Right | Concept graph |',
+    '',
+    'Everything below is a live document.',
+  ].join('\n');
+
+  assert.deepEqual(splitMarkdownTableRow('| A | B \\| C | `x|y` | [[Target|label]] |'), [
+    'A', 'B | C', '`x|y`', '[[Target|label]]',
+  ]);
+  assert.equal(splitMarkdownTableRow('not a row'), null);
+
+  const hit = markdownTableAt(source);
+  assert.ok(hit);
+  assert.deepEqual(hit.table.columns, ['Pane', 'What it does']);
+  assert.deepEqual(hit.table.rows, [
+    ['Left', 'Vault tree'],
+    ['Centre', 'Rendered vein'],
+    ['Right', 'Concept graph'],
+  ]);
+  assert.equal(markdownTableOnly(source), false);
+  assert.equal(markdownTableOnly('\n| A | B |\n| --- | --- |\n| 1 | 2 |\n'), true);
+  assert.deepEqual(tableFromMarkdown('no table here'), null);
+  assert.deepEqual(tableFromMarkdown(source), hit.table);
+  assert.equal(tableCaptionOf(source), 'The three panes, at a glance.\n\nEverything below is a live document.');
+  assert.equal(tableCaptionOf('| A |\n| --- |'), '');
+
+  // A caption edit rewrites only the prose outside the table.
+  const captured = replaceTableCaption(source, 'A caption with **markdown**.');
+  assert.ok(captured.startsWith('A caption with **markdown**.'));
+  assert.ok(captured.includes('| Pane | What it does |'));
+  assert.ok(!captured.includes('The three panes, at a glance.'));
+  assert.ok(!captured.includes('Everything below is a live document.'));
+  assert.equal(tableCaptionOf(captured), 'A caption with **markdown**.');
+
+  // Leaving Table mode writes the edited grid back, preserving its caption.
+  const edited = normalizeTable({ columns: ['Pane', 'Role'], rows: [['Left', 'Tree']] });
+  const synced = syncTableMarkdown(captured, edited);
+  assert.ok(synced.startsWith('A caption with **markdown**.'));
+  assert.ok(synced.includes('| Pane | Role |'));
+  assert.ok(synced.includes('| Left | Tree |'));
+  assert.ok(!synced.includes('| Centre | Rendered vein |'));
+  assert.deepEqual(tableFromMarkdown(synced), edited);
+
+  // Serialising puts the column headings on the header row and escapes cells.
+  assert.equal(markdownFromTable({ columns: ['A', 'B'], rows: [['x|y', 'z']] }), [
+    '| A | B |',
+    '| --- | --- |',
+    '| x\\|y | z |',
+  ].join('\n'));
+  assert.equal(markdownTableOnly('```\n| A |\n| --- |\n```'), false);
+});
+
+test('markdown is canonical for every table in a section', () => {
+  const source = [
+    'Before.',
+    '',
+    '| One | Two |',
+    '| :--- | ---: |',
+    '| a | b |',
+    '',
+    'Between.',
+    '',
+    '| Three |',
+    '| :---: |',
+    '| c |',
+    '',
+    'After.',
+  ].join('\n');
+
+  const hits = markdownTables(source);
+  assert.equal(hits.length, 2);
+  assert.deepEqual(hits.map((hit) => hit.table.align), [
+    ['left', 'right'],
+    ['center'],
+  ]);
+  assert.deepEqual(tableFromMarkdown(source, 1).rows, [['c']]);
+
+  // Editing table two leaves table one, its caption and the prose around both alone.
+  const second = normalizeTable({ columns: ['Third'], rows: [['changed']], align: ['center'] });
+  const synced = syncTableMarkdown(source, second, 1);
+  assert.equal(markdownTables(synced).length, 2);
+  assert.deepEqual(tableFromMarkdown(synced, 0).rows, [['a', 'b']]);
+  assert.deepEqual(tableFromMarkdown(synced, 1), second);
+  assert.ok(synced.includes('Before.'));
+  assert.ok(synced.includes('Between.'));
+  assert.ok(synced.includes('After.'));
+
+  // There is no single safe caption to edit in a multi-table section.
+  assert.equal(tableCaptionOf(source), '');
+  assert.equal(replaceTableCaption(source, 'Nope'), source);
+});
+
+test('table alignment is read from and written into the delimiter row', () => {
+  const table = normalizeTable({
+    columns: ['A', 'B', 'C', 'D'],
+    rows: [['1', '2', '3', '4']],
+    align: ['left', 'center', 'right', 'default'],
+  });
+  assert.deepEqual(table.align, ['left', 'center', 'right', 'default']);
+  assert.equal(markdownFromTable(table).split('\n')[1], '| :--- | :---: | ---: | --- |');
+  assert.deepEqual(tableFromMarkdown(markdownFromTable(table)).align, table.align);
+  assert.deepEqual(setTableColumnAlign(table, 1, 'right').align, ['left', 'right', 'right', 'default']);
+  assert.equal(TABLE_ALIGNMENTS.includes('center'), true);
+  assert.deepEqual(normalizeTable({ columns: ['A'], rows: [], align: ['bogus'] }).align, ['default']);
+});
+
+test('TSV and CSV paste fills and grows a table from one cell', () => {
+  assert.deepEqual(parseTablePaste('a\tb\nc\td\n'), [['a', 'b'], ['c', 'd']]);
+  assert.deepEqual(parseTablePaste('"a,b","say ""hi"""\r\nc,d'), [['a,b', 'say "hi"'], ['c', 'd']]);
+  assert.deepEqual(parseTablePaste('one'), [['one']]);
+
+  const base = normalizeTable({ columns: ['A'], rows: [['old']] });
+  const pasted = pasteTableData(base, [['x', 'y'], ['z', 'w']], { row: 1, column: 0 });
+  assert.deepEqual(pasted.columns, ['A', '']);
+  assert.deepEqual(pasted.rows, [['old', ''], ['x', 'y'], ['z', 'w']]);
+  assert.deepEqual(pasted.align, ['default', 'default']);
+});
+
+test('row moving and table views preserve source order', () => {
+  const table = normalizeTable({ columns: ['Name', 'Qty'], rows: [['Basalt', '10'], ['Obsidian', '2'], ['Quartz', '30']] });
+  assert.deepEqual(moveTableRow(table, 2, 0).rows, [['Quartz', '30'], ['Basalt', '10'], ['Obsidian', '2']]);
+  assert.deepEqual(tableRowOrder(table, { query: 'as' }), [0]);
+  assert.deepEqual(tableRowOrder(table, { sortColumn: 1, sortDirection: 'asc' }), [1, 0, 2]);
+  assert.deepEqual(tableRowOrder(table, { sortColumn: 1, sortDirection: 'desc' }), [2, 0, 1]);
+  assert.deepEqual(tableRowOrder(table, { query: 'zzz' }), []);
+  assert.deepEqual(moveTableRow(table, 9, 0), table);
+});
+
+test('retiring one field leaves the rest of a node’s fields intact', () => {
+  const fields = { a: { value: '42', table: '{}' }, b: { table: '{}' } };
+  const next = dropNodeField(fields, 'a', 'table');
+  assert.deepEqual(next, { a: { value: '42' }, b: { table: '{}' } });
+  assert.deepEqual(dropNodeField(next, 'b', 'table'), { a: { value: '42' } });
+  assert.equal(dropNodeField(fields, 'missing', 'table'), fields);
+});
+
+test('canvas snapshots carry and prune table prose for table undo', () => {
+  const snap = canvasSnapshot({ tables: { a: '| A |\n| --- |' }, positions: { a: { x: 1, y: 2 } } });
+  const restored = restoreSnapshot(snap, new Set(['a']), {});
+  assert.deepEqual(restored.tables, { a: '| A |\n| --- |' });
+  const pruned = restoreSnapshot(snap, new Set(), {});
+  assert.deepEqual(pruned.tables, {});
+  assert.equal(JSON.parse(snap).tables.a, '| A |\n| --- |');
+});
+
 test('relationOf defaults to Associate and reads what was asserted', () => {
   assert.equal(relationOf({}, 'a', 'b').id, 'associate');
   assert.equal(relationOf({ 'a->b': 'controls' }, 'a', 'b').id, 'controls');
@@ -724,6 +1041,28 @@ test('zoomViewAt keeps the canvas point under the pointer fixed', () => {
   assert.equal(next.y + 2 * 200, 150);
   assert.equal(zoomViewAt(view, 200, 150, 100).s, ZOOM_MAX);
   assert.equal(zoomViewAt(view, 200, 150, 0.001).s, ZOOM_MIN);
+});
+
+test('snapZoomView makes 100% a detent when a wheel step crosses it', () => {
+  const view = { x: -100, y: -50, s: 1.2 };
+  const out = snapZoomView(view, 200, 150, Math.exp(-0.2));
+  assert.equal(out.s, 1);
+  // The canvas point under the pointer does not move when the snap lands.
+  const point = { x: (200 - view.x) / view.s, y: (150 - view.y) / view.s };
+  assert.ok(Math.abs(out.x + point.x - 200) < 1e-9);
+  assert.ok(Math.abs(out.y + point.y - 150) < 1e-9);
+  assert.equal(snapZoomView({ ...view, s: 0.9 }, 200, 150, Math.exp(0.2)).s, 1);
+  assert.equal(snapZoomView({ ...view, s: 0.95 }, 200, 150, Math.exp(0.2)).s, 1);
+});
+
+test('snapZoomView leaves 100 and far crossings untouched', () => {
+  // Starting exactly at 100%, the next step must be able to leave in either
+  // direction rather than being caught by the detent.
+  assert.equal(snapZoomView({ x: 0, y: 0, s: 1 }, 0, 0, Math.exp(-0.2)).s, Math.exp(-0.2));
+  assert.equal(snapZoomView({ x: 0, y: 0, s: 1 }, 0, 0, Math.exp(0.2)).s, Math.exp(0.2));
+  // A fling that crosses 100% but lands far past it is not dragged back.
+  assert.equal(snapZoomView({ x: 0, y: 0, s: 1.2 }, 0, 0, 0.5).s, 0.6);
+  assert.equal(snapZoomView({ x: 0, y: 0, s: 0.25 }, 0, 0, Math.exp(2)).s, Math.exp(2) * 0.25);
 });
 
 test('clampView keeps the canvas covering the viewport, with a slight overpan', () => {
@@ -790,6 +1129,7 @@ test('canvasSnapshot carries every canvas slice, node types, fields and colours 
     images: { a: 'data:image/png;base64,AAA' },
     locked: { a: true },
     cardSizes: { a: 'content', b: 'fixed' },
+    cardDims: { a: { width: 420, height: 340 } },
     resources: { a: { files: [{ name: 'field.pdf', ref: '.macusanite/node-files/field.pdf', size: 2048 }], urls: [{ label: 'example.com', url: 'https://example.com/' }] } },
     view: { x: 3, y: 4, s: 1.5 },
   });
@@ -805,13 +1145,15 @@ test('canvasSnapshot carries every canvas slice, node types, fields and colours 
   assert.deepEqual(back.locked, { a: true });
   // Both heights survive: `fixed` is an override of a content-sized vault.
   assert.deepEqual(back.cardSizes, { a: 'content', b: 'fixed' });
+  // A dragged box survives beside them, whole pixels and all.
+  assert.deepEqual(back.cardDims, { a: { width: 420, height: 340 } });
   assert.deepEqual(back.resources.a.urls, [{ label: 'example.com', url: 'https://example.com/' }]);
   assert.equal(back.resources.a.files[0].ref, '.macusanite/node-files/field.pdf');
   assert.deepEqual(back.view, { x: 3, y: 4, s: 1.5 });
   // Missing slices default, camera included.
   const bare = JSON.parse(canvasSnapshot());
   assert.deepEqual(bare, {
-    positions: {}, groups: {}, relations: {}, folded: {}, types: {}, fields: {}, colors: {}, images: {}, resources: {}, pinned: {}, locked: {}, cardModes: {}, cardSizes: {}, collapsedGroups: {}, annotations: {}, view: { x: 0, y: 0, s: 1 },
+    positions: {}, groups: {}, relations: {}, folded: {}, types: {}, fields: {}, colors: {}, images: {}, resources: {}, pinned: {}, locked: {}, cardModes: {}, cardSizes: {}, cardDims: {}, collapsedGroups: {}, annotations: {}, view: { x: 0, y: 0, s: 1 },
   });
 });
 
@@ -1075,6 +1417,19 @@ test('renameAnchorIn carries types and fields onto the new name', () => {
   assert.equal('fields' in r2, false);
 });
 
+test('renameAnchorIn moves a dragged card size onto the new name', () => {
+  const snap = JSON.parse(canvasSnapshot({
+    positions: { old: { x: 1, y: 2 } },
+    cardDims: { old: { width: 410, height: 320 } },
+  }));
+  const renamed = renameAnchorIn(snap, 'old', 'new');
+  assert.deepEqual(renamed.cardDims, { new: { width: 410, height: 320 } });
+  // A snapshot without sizes gains none from the rename.
+  const old = JSON.parse(JSON.stringify(snap));
+  delete old.cardDims;
+  assert.deepEqual(renameAnchorIn(old, 'old', 'new').cardDims, {});
+});
+
 const step = (name, snap) => ({ name, snap });
 const S = (n) => JSON.stringify({ n });
 
@@ -1249,6 +1604,21 @@ test('canvasRecordPatch writes a step whole, or not at all', () => {
   assert.equal('pinned' in bare, false);
   assert.equal('annotations' in bare, false);
   assert.equal('view' in bare, false);
+});
+
+test('canvasRecordPatch writes dragged card sizes, or leaves the record alone', () => {
+  const patch = canvasRecordPatch({
+    positions: {}, groups: {}, relations: {}, folded: {},
+    cardDims: { a: { width: 420.4, height: 339.6 }, small: { width: 40, height: 40 } },
+  });
+  // A step's sizes go through the same clean-up as the record's.
+  assert.deepEqual(patch.cardDims, {
+    a: { width: 420, height: 340 },
+    small: { width: CARD_MIN_W, height: CARD_MIN_H },
+  });
+  // A step taken without any resize leaves the sizes in hand untouched.
+  const bare = canvasRecordPatch({ positions: {}, groups: {}, relations: {}, folded: {} });
+  assert.equal('cardDims' in bare, false);
 });
 
 test('pushHistoryStep records a change once, caps the past and clears redo', () => {

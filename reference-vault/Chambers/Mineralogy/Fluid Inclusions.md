@@ -28,3 +28,13 @@ graph TD
   T --> Model[Dry hot melt]
   Model --> Cs[Cs retention]
 ```
+
+## Thermal path
+
+```mermaid
+timeline
+  title Cooling path recorded by the inclusions
+  780 °C : Melt trapped
+  500 °C : Bubble nucleates
+  20 °C : Wafer measured
+```

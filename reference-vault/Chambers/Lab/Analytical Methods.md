@@ -18,6 +18,26 @@ Standards are re-measured every ten samples.
 Drift above 3 % invalidates the batch; the run is repeated. Related:
 [[Chambers/Mineralogy/Fluid Inclusions#Method]].
 
+## Sample flow
+
+```mermaid
+erDiagram
+  BATCH ||--o{ SAMPLE : contains
+  SAMPLE ||--o{ MEASUREMENT : yields
+  BATCH {
+    string id
+    string prepared
+  }
+  SAMPLE {
+    string id
+    float mass
+  }
+  MEASUREMENT {
+    string method
+    float value
+  }
+```
+
 ## Instrument map
 
 ```mermaid

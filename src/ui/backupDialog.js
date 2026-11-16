@@ -117,8 +117,8 @@ export function createBackupDialog({ app }) {
     });
 
     const status = el('p', { class: 'backup-status', role: 'status' });
-    const submit = el('button', { type: 'submit', class: 'btn btn-primary', text: 'Back up' });
-    const close = el('button', { type: 'button', class: 'btn', text: 'Close', onclick: () => dialog.close() });
+    const submit = el('button', { type: 'submit', class: 'btn btn-primary', text: 'Back up', title: 'Upload a backup of this vault now' });
+    const close = el('button', { type: 'button', class: 'btn', text: 'Close', title: 'Close without backing up', onclick: () => dialog.close() });
 
     const hint = el('p', { class: 'md-hint' });
     const directBlock = el('div', { class: 'backup-credentials' }, [
@@ -134,6 +134,7 @@ export function createBackupDialog({ app }) {
         type: 'button',
         class: 'btn',
         text: 'Choose…',
+        title: 'Choose a private key file',
         onclick: async () => {
           try {
             const picked = await backend.pickFile();
@@ -248,8 +249,9 @@ export function createBackupDialog({ app }) {
         el('div', { class: 'spacer' }),
         el('button', {
           type: 'button',
-          class: 'icon-btn',
-          text: '✕',
+          class: 'icon-btn ui-icon-only',
+          icon: 'close',
+          iconLabel: 'Close',
           title: 'Close',
           onclick: () => dialog.close(),
         }),
