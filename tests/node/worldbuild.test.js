@@ -164,6 +164,12 @@ test('relationship kinds run weakest-first, in inverse pairs', () => {
   const ids = RELATION_KINDS.map((k) => k.id);
   assert.ok(ids.indexOf('template') > ids.indexOf('member-of'));
   assert.ok(ids.indexOf('template') < ids.indexOf('parent'));
+  // Tab is a structural pair: one pane of the thing it belongs to.
+  assert.equal(relationKind('tab').label, 'Tab');
+  assert.equal(relationKind('tab').inverse, 'tab-of');
+  assert.equal(relationKind('tab-of').label, 'Tab Of');
+  assert.equal(relationKind('tab-of').inverse, 'tab');
+  assert.equal(relationKind('tab').rank, relationKind('member-of').rank);
   // References is the lightest committed bond, and names its own inverse.
   assert.equal(relationKind('references').label, 'References');
   assert.equal(relationKind('references').inverse, 'referenced-by');

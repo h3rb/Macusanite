@@ -4595,6 +4595,8 @@ dialog::backdrop {
 }
 
 .wb-rel-member-of,
+.wb-rel-tab,
+.wb-rel-tab-of,
 .wb-rel-references,
 .wb-rel-referenced-by {
   --wb-weight: 2.2px;

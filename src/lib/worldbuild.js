@@ -203,6 +203,10 @@ export const RELATION_KINDS = [
   { id: 'references', label: 'References', inverse: 'referenced-by', rank: 1 },
   { id: 'referenced-by', label: 'Referenced By', inverse: 'references', rank: 1 },
   { id: 'member-of', label: 'Member Of', rank: 1 },
+  // A tab is one pane of the thing it belongs to: a structural bond that
+  // claims no authority, so it sits with Member Of at the low rank.
+  { id: 'tab', label: 'Tab', inverse: 'tab-of', rank: 1 },
+  { id: 'tab-of', label: 'Tab Of', inverse: 'tab', rank: 1 },
   { id: 'template', label: 'Template', rank: 2 },
   { id: 'parent', label: 'Parent', inverse: 'child', rank: 2 },
   { id: 'child', label: 'Child', inverse: 'parent', rank: 2 },

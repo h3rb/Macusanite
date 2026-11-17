@@ -359,7 +359,7 @@ A **tag** is never a canvas-only annotation, because it is parsed from the note'
 
 ### Wires and relationships
 
-Every wire can carry a **relationship**: associate, references/referenced by, member of, template, parent/child, contains/contained by, controls/controlled by, affects/affected by, ally or foe. The wire thickens as the relationship strengthens, and clicking the word on the wire advances to the next kind. Right-clicking a connector provides **Cycle relationship**, **Reverse relationship**, **Remove asserted relationship**, curve style, end selection and **Trace upstream/downstream**. Dragging from a selected set's menu, using **Relate to…** in a card's menu, or dragging a **link dot** asserts a bond between cards or a group endpoint. A link dot is refused for a pair that a prose link already joins, so dashed and solid wires never duplicate each other.
+Every wire can carry a **relationship**: associate, references/referenced by, member of, tab/tab of, template, parent/child, contains/contained by, controls/controlled by, affects/affected by, ally or foe. The wire thickens as the relationship strengthens, and clicking the word on the wire advances to the next kind. Right-clicking a connector provides **Cycle relationship**, **Reverse relationship**, **Remove asserted relationship**, curve style, end selection and **Trace upstream/downstream**. Dragging from a selected set's menu, using **Relate to…** in a card's menu, or dragging a **link dot** asserts a bond between cards or a group endpoint. A link dot is refused for a pair that a prose link already joins, so dashed and solid wires never duplicate each other.
 
 ### Groups
 
