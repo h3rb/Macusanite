@@ -950,6 +950,7 @@ export function cleanAnnotations(raw) {
     if (!text || !Number.isFinite(value.x) || !Number.isFinite(value.y)) continue;
     const annotation = { id, x: Math.round(value.x), y: Math.round(value.y), text };
     if (typeof value.color === 'string' && /^#[\da-f]{6}$/i.test(value.color)) annotation.color = value.color.toLowerCase();
+    if (value.folded === true) annotation.folded = true;
     out[id] = annotation;
   }
   return out;
@@ -2636,8 +2637,13 @@ export function tagRecord(index = []) {
   return [...counts.values()].sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
 }
 
-/** Zoom limits for the worldbuilding canvas (1 is 100%). */
-export const ZOOM_MIN = 0.25;
+/**
+ * Zoom limits for the worldbuilding canvas (1 is 100%). The lower bound is
+ * deliberately far below the readable-card scale: Fit has to be able to frame
+ * a canvas of any size, and the panel switches to icon-only cards at 12.5%
+ * long before this floor is reached.
+ */
+export const ZOOM_MIN = 0.000001;
 export const ZOOM_MAX = 3;
 
 /**
@@ -3302,9 +3308,8 @@ export function snapZoomView(view, px, py, factor) {
 /**
  * The view that fits a content rect ({minX, minY, maxX, maxY}, in canvas
  * coordinates) into a viewport, centred, with a margin around it on every
- * side. The scale is clamped to the canvas limits, so a graph far wider
- * than the viewport lands at minimum zoom, centred, instead of losing
- * its edges off-screen.
+ * side. The scale is clamped to the canvas limits; the minimum is tiny enough
+ * that a graph of any practical size lands with all of its edges on screen.
  *
  * @returns {object|null} the view, or null when there is nothing to fit
  */
@@ -3375,6 +3380,135 @@ export function snapDelta(dragRect, others, threshold = 8) {
       ...(bestY ? [{ axis: 'y', at: bestY.at }] : []),
     ],
   };
+}
+
+/**
+ * Whether two card boxes overlap. Touching edges do not count: a card can
+ * sit flush against another without hiding any of it.
+ */
+export function rectsOverlap(a, b) {
+  if (!a || !b) return false;
+  return a.x < b.x + b.width
+    && a.x + a.width > b.x
+    && a.y < b.y + b.height
+    && a.y + a.height > b.y;
+}
+
+/**
+ * Move each entry out of every blocker it overlaps, as little as possible.
+ * Entries are movable; blockers are fixed. A blocker carrying the same `key`
+ * as the entry is ignored, so a caller can pass the complete card set and let
+ * each entry keep its own old box out of the way. New placements leave a gap
+ * around every blocker and never go above `minX`/`minY`. The nearest direct
+ * edge is tried first; a bounded ring search handles tighter clusters.
+ *
+ * Returns `{ positions, moved, unresolved }`: final positions for every entry,
+ * the keys that actually moved, and the keys that could not be placed.
+ */
+export function resolveOverlaps(entries, blockers = [], {
+  gap = 12, minX = 4, minY = 4, step = 32, maxRings = 64,
+} = {}) {
+  const boxes = (list) => (list ?? []).filter((box) => (
+    box
+    && Number.isFinite(box.x)
+    && Number.isFinite(box.y)
+    && Number.isFinite(box.width)
+    && Number.isFinite(box.height)
+    && box.width > 0
+    && box.height > 0
+  ));
+  const cleanEntries = boxes(entries);
+  let occupied = boxes(blockers).map((box) => ({ ...box }));
+  const positions = new Map();
+  const moved = new Set();
+  const unresolved = new Set();
+  const margin = Number.isFinite(gap) && gap >= 0 ? gap : 12;
+  const left = Number.isFinite(minX) ? minX : 4;
+  const top = Number.isFinite(minY) ? minY : 4;
+  const stride = Number.isFinite(step) && step > 0 ? step : 32;
+  const rings = Number.isInteger(maxRings) && maxRings >= 0 ? maxRings : 64;
+
+  const sameKey = (a, key) => key !== undefined && a.key === key;
+  const clear = (rect, blocker) => (
+    rect.x + rect.width + margin <= blocker.x
+    || blocker.x + blocker.width + margin <= rect.x
+    || rect.y + rect.height + margin <= blocker.y
+    || blocker.y + blocker.height + margin <= rect.y
+  );
+  const fits = (rect, key) => occupied.every((blocker) => sameKey(blocker, key) || clear(rect, blocker));
+  const overlapsAny = (rect, key) => occupied.some(
+    (blocker) => !sameKey(blocker, key) && rectsOverlap(rect, blocker),
+  );
+  const clamp = (point) => ({
+    x: Math.max(left, point.x),
+    y: Math.max(top, point.y),
+  });
+
+  const nearest = (entry) => {
+    if (!overlapsAny(entry, entry.key)) return { x: entry.x, y: entry.y };
+    const direct = [];
+    const seen = new Set();
+    const add = (x, y) => {
+      const point = clamp({ x, y });
+      const signature = `${point.x},${point.y}`;
+      if (seen.has(signature)) return;
+      seen.add(signature);
+      direct.push(point);
+    };
+    // Only cards already touching the entry can produce a useful edge
+    // candidate; `fits` still checks every blocker before accepting one.
+    const near = occupied.filter((blocker) => !sameKey(blocker, entry.key) && !clear(entry, blocker));
+    for (const blocker of near) {
+      add(blocker.x + blocker.width + margin, entry.y);
+      add(blocker.x - entry.width - margin, entry.y);
+      add(entry.x, blocker.y + blocker.height + margin);
+      add(entry.x, blocker.y - entry.height - margin);
+      add(blocker.x + blocker.width + margin, blocker.y);
+      add(blocker.x - entry.width - margin, blocker.y);
+      add(blocker.x, blocker.y + blocker.height + margin);
+      add(blocker.x, blocker.y - entry.height - margin);
+    }
+    const origin = clamp({ x: entry.x, y: entry.y });
+    direct.sort((a, b) => ((a.x - origin.x) ** 2 + (a.y - origin.y) ** 2)
+      - ((b.x - origin.x) ** 2 + (b.y - origin.y) ** 2));
+    for (const point of direct) {
+      const rect = { ...point, width: entry.width, height: entry.height };
+      if (fits(rect, entry.key)) return point;
+    }
+    // Dense clusters can have every edge blocked. Walk outward in square
+    // rings; the first free point is the nearest on that ring.
+    for (let ring = 1; ring <= rings; ring += 1) {
+      const radius = ring * stride;
+      for (let offset = -radius; offset <= radius; offset += stride) {
+        const candidates = [
+          { x: origin.x + offset, y: origin.y - radius },
+          { x: origin.x + offset, y: origin.y + radius },
+          { x: origin.x - radius, y: origin.y + offset },
+          { x: origin.x + radius, y: origin.y + offset },
+        ];
+        for (const raw of candidates) {
+          const point = clamp(raw);
+          const rect = { ...point, width: entry.width, height: entry.height };
+          if (fits(rect, entry.key)) return point;
+        }
+      }
+    }
+    return null;
+  };
+
+  for (const entry of cleanEntries) {
+    const at = nearest(entry);
+    if (!at) {
+      positions.set(entry.key, { x: entry.x, y: entry.y });
+      unresolved.add(entry.key);
+    } else {
+      positions.set(entry.key, at);
+      if (Math.abs(at.x - entry.x) > 0.01 || Math.abs(at.y - entry.y) > 0.01) moved.add(entry.key);
+    }
+    occupied = occupied.filter((blocker) => !sameKey(blocker, entry.key));
+    occupied.push({ ...(at ?? { x: entry.x, y: entry.y }), width: entry.width, height: entry.height, key: entry.key });
+  }
+  return { positions, moved, unresolved };
 }
 
 /**

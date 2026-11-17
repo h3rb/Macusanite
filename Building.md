@@ -1,9 +1,8 @@
 # Building Macusanite from scratch
 
-Everything needed to go from a bare machine to a running desktop app and a
-release artefact, on **Windows**, **macOS** and **Linux**.
+This guide covers everything required to go from a bare machine to a running desktop application and a release artefact on **Windows**, **macOS** and **Linux**.
 
-The short version, once the platform prerequisites below are in place:
+Once the platform prerequisites described below are in place, the short version is:
 
 ```bash
 git clone <this repository> macusanite && cd macusanite
@@ -13,10 +12,7 @@ npm run tauri:dev             # run the desktop app
 npm run tauri:build           # produce the release artefact
 ```
 
-`npm run setup` installs **Node.js and Rust only**. It deliberately does not
-touch system packages — on Windows that is the MSVC build tools and the WebView2
-runtime, and on Linux it is the WebKitGTK development packages. Those are the
-platform sections below, and they are the part that actually varies.
+`npm run setup` installs **Node.js and Rust only**, because it deliberately leaves system packages to the platform-specific instructions. On Windows those packages are the MSVC build tools and the WebView2 runtime, and on Linux they are the WebKitGTK development packages. The platform sections below cover those dependencies, and they are the parts that differ between operating systems.
 
 ---
 
@@ -28,8 +24,7 @@ platform sections below, and they are the part that actually varies.
 | The interface | Plain ES modules, bundled by Vite 8 ([marked](https://marked.js.org), [mermaid](https://mermaid.js.org)) | Node.js |
 | The CLI and the MCP server | Plain Node, no dependencies | Node.js — **no Rust, no webview, no build** |
 
-So the whole headless half of Macusanite (documented in
-[docs/Help.md](docs/Help.md)) runs with nothing but Node:
+The entire headless half of Macusanite, which is documented in [docs/Help.md](docs/Help.md), therefore runs with Node alone:
 
 ```bash
 node cli/macusanite.mjs --help
@@ -37,7 +32,7 @@ node cli/macusanite.mjs vault create ./notes --sample
 node cli/macusanite.mjs --vault ./notes mcp serve --port 8765
 ```
 
-Versions this repository pins, and where they live:
+The repository pins the following versions, which are declared in the files listed beside them:
 
 | Version | Where it is declared |
 | --- | --- |
@@ -55,18 +50,14 @@ Versions this repository pins, and where they live:
 npm run setup        # == bash scripts/setup-toolchain.sh
 ```
 
-It installs, per user, with no registry changes and no `sudo`:
+The script installs the toolchain per user without changing the registry and without requiring `sudo`:
 
-* **Node.js LTS** (v22 line) into `~/.tools/node` — on macOS/Linux it uses your
-  system Node when one is already on `PATH`;
-* **Rust + cargo** via rustup into `~/.cargo` and `~/.rustup` (stable toolchain;
-  on Windows the `x86_64-pc-windows-msvc` target).
+* **Node.js LTS** (v22 line) into `~/.tools/node` — on macOS/Linux it uses your system Node when one is already on `PATH`;
+* **Rust and cargo** through rustup into `~/.cargo` and `~/.rustup` (stable toolchain; on Windows the `x86_64-pc-windows-msvc` target).
 
-Re-running is safe: every step is skipped when it is already present, and
-downloads are cached in `~/.tools/.cache`.
+Re-running the script is safe, because every step is skipped when it is already present and downloads are cached in `~/.tools/.cache`.
 
-The script does not edit your shell profile, so add the toolchain to `PATH` for
-the session (the script prints this too):
+The script does not modify the shell profile, so the toolchain must be added to `PATH` for the current session; the script also prints the relevant command:
 
 ```bash
 # Git Bash / macOS / Linux
@@ -76,7 +67,7 @@ export PATH="$HOME/.tools/node/bin:$HOME/.cargo/bin:$PATH"
 $env:PATH = "$HOME\.tools\node;$HOME\.cargo\bin;$env:PATH"
 ```
 
-Confirm before going further:
+Confirm the installation before continuing:
 
 ```bash
 node -v      # v20.19+ (v22.x expected)
@@ -85,12 +76,9 @@ cargo -V
 rustc -V
 ```
 
-**Windows users need Git for Windows**, because `npm run setup` is a bash script.
-Everything else is ordinary Node/Rust tooling.
+**Windows users need Git for Windows**, because `npm run setup` is a bash script; all other tooling is ordinary Node and Rust software.
 
-If you prefer to install the toolchain yourself — `winget`, Homebrew, your
-distribution's packages, or <https://rustup.rs> — skip this section and just make
-sure the checks above pass. `npm run setup` is a convenience, not a requirement.
+If you prefer to install the toolchain yourself with `winget`, Homebrew, your distribution's packages or <https://rustup.rs>, you can skip this section and simply ensure that the checks above pass. `npm run setup` is a convenience rather than a requirement.
 
 ---
 
@@ -107,9 +95,7 @@ sure the checks above pass. `npm run setup` is a convenience, not a requirement.
 | Rust stable (MSVC) | the shell | `npm run setup`, or the [rustup-init.exe](https://rustup.rs) installer |
 | Git for Windows | `bash` for `npm run setup` and the sample scripts | `winget install Git.Git` |
 
-Path to the compiler, if `cargo build` cannot find `link.exe`: run the commands
-from a **Developer Command Prompt for VS 2022**, or install the Build Tools with
-the *C++ build tools* workload and reopen your shell.
+If `cargo build` cannot find `link.exe`, run the commands from a **Developer Command Prompt for VS 2022**, or install the Build Tools with the *C++ build tools* workload and reopen the shell.
 
 ### Build
 
@@ -128,35 +114,22 @@ Artefacts:
 | `release\macusanite.exe` | the portable binary (~5.6 MB, named after the Cargo package) — copy it anywhere, WebView2 is the only runtime it needs |
 | `release\Macusanite_0.1.0_x64-setup.exe` | the installer (~2.6 MB; NSIS is fetched by Tauri's bundler on first use) |
 
-`tauri:build` collects both into `release/` at the top of the repository; the
-same files are also left under `src-tauri\target\release\`, which is Cargo's
-build cache. The collector never empties `release/`: it only overwrites what
-this build produced (and tidies older bundles of its own kind), so artefacts
-built on another platform stay put.
+`tauri:build` collects both files into `release/` at the top of the repository, while the same files also remain under `src-tauri\target\release\`, which is Cargo's build cache. The collector never empties `release/`. It overwrites only the files produced by the current build and removes older bundles of its own kind, so artefacts built on another platform remain in place.
 
-`src-tauri\tauri.conf.json` sets `bundle.targets: ["nsis"]`, so `tauri:build` on
-Windows produces exactly that installer. To also produce an MSI you would need
-WiX and a `--bundles msi` run; this project does not.
+`src-tauri\tauri.conf.json` sets `bundle.targets: ["nsis"]`, so `tauri:build` on Windows produces exactly that installer. Producing an MSI as well would require WiX and a separate `--bundles msi` run, which this project does not use.
 
 ### Notes
 
-* **Long paths.** Deep `node_modules` plus Rust's target directory can exceed the
-  legacy 260-character limit. Enable long paths once (elevated PowerShell):
+* **Long paths.** Deep `node_modules` directories combined with Rust's target directory can exceed the legacy 260-character limit. Enable long paths once in an elevated PowerShell session:
 
   ```powershell
   New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
     -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
   ```
 
-* **Defender.** Excluding `node_modules`, `src-tauri\target` and `~\.cargo` from
-  real-time scanning is the difference between a two-minute and a ten-minute
-  release build.
-* **Windows on ARM.** The app builds natively for `aarch64-pc-windows-msvc` (add
-  that rustup target and the *MSVC v143 ARM64 build tools* component), but the
-  NSIS installer itself stays x86 and runs under emulation.
-* **A blank window right after a forced kill** is WebView2 residue, not a build
-  problem: close the app gracefully (or `taskkill /IM Macusanite.exe`), and the
-  next launch is clean.
+* **Defender.** Excluding `node_modules`, `src-tauri\target` and `~\.cargo` from real-time scanning can reduce a release build from roughly ten minutes to roughly two.
+* **Windows on ARM.** The application builds natively for `aarch64-pc-windows-msvc`, provided that the rustup target and the *MSVC v143 ARM64 build tools* component are installed, but the NSIS installer itself remains x86 and runs under emulation.
+* **A blank window immediately after a forced kill** is WebView2 residue rather than a build problem. Close the application gracefully, or run `taskkill /IM Macusanite.exe`, and the next launch will be clean.
 
 ---
 
@@ -170,7 +143,7 @@ WiX and a `--bundles msi` run; this project does not.
 | Node.js ≥ 20.19 | Vite 8 | `npm run setup`, or `brew install node` |
 | Rust stable | the shell | `npm run setup`, or `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 
-No extra system libraries: macOS ships the webview (WKWebView).
+No additional system libraries are required, because macOS provides the WKWebView webview.
 
 ### Build
 
@@ -189,40 +162,26 @@ Artefacts (defaults for `.app` and `.dmg`):
 | `release/Macusanite.app` | the application bundle |
 | `release/Macusanite_*.dmg` | the disk image |
 
-**Pass `--bundles` explicitly on macOS.** The repository's
-`bundle.targets` is `["nsis"]`, which is the Windows installer format; without
-the flag the bundler has nothing it can produce on this platform. `app,dmg` is
-the natural pair.
+**Pass `--bundles` explicitly on macOS.** The repository's `bundle.targets` is `["nsis"]`, which is the Windows installer format, so without the flag the bundler has nothing it can produce on this platform. `app,dmg` is the natural pair.
 
 ### Notes
 
-* **Architecture.** A plain build targets the host (`aarch64-apple-darwin` on
-  Apple Silicon, `x86_64-apple-darwin` on Intel). For one binary that runs
-  everywhere:
+* **Architecture.** A plain build targets the host, which is `aarch64-apple-darwin` on Apple Silicon and `x86_64-apple-darwin` on Intel. To produce one binary that runs on both:
 
   ```bash
   rustup target add aarch64-apple-darwin x86_64-apple-darwin
   npm run tauri:build -- --target universal-apple-darwin --bundles app,dmg
   ```
 
-* **Gatekeeper.** A locally built, unsigned `.app` is quarantined when it is
-  copied from another machine; `xattr -dr com.apple.quarantine Macusanite.app`
-  clears that. Signing and notarisation need an Apple Developer certificate and
-  are out of scope here.
-* **Minimum system version.** `bundle.macOS.minimumSystemVersion` is `10.15` in
-  [src-tauri/tauri.conf.json](src-tauri/tauri.conf.json). Raise it if you build
-  with newer SDK features; lowering it is not a promise the webview APIs you use
-  are available.
-* **Apple Silicon + Rosetta** is only relevant if you run an Intel toolchain;
-  the native arm64 path needs no Rosetta.
+* **Gatekeeper.** A locally built, unsigned `.app` is quarantined when it is copied from another machine, and `xattr -dr com.apple.quarantine Macusanite.app` clears that attribute. Signing and notarisation require an Apple Developer certificate and are outside the scope of this guide.
+* **Minimum system version.** `bundle.macOS.minimumSystemVersion` is `10.15` in [src-tauri/tauri.conf.json](src-tauri/tauri.conf.json). Raise it when building with newer SDK features, because lowering it does not guarantee that the webview APIs in use are available.
+* **Apple Silicon and Rosetta** are relevant only when an Intel toolchain is used; the native arm64 path does not require Rosetta.
 
 ---
 
 ## 5. Linux
 
-Unlike the other two platforms, Linux needs **system development packages**
-before any Rust can link. These are the packages that provide WebKitGTK 4.1 — the
-webview engine Tauri 2 uses.
+Unlike the other two platforms, Linux requires **system development packages** before Rust can link. These packages provide WebKitGTK 4.1, which is the webview engine used by Tauri 2.
 
 ### Debian / Ubuntu (and derivatives)
 
@@ -249,7 +208,7 @@ sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget file \
   openssl appmenu-gtk-module libappindicator-gtk3 librsvg xdotool
 ```
 
-Node.js ≥ 20.19 and Rust stable are the same everywhere:
+Node.js ≥ 20.19 and Rust stable are installed in the same way on every distribution:
 
 ```bash
 npm run setup        # or: your distribution's node + https://rustup.rs
@@ -273,12 +232,9 @@ Artefacts:
 | `release/*.deb` | Debian package (pulls `libwebkit2gtk-4.1-0` and `libgtk-3-0` at install time) |
 | `release/*.AppImage` | self-contained AppImage |
 
-As on macOS, pass `--bundles` explicitly: the repository's `bundle.targets` is
-the Windows `nsis` one.
+As on macOS, pass `--bundles` explicitly, because the repository's `bundle.targets` is the Windows `nsis` target.
 
-When the Linux build runs somewhere other than the checkout — a WSL copy,
-say — copy the artefacts out by hand after building (safe: a build never
-clears `release/`, see above):
+When the Linux build runs somewhere other than the checkout, such as a WSL copy, copy the artefacts out by hand after building. This is safe because a build never clears `release/`, as explained above:
 
 ```bash
 cp src-tauri/target/release/macusanite \
@@ -288,40 +244,19 @@ cp src-tauri/target/release/macusanite \
 
 ### WSL
 
-WSL is a normal Linux build host, with two traps:
+WSL is a normal Linux build host, subject to two common problems:
 
-* **Node.** Ubuntu 24.04's `nodejs` package is Node 18, which Vite 8 does not
-  support. Install Node 22 (`nvm`, NodeSource or the official tarball), put it
-  first on `PATH`, and confirm `node -v` before `npm run setup` or
-  `npm install`; the setup script trusts whatever `node` it finds first.
-* **Where the tree lives.** Keep the Linux checkout and its `node_modules` in
-  the Linux filesystem (for example `~/macusanite`), not under `/mnt/c`.
-  Windows and Linux install different native binaries for esbuild and Rollup,
-  so running `npm install` from both sides overwrites the other's
-  dependencies. Copy the working tree with
-  `rsync -a --exclude node_modules --exclude dist --exclude src-tauri/target <checkout>/ ~/macusanite/`,
-  then build and test in `~/macusanite`.
+* **Node.** Ubuntu 24.04's `nodejs` package provides Node 18, which Vite 8 does not support. Install Node 22 with `nvm`, NodeSource or the official tarball, place it first on `PATH`, and confirm the version with `node -v` before running `npm run setup` or `npm install`, because the setup script uses whichever `node` it finds first.
+* **Where the tree lives.** Keep the Linux checkout and its `node_modules` in the Linux filesystem, such as `~/macusanite`, rather than under `/mnt/c`. Windows and Linux install different native binaries for esbuild and Rollup, so running `npm install` from both sides overwrites the other side's dependencies. Copy the working tree with `rsync -a --exclude node_modules --exclude dist --exclude src-tauri/target <checkout>/ ~/macusanite/`, then build and test in `~/macusanite`.
 
-The shell needs no display for `npm test`, `npm run build` or `cargo test`;
-`npm run tauri:dev` and a release build do need an X/Wayland session (or
-`xvfb-run`).
+The shell requires no display for `npm test`, `npm run build` or `cargo test`, while `npm run tauri:dev` and a release build require an X or Wayland session, or `xvfb-run`.
 
 ### Notes
 
-* **Build on old, run on new.** glibc compatibility is inherited from the build
-  machine, so build releases on the oldest distribution you intend to support
-  that still ships WebKitGTK 4.1 — Ubuntu 22.04 and Debian 12 are the usual
-  baselines.
-* **AppImage at runtime** needs FUSE. It is present almost everywhere;
-  `sudo apt install libfuse2` fixes Ubuntu 22.04, and Ubuntu 24.04 names the
-  package `libfuse2t64`. `chmod +x macusanite_0.1.0_amd64.AppImage` before running
-  it, and extract with `--appimage-extract` if FUSE is unavailable.
-* **Headless build hosts** (CI containers, servers) cannot run the app without an
-  X/Wayland display; add `xvfb-run` if you want to smoke-test the window. The
-  tests do not need a display at all.
-* **Wayland** is supported by WebKitGTK 4.1; if a window misbehaves under
-  Wayland, `WEBKIT_DISABLE_COMPOSITING_MODE=1` or `GDK_BACKEND=x11` are the usual
-  escape hatches.
+* **Build on old, run on new.** glibc compatibility is inherited from the build machine, so releases should be built on the oldest distribution that you intend to support and that still ships WebKitGTK 4.1. Ubuntu 22.04 and Debian 12 are the usual baselines.
+* **AppImage at runtime** requires FUSE, which is available almost everywhere. On Ubuntu 22.04, `sudo apt install libfuse2` provides it, while Ubuntu 24.04 names the package `libfuse2t64`. Run `chmod +x macusanite_0.1.0_amd64.AppImage` before launching the file, and use `--appimage-extract` when FUSE is unavailable.
+* **Headless build hosts**, including CI containers and servers, cannot run the application without an X or Wayland display. Add `xvfb-run` when you want to smoke-test the window, because the tests themselves require no display.
+* **Wayland** is supported by WebKitGTK 4.1. If a window behaves incorrectly under Wayland, `WEBKIT_DISABLE_COMPOSITING_MODE=1` and `GDK_BACKEND=x11` are the usual workarounds.
 
 ---
 
@@ -336,7 +271,7 @@ The shell needs no display for `npm test`, `npm run build` or `cargo test`;
 | `npm run build` | bundle the interface into `dist/` (`index.html` and `help.html`) | Node |
 | `npm run tauri:dev` | the real desktop window, hot reload | everything |
 | `npm run tauri:build` | release binary + installer, collected into `release/` (runs `npm run build` first) | everything |
-| `npm test` | 343 JavaScript tests (`node --test`, no browser needed) | Node |
+| `npm test` | 401 JavaScript tests (`node --test`, no browser needed) | Node |
 | `npm run test -- tests/node/mcp.test.js` | one suite | Node |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | 41 Rust tests (paths, scanning, writes, undo/redo, watcher) | Rust |
 | `npm run docs` | regenerate [docs/Help.md](docs/Help.md) from the catalogue | Node |
@@ -347,30 +282,20 @@ The shell needs no display for `npm test`, `npm run build` or `cargo test`;
 | `npm run cli -- --help` | the CLI (same as `node cli/macusanite.mjs`) | Node |
 | `npm run mcp` | the MCP server on `http://127.0.0.1:8765/mcp` | Node |
 
-Cargo can be driven directly too: `--manifest-path src-tauri/Cargo.toml` makes the
-usual `cargo build`, `cargo check` and `cargo clippy` work from the repository
-root. `cargo check` is much faster than a release build when you are only
-verifying that the Rust half compiles.
+Cargo can also be invoked directly. Passing `--manifest-path src-tauri/Cargo.toml` allows the usual `cargo build`, `cargo check` and `cargo clippy` commands to run from the repository root, and `cargo check` is much faster than a release build when the goal is only to verify that the Rust half compiles.
 
 ### Building the portable binary without Node
 
-`npm run tauri:build` runs `npm run build` first, so the *full* pipeline needs
-Node for the interface. The window itself only needs the Rust side plus an
-already-built `dist/`:
+`npm run tauri:build` runs `npm run build` first, so the full pipeline requires Node for the interface. The window itself requires only the Rust side and an already-built `dist/` directory:
 
 ```bash
 npm run build                                     # once, where Node exists
 cargo build --release --features custom-protocol  # portable binary, no Node
 ```
 
-That produces the same artefact as the full build —
-`src-tauri/target/release/macusanite.exe` on Windows,
-`src-tauri/target/release/macusanite` on Linux — skipping only the installer
-bundling. The `custom-protocol` feature is what embeds `dist/` into the binary;
-without it the window loads `devUrl` and needs the Vite dev server running.
+This produces the same artefact as the full build, at `src-tauri/target/release/macusanite.exe` on Windows or `src-tauri/target/release/macusanite` on Linux, and it skips only installer bundling. The `custom-protocol` feature embeds `dist/` into the binary; without that feature, the window loads `devUrl` and requires the Vite dev server.
 
-A bare `cargo build` does not run npm lifecycle scripts, so copy the result out
-by hand when that path is the one you used:
+A bare `cargo build` does not run npm lifecycle scripts, so when this path is used, copy the result out by hand:
 
 ```bash
 node scripts/collect-release.mjs   # -> release/macusanite(.exe)
@@ -380,12 +305,11 @@ node scripts/collect-release.mjs   # -> release/macusanite(.exe)
 
 ## 7. Verifying the install
 
-A build that produced files is not the same as a working installation. This is
-the checklist, in order, cheapest first:
+A build that produced files is not necessarily a working installation. The following checklist proceeds in order from the cheapest check to the most complete:
 
 ```bash
 # 1. the logic (no display, no Rust, ~3 s)
-npm test                                   # expect: 343 pass, 0 fail
+npm test                                   # expect: 401 pass, 0 fail
 npm run docs:check                         # expect: docs in sync
 
 # 2. the Rust half
@@ -404,19 +328,15 @@ node cli/macusanite.mjs --vault reference-vault mcp serve --port 8765
 curl -s http://127.0.0.1:8765/health       # expect: {"ok":true,...}
 ```
 
-Then the desktop app itself:
+Then run the desktop application:
 
 ```bash
 npm run tauri:dev
 ```
 
-and check, in the window: the vault opens with its name in the top bar, `Ctrl+K`
-jumps to a vein, `Ctrl+F` finds text, `F1` (or the **?** button, or
-**☰ → Help and manual**) opens the manual in its **own window**, and typing in
-that window's search box filters the sections.
+Check that the vault opens with its name in the top bar, that `Ctrl+K` jumps to a vein, that `Ctrl+F` finds text, that `F1`, the **?** button or **☰ → Help and manual** opens the manual in its **own window**, and that typing in that window's search box filters the sections.
 
-With the window still open and that vault loaded, edit `.macusanite/settings.json`
-by hand — flip `"theme"` and save:
+With the window still open and the vault loaded, edit `.macusanite/settings.json` by hand and flip `"theme"`:
 
 ```bash
 # GNU sed / BSD sed differ on -i, so write through a temporary file
@@ -425,30 +345,19 @@ sed 's/"theme": "dark"/"theme": "light"/' \
   reference-vault/.macusanite/settings.json
 ```
 
-The window must change theme without a reload, and
-`reference-vault/.macusanite/logs/session-*.log` must gain
-`applied from disk (edited outside the viewer): .macusanite/settings.json`. A
-hand-edit to `colors.json` behaves the same way; a *save you make in the window*
-must never produce that line.
+The window must change theme without a reload, and `reference-vault/.macusanite/logs/session-*.log` must gain the line `applied from disk (edited outside the viewer): .macusanite/settings.json`. A hand-edit to `colors.json` behaves the same way, while a save made in the window must never produce that line.
 
-For a release build, run the produced artefact — the portable binary or
-`Macusanite.app` — once before shipping it, and open a vault from your own disk
-rather than the bundled sample.
+For a release build, run the produced artefact, whether it is the portable binary or `Macusanite.app`, once before shipping it, and open a vault from local disk rather than the bundled sample.
 
 ---
 
 ## 8. Cross-compiling
 
-Don't. Tauri links against the platform's webview and system libraries, so the
-realistic answer is to build on each target operating system (a Windows VM, a Mac
-or a CI runner per platform). The exceptions worth knowing:
+Cross-compiling is not practical for this project, because Tauri links against the platform's webview and system libraries. The realistic approach is to build on each target operating system, using a Windows VM, a Mac or a CI runner per platform. The following exceptions are worth knowing:
 
-* **Windows ARM64** from an x64 Windows host, with the ARM64 MSVC component and
-  `rustup target add aarch64-pc-windows-msvc`.
-* **macOS universal** (`--target universal-apple-darwin`) built on macOS, as above.
-* A `.deb` or AppImage can be built inside a container of the *oldest* supported
-  Ubuntu, which is how you keep glibc compatibility without keeping an old
-  machine.
+* **Windows ARM64** can be built from an x64 Windows host when the ARM64 MSVC component is installed and `rustup target add aarch64-pc-windows-msvc` has been run.
+* **macOS universal** builds with `--target universal-apple-darwin` on macOS, as described above.
+* A `.deb` or AppImage can be built inside a container of the oldest supported Ubuntu release, which preserves glibc compatibility without requiring an old machine.
 
 ---
 
@@ -472,14 +381,7 @@ or a CI runner per platform). The exceptions worth knowing:
 
 ## 10. Offline and no-administrator installs
 
-* `npm run setup` needs no administrator rights on any platform: Node goes into
-  `~/.tools/node` and Rust into `~/.cargo` / `~/.rustup`.
-* After the first `npm install`, the frontend build works offline. `npm run icons`
-  needs nothing but `node:zlib`.
-* An offline Windows installer is a WebView2 configuration choice rather than a
-  build-system one: Tauri's NSIS bundle downloads the WebView2 bootstrapper by
-  default, and `bundle.windows.webviewInstallMode` can embed it instead
-  (`embedBootstrapper`, or `offlineInstaller` at the cost of ~127 MB).
-* A release build needs no network at all once the Rust dependency tree and npm
-  packages are cached — except the first `tauri:build`, which fetches NSIS on
-  Windows.
+* `npm run setup` requires no administrator rights on any platform, because Node is installed into `~/.tools/node` and Rust into `~/.cargo` and `~/.rustup`.
+* After the first `npm install`, the frontend build works offline, and `npm run icons` requires only `node:zlib`.
+* An offline Windows installer is a WebView2 configuration choice rather than a build-system choice. Tauri's NSIS bundle downloads the WebView2 bootstrapper by default, while `bundle.windows.webviewInstallMode` can embed the bootstrapper instead or use `offlineInstaller`, which adds roughly 127 MB.
+* A release build requires no network access once the Rust dependency tree and npm packages are cached, with the exception of the first `tauri:build`, which fetches NSIS on Windows.

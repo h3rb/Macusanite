@@ -3517,6 +3517,11 @@ dialog::backdrop {
   font-size: 13px;
 }
 
+.wb-push-aside.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .wb-dot {
   width: 7px;
   height: 7px;
@@ -3595,6 +3600,30 @@ dialog::backdrop {
 .wb-zoom-hud.is-visible {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+
+/* A warning while a drag covers another card. It sits above the canvas and
+ * never takes the pointer, so the drag keeps its grip. */
+.wb-overlap-hud {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 11;
+  max-width: calc(100% - 24px);
+  padding: 5px 10px;
+  overflow: hidden;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: var(--shadow-lg);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
 }
 
 .wb-zoom-hud-label {
@@ -4228,6 +4257,16 @@ dialog::backdrop {
   border-radius: 3px;
   box-shadow: 0 5px 14px rgba(0, 0, 0, 0.22);
   pointer-events: auto;
+  cursor: grab;
+  user-select: none;
+}
+
+.wb-annotation.is-folded {
+  min-height: 0;
+}
+
+.wb-annotation.is-folded .wb-annotation-text {
+  display: none;
 }
 
 .wb-annotation-head {
@@ -4245,6 +4284,21 @@ dialog::backdrop {
 
 .wb-annotation-head:active {
   cursor: grabbing;
+}
+
+.wb-annotation-fold {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  opacity: 0.65;
+}
+
+.wb-annotation-fold:hover {
+  opacity: 1;
 }
 
 .wb-annotation-title {
@@ -4275,11 +4329,28 @@ dialog::backdrop {
   outline: none;
   background: transparent;
   color: inherit;
+  cursor: text;
   font: 13px/1.35 var(--sans, system-ui, sans-serif);
+  user-select: text;
 }
 
 .wb-annotation-text::placeholder {
   color: rgba(0, 0, 0, 0.55);
+}
+
+/* Below 62% an annotation is a canvas object, not a text field: its whole box,
+ * including its head and text, drags. Every inner control is inert, so a drag
+ * cannot be swallowed by a textarea or a button. At 62% and above the text is
+ * editable and the head's fold and delete controls stay available. */
+.wb-stage.is-annotation-drag .wb-annotation,
+.wb-stage.is-annotation-drag .wb-annotation * {
+  user-select: none;
+  pointer-events: none;
+}
+
+.wb-stage.is-annotation-drag .wb-annotation {
+  pointer-events: auto;
+  cursor: grab;
 }
 
 [data-theme='light'] .wb-annotation {
@@ -4570,17 +4641,24 @@ dialog::backdrop {
 
 .wb-stage.is-zoomed-out .wb-card-head,
 .wb-stage.is-zoomed-out .wb-fold-toggle,
-.wb-stage.is-zoomed-out .wb-resize {
+.wb-stage.is-zoomed-out .wb-resize,
+.wb-stage.is-zoomed-out .wb-node-lock {
   pointer-events: auto;
 }
 
-.wb-stage.is-zoomed-out .wb-card:not(.is-locked),
-.wb-stage.is-zoomed-out .wb-card:not(.is-locked) .wb-card-head {
+.wb-stage.is-zoomed-out .wb-card:not(.is-locked):not(.is-frozen),
+.wb-stage.is-zoomed-out .wb-card:not(.is-locked):not(.is-frozen) .wb-card-head {
   cursor: grab;
 }
 
-.wb-stage.is-zoomed-out .wb-card.is-locked {
+.wb-stage.is-zoomed-out .wb-card.is-locked,
+.wb-stage.is-zoomed-out .wb-card.is-frozen,
+.wb-stage.is-zoomed-out .wb-card.is-frozen .wb-card-head {
   cursor: not-allowed;
+}
+
+.wb-stage.is-zoomed-out .wb-group-lock {
+  pointer-events: auto;
 }
 
 /* A relationship word is a change control at full size; zoomed out it falls
@@ -4614,6 +4692,11 @@ dialog::backdrop {
   z-index: 3;
   background: transparent;
   border-bottom-color: transparent;
+}
+
+.wb-stage.is-semantic-zoom .wb-card-head .wb-node-lock {
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* Fold and resize stay at a usable screen size rather than shrinking with
@@ -4675,8 +4758,8 @@ dialog::backdrop {
   left: 0;
   z-index: 2;
   box-sizing: border-box;
-  width: calc(100% * var(--wb-zoom, 1));
-  height: calc(100% * var(--wb-zoom, 1));
+  width: calc(100% * var(--wb-zoom, 1) * var(--wb-semantic-shrink, 1));
+  height: calc(100% * var(--wb-zoom, 1) * var(--wb-semantic-shrink, 1));
   min-width: 100px;
   min-height: 66px;
   padding: 5px 9px 6px;
@@ -4719,7 +4802,7 @@ dialog::backdrop {
   gap: 4px;
   min-width: 0;
   color: var(--wb-semantic-type, var(--text-dim));
-  font-size: clamp(9.5px, 5cqw, 15px);
+  font-size: calc(clamp(9.5px, 5cqw, 15px) * var(--wb-semantic-shrink, 1));
   font-weight: 650;
   letter-spacing: 0.04em;
   line-height: 1.1;
@@ -4748,7 +4831,7 @@ dialog::backdrop {
 .wb-semantic-title {
   display: -webkit-box;
   overflow: hidden;
-  font-size: clamp(12px, 6cqw, 22px);
+  font-size: calc(clamp(12px, 6cqw, 22px) * var(--wb-semantic-shrink, 1));
   font-weight: 650;
   line-height: 1.12;
   overflow-wrap: anywhere;
@@ -4763,7 +4846,7 @@ dialog::backdrop {
   min-width: 0;
   overflow: hidden;
   color: var(--text-dim);
-  font-size: clamp(9.5px, 5.5cqw, 14px);
+  font-size: calc(clamp(9.5px, 5.5cqw, 14px) * var(--wb-semantic-shrink, 1));
   font-variant-numeric: tabular-nums;
   line-height: 1.15;
   white-space: nowrap;
@@ -4786,10 +4869,55 @@ dialog::backdrop {
   position: absolute;
   right: 6px;
   bottom: -3px;
-  font-size: clamp(28px, 18cqw, 72px);
+  font-size: calc(clamp(28px, 18cqw, 72px) * var(--wb-semantic-shrink, 1));
   line-height: 1;
   opacity: 0.06;
   pointer-events: none;
+}
+
+/* At 12.5% and below there is no room for a summary: the card becomes its
+ * type icon, with the icon held at a small screen size while its position
+ * continues to follow the zoomed canvas. The card's own hit area and gestures
+ * stay in place underneath. */
+.wb-stage.is-icon-zoom .wb-card-head,
+.wb-stage.is-icon-zoom .wb-resize,
+.wb-stage.is-icon-zoom .wb-group-summary-lock {
+  display: none;
+}
+
+.wb-stage.is-icon-zoom .wb-semantic {
+  top: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+  pointer-events: auto;
+}
+
+.wb-stage.is-icon-zoom .wb-semantic > .wb-semantic-type {
+  justify-content: center;
+  width: 100%;
+  font-size: calc(var(--wb-icon-font, 18px) * var(--wb-inv-zoom, 1));
+  line-height: 1;
+  text-transform: none;
+}
+
+.wb-stage.is-icon-zoom .wb-semantic-type-name,
+.wb-stage.is-icon-zoom .wb-semantic-flag,
+.wb-stage.is-icon-zoom .wb-semantic-title,
+.wb-stage.is-icon-zoom .wb-semantic-meta,
+.wb-stage.is-icon-zoom .wb-semantic::after {
+  display: none;
 }
 
 /* The semantic face carries the low-zoom states the card's outline used to. */
@@ -4833,6 +4961,18 @@ dialog::backdrop {
   border-color: var(--border-strong);
 }
 
+.wb-group-summary.is-locked {
+  cursor: not-allowed;
+}
+
+.wb-group-summary-lock {
+  position: absolute;
+  top: 8px;
+  right: 30px;
+  z-index: 2;
+  font-size: 12px;
+}
+
 /* The card size is mirrored in worldbuildPanel.js (CARD_W / CARD_H). */
 .wb-card {
   position: absolute;
@@ -4845,6 +4985,7 @@ dialog::backdrop {
   border-left: 3px solid var(--accent);
   border-radius: var(--radius);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  cursor: grab;
   overflow: hidden;
   /* Sticky table headings carry their own z-index so they scroll over cells.
    * Keep that stacking inside this card: when another card overlaps it, the
@@ -4883,6 +5024,26 @@ dialog::backdrop {
 .wb-card.is-dragging {
   z-index: 5;
   box-shadow: var(--shadow-lg);
+}
+
+/* A dragged card covering another, and the card underneath it. The dashed
+ * outline is the warning; the HUD counts the overlaps. */
+.wb-card.is-overlapping {
+  outline: 2px dashed var(--warn);
+  outline-offset: 2px;
+}
+
+.wb-card.is-overlap-under {
+  outline: 1px dashed var(--warn);
+  outline-offset: 2px;
+}
+
+/* Below the semantic threshold the readable face is the card's visible box;
+ * put the warning on that face as well. */
+.wb-card.is-overlapping .wb-semantic,
+.wb-card.is-overlap-under .wb-semantic {
+  outline: 2px dashed var(--warn);
+  outline-offset: 1px;
 }
 
 /* The corner handle: drag to size a note, double-click for the designed box. */
@@ -4951,6 +5112,49 @@ dialog::backdrop {
 .wb-pin {
   flex: 0 0 auto;
   font-size: 10px;
+}
+
+/* The padlock is the unlock control; a frozen item wears a blue snowflake
+ * instead, and only the context menu can remove that state. */
+.wb-node-lock,
+.wb-group-lock {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.wb-node-lock {
+  padding: 0;
+}
+
+.wb-group-lock {
+  padding: 0;
+  color: var(--text-faint);
+}
+
+.wb-node-lock:hover,
+.wb-group-lock:hover {
+  border-radius: 4px;
+  background: var(--bg-hover);
+}
+
+.wb-node-lock.is-frozen,
+.wb-group-lock.is-frozen,
+.wb-menu-freeze-icon,
+.wb-semantic-flag.is-frozen,
+.wb-inspector-badge.is-frozen {
+  color: #58a6ff;
+}
+
+.wb-menu-freeze-icon {
+  margin-right: 6px;
+}
+
+.wb-card.is-frozen .wb-card-head {
+  cursor: not-allowed;
 }
 
 /* A folded section keeps only its head; its placement and pan stay saved. */

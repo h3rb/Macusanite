@@ -9,9 +9,11 @@
  * Content is deliberately varied: front-matter colours, section links, an
  * unresolved link (which the UI offers to create), tags and mermaid diagrams.
  * Home also carries a Worldbuilding canvas record (in `.macusanite/state.json`)
- * demonstrating locking, pinning, progression columns, routing, annotations,
- * node types and named canvas history, and Vault Notes tours every recent
- * canvas feature.
+ * laid out as a labelled feature gallery: progression columns, node and group
+ * locks, frozen/Static state, pins, card modes and folds, nested groups, a
+ * resized card, a collapsed group, a thin group for the health panel, routing,
+ * coloured and folded annotations, node types and named canvas history. Vault
+ * Notes tours every recent canvas feature.
  */
 import { DEFAULT_SETTINGS } from './settings.js';
 import { canvasSnapshot } from './worldbuild.js';
@@ -28,7 +30,10 @@ Macusanite reads a **vault**: a folder tree full of markdown. Folders are
 *chambers*, and every \`.md\` file inside them is a *vein*.
 
 > [!TIP] Everything below is a live document — click a link, then watch the graph
-> on the right recolour and the breadcrumbs at the top fill in.
+> on the right recolour and the breadcrumbs at the top fill in. Home is also a
+> canvas (switch at the top right): its cards are this page's headings, and the
+> labelled clusters demonstrate the canvas features; unrelated cards and groups
+> are spaced apart, while nested groups are contained by design.
 
 ## The three panes
 
@@ -102,19 +107,35 @@ line in the graph towards the colour of their target.
 ## Try the Worldbuilding canvas
 
 This page opens as a Worldbuilding canvas (the switch at the top right of the
-centre pane). Everything new lives here:
+centre pane). The canvas is a tour, not a pile: every feature has a labelled
+cluster, and unrelated cards, group boxes, annotations and group tabs are
+spaced so they do not cover one another. Nested groups are contained within
+their parent group by design.
+
+| Cluster | What to try |
+| --- | --- |
+| **Progression board** (amber, top) | Heading tiers become columns; drag the group tab or right-click it to split or collapse it |
+| **Locked demo** (red) | Gold padlocks are clickable; one card is also node-locked, and the group is locked |
+| **Frozen demo** (blue) | Blue snowflakes are **Static**: read-only and fixed; right-click and choose **Unfreeze** is the only exit |
+| **Pinned demo** (green) | A pinned group and a pinned node; **Arrange** flows around both |
+| **Nested groups** (teal, bottom right) | An outer group contains two child groups; drag a child tab to move its pair, or the outer tab to move the whole hierarchy |
+| **Resized card** (inside Nested groups) | The field-notes card is 420 × 180; drag its bottom-right corner to resize it, or double-click that corner to reset it |
+| **Annotations** (colour band above the groups) | Right-click a note to choose its colour, or click its chevron to fold it to the coloured header |
+| **Card modes** (purple, right) | Full, compact, thumbnail and folded cards, with an image on the thumbnail |
+| **Collapsed group** (right, below modes) | One summary card replaces two cards; double-click it to expand |
+| **Thin group + orphan card** (bottom left) | Deliberate health warnings: ⚠ lists the one-card group and the unconnected card beside it |
 
 * **Overview** folds every card, then fits the whole graph to the screen — a
   bird's-eye table of contents. **Fit**, **Fit selection** and
   **Centre** find far-apart cards without panning.
 * Cards snap to guides while dragging; a Ctrl+click selection drags as a unit,
   then **Align** and **Distribute** tidy the set.
-* The red group is **locked**: its cards cannot move or be removed, but links
-  can still be added. The blue group and the pinned card stay put while
-  **Arrange** works around them.
-* Connectors run as **elbow** wires with **arrowheads**, and the yellow notes
-  are free-floating **annotations**. The health panel (⚠ in the toolbar) lists
-  orphans and thin groups.
+* Drag one free card over another to see the dashed **overlap** warning; use
+  **Push aside** while dragging, or **Resolve overlaps** in the inspector.
+* Connectors run as **elbow** wires with **arrowheads**, and the notes above
+  the groups are free-floating **annotations** in several colours. Click a
+  note's chevron to fold it, or right-click it to change its colour. The health
+  panel (⚠ in the toolbar) lists orphans and thin groups.
 * The **Progression board** group is split into Kanban-style columns by
   heading tier: the top card on the left, its subsections one tier to the
   right, and their own subsections to the right of those. Right-click a
@@ -122,6 +143,94 @@ centre pane). Everything new lives here:
 * Canvas undo steps are **named** — use the history browser beside the undo
   button to jump between them, and the file-history log to see the vault's
   whole story.
+
+## Freeze and Static
+
+This card sits in the blue **Frozen demo** group. **Freeze** turns a card or a
+group **Static**: it stays read-only and fixed in place, and wears a blue
+snowflake instead of the gold padlock. A Static item is deliberately not
+unlocked by its badge.
+
+## Unfreeze from the menu
+
+Clicking a blue snowflake explains the state; it never clears it. Right-click
+the frozen card or group and choose **Unfreeze** — for a card inside a frozen
+group, the command is under **Group**. The same menu is the only way out of
+Static.
+
+## Card display modes
+
+This is a **Full** card. The **Card modes** group beside it also holds
+**Compact**, **Thumbnail** and **Folded** cards. Right-click any card and use
+**Card mode**, or choose **Cards ▾** in the toolbar to apply a mode to a whole
+selection.
+
+### Compact card
+
+Compact keeps the type, title, link count and word count, then drops the prose
+so a dense overview stays readable. This card is compact.
+
+### Thumbnail card
+
+Thumbnail is the node's image — or its initial when it has none — at 128 × 128.
+This card uses the sample's node image.
+
+### Folded card
+
+The chevron in a card's head folds it to its header. Folded cards stack neatly
+above the card they link to; **Overview** folds the whole canvas at once.
+
+## Collapsible groups
+
+**Collapse to summary** replaces a group's cards with one summary card showing
+its name, icon, member count, types and link total. The **Collapsed group**
+below starts collapsed; double-click its summary, or choose **Expand group**,
+to bring the cards back.
+
+## Collapsed group summary
+
+This card is hidden behind the summary until the group expands. That is the
+point: collapse is a view, and the markdown remains exactly as written.
+
+## Health and orphans
+
+This one-card group is deliberately thin. **Health** (⚠ in the toolbar) lists
+thin groups and orphans so an unfinished corner is easy to find. This card is
+also fitted to its content, showing the whole note without an inner scrollbar;
+right-click it and choose **Card height → Fit to content** to do the same to
+another full card.
+
+## Nested groups
+
+The **Nested groups** demo is one outer group containing two child groups.
+Dragging a child tab moves that child's pair, while dragging the outer tab
+moves the direct card and both child groups together.
+
+### Nested group: field notes
+
+This card is **resized** to 420 × 180 canvas pixels. Drag its bottom-right
+corner to change that box, and double-click the corner to restore the designed
+size.
+
+### Nested group: lab notes
+
+The outer group's tab sits above both child tabs, so the hierarchy is visible
+without hiding either child group's own controls.
+
+### Nested group: samples
+
+A child group can hold its own cards while its parent holds another card and
+the child group. This cluster shows that arrangement.
+
+### Nested group: results
+
+Select the outer group to move the whole hierarchy, or select either child to
+move only that child's cards.
+
+# Orphan card
+
+This card has no group and no wires. Health lists it as an **orphan**, beside
+the thin group next door; click either row to select and centre it.
 
 For the full tour, see [[Chambers/Vault Notes#Worldbuilding canvas tour]].
 `;
@@ -406,13 +515,22 @@ Open [[Home]] — it is marked as Worldbuilding, so it opens as a canvas.
 | Smart snap guides | drag any card near another card's edge or centreline |
 | Drag a selection as a unit | Ctrl+click several cards, then drag one |
 | Align / distribute a selection | right-click a selected card: **Align**, **Distribute** (three or more cards) |
+| Overlap warning, push aside, resolve | drag one free card over another, then try **Push aside** or **Resolve overlaps** |
 | Progression columns | the amber **Progression board** on Home: heading tiers left to right, tier headers over each lane |
-| Locked group | the red group on Home: cards cannot move, edit or be removed, but links still work |
-| Pinned group and node | the blue group and the pinned card: **Arrange** flows around them |
-| Health / orphans panel | the ⚠ chip in the canvas toolbar |
+| Locked group + clickable padlock | the red **Locked demo** on Home: cards cannot move, edit or be removed, but links still work; click its gold padlock to unlock |
+| Frozen / Static | the blue **Frozen demo**: a blue snowflake is read-only and fixed; only **Unfreeze** in the right-click menu clears it |
+| Pinned group and node | the green **Pinned demo**: pinned cards and groups stay put while **Arrange** works around them |
+| Card modes and folds | the purple **Card modes** group: full, compact, thumbnail and folded cards |
+| Card height / fit to content | the **Thin group** card at the bottom uses **Fit to content**; right-click any card to choose **Card height** |
+| Nested groups | the teal **Nested groups** cluster on Home: an outer group holding two child groups |
+| Resized cards | drag a card's bottom-right corner; the field-notes card in **Nested groups** is 420 × 180 |
+| Annotation colour and fold | the notes above the demo groups: right-click for a colour, or click the chevron to fold one |
+| Collapsed group + summary | the **Collapsed group** on Home: one summary card replaces its cards; double-click to expand |
+| Annotations | the coloured **Note** boxes above the demo groups; right-click to change colour, and drag, edit, fold or delete them |
+| Health / orphans panel | the ⚠ chip in the toolbar; the bottom **Thin group** and **Orphan card** are deliberate warnings |
 | Elbow connectors + arrowheads | the routing toggles in the toolbar (on for Home) |
-| Annotations | the **Note** button, or double-click empty canvas; drag, edit or delete them |
-| Node types, fields, colours, images | a card's type menu and the right-click menu (**Set colour**, **Embed image**) — all undoable |
+| Node types, fields, colours, images | a card's type menu and the right-click menu (**Card mode**, **Card height**, **Set colour**, **Embed image**); the thumbnail card shows an image |
+| Named canvas history | the history browser beside the canvas undo button, or **More ▾ → History** |
 
 ## Portable export and import
 
@@ -438,50 +556,111 @@ refuses and names them until you confirm with \`--overwrite\`. Share the
 `;
 
 /**
- * A tiny embedded image for the reference-card node, so the sample shows the
- * node-image feature without a binary asset. It lives as a file under
- * `.macusanite/node-images/`, referenced by path — the way every node
- * image is stored now.
+ * A small embedded illustration for the reference and thumbnail cards, so the
+ * sample shows the node-image feature clearly without a binary asset. It lives
+ * as a file under `.macusanite/node-images/`, referenced by path — the way
+ * every node image is stored now.
  */
-const DEMO_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAwMCAO+ip1sAAAAASUVORK5CYII=';
-const DEMO_IMAGE_REF = '.macusanite/node-images/demo.png';
+const DEMO_IMAGE = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
+  <rect width="320" height="180" rx="18" fill="#1d2733"/>
+  <path d="M18 138 C72 92 120 70 176 82 C228 94 270 120 302 142 L302 164 L18 164 Z" fill="#2d3b49"/>
+  <ellipse cx="160" cy="92" rx="88" ry="38" fill="#ff8c00" fill-opacity="0.82" stroke="#ffd166" stroke-width="3"/>
+  <ellipse cx="143" cy="82" rx="40" ry="15" fill="#fff3c4" fill-opacity="0.5"/>
+  <path d="M66 130 L116 111 L177 120 L254 102" fill="none" stroke="#ffd166" stroke-width="2" stroke-dasharray="7 6" opacity="0.8"/>
+  <text x="24" y="38" fill="#ffd166" font-family="system-ui, sans-serif" font-size="18" font-weight="700">MACUSANITE</text>
+  <text x="24" y="57" fill="#c9d1d9" font-family="system-ui, sans-serif" font-size="11">obsidian lens in ash-flow tuff</text>
+</svg>`)}`;
+const DEMO_IMAGE_REF = '.macusanite/node-images/macusanite-lens.svg';
 
 /**
  * Home's worldbuilding record: the canvas counterpart of the sample's tour.
- * It carries a locked group, a pinned group and node, elbow routing with
- * arrowheads, annotations, node types/fields/colours/images, folds, and a
- * named canvas history — every recent canvas feature, ready to poke at.
+ * It carries a locked group, a frozen/Static group, a pinned group and node,
+ * card modes and a fold, nested groups, a resized card, a collapsed group, a
+ * thin group for Health, elbow routing with arrowheads, coloured and folded
+ * annotations, node types/fields/colours/images and a named canvas history —
+ * every recent canvas feature, ready to poke at.
  */
 function showcaseWorldRecord() {
-  // The progression board occupies the top tiers: tier 0 at x=40, tier 1 at
-  // x=436, tier 2 at x=832 (300px cards, 96px gaps), stacked down 336px.
-  // Its box runs to y=648, so the demo groups sit below it (y>=712) in
-  // side-by-side boxes that touch neither the board's lanes nor each other:
-  // pinned on the left (x=40), locked on the right (x=436).
+  // The gallery is a four-column grid: 300px cards, 96px horizontal gaps and
+  // 76px vertical gaps. The progression board fills the top three columns; the
+  // card-mode stack fills the fourth. Below a clear annotation band, four demo
+  // groups sit side by side, and the thin health group is alone at the bottom.
+  // Every box is separated by at least 60px so no card, group box, tab or note
+  // can cover another.
   const positions = {
+    // Progression board: tier 0 at x=40, tier 1 at x=436, tier 2 at x=832.
     'welcome-to-your-vault': { x: 40, y: 40 },
     diagramming: { x: 436, y: 40 },
     'reference-cards-and-hand-written-links': { x: 436, y: 376 },
     flowchart: { x: 832, y: 40 },
     'sequence-diagram': { x: 832, y: 376 },
-    'the-three-panes': { x: 40, y: 712 },
-    'try-the-worldbuilding-canvas': { x: 40, y: 1048 },
-    'where-to-go-next': { x: 436, y: 712 },
-    'colour-everywhere': { x: 436, y: 1048 },
+    // Card display modes, stacked in the fourth column.
+    'card-display-modes': { x: 1228, y: 40 },
+    'compact-card': { x: 1228, y: 376 },
+    'thumbnail-card': { x: 1228, y: 712 },
+    'folded-card': { x: 1228, y: 880 },
+    // The four state demos, below the annotation band.
+    'where-to-go-next': { x: 40, y: 1080 },
+    'colour-everywhere': { x: 40, y: 1416 },
+    'freeze-and-static': { x: 436, y: 1080 },
+    'unfreeze-from-the-menu': { x: 436, y: 1416 },
+    'try-the-worldbuilding-canvas': { x: 832, y: 1080 },
+    'the-three-panes': { x: 832, y: 1416 },
+    'collapsible-groups': { x: 1228, y: 1080 },
+    'collapsed-group-summary': { x: 1228, y: 1416 },
+    // One deliberate thin group for the health panel.
+    'health-and-orphans': { x: 40, y: 1760 },
+    'orphan-card': { x: 436, y: 1760 },
+    // The nested-group cluster: one outer group holding a direct card and two
+    // child groups. The field-notes card is deliberately resized; the outer
+    // box and both child boxes are nested, not separate clusters.
+    'nested-groups': { x: 832, y: 1760 },
+    'nested-group-field-notes': { x: 832, y: 2096 },
+    'nested-group-lab-notes': { x: 832, y: 2352 },
+    'nested-group-samples': { x: 1324, y: 2096 },
+    'nested-group-results': { x: 1324, y: 2432 },
   };
   const groups = {
-    'g-locked': {
-      id: 'g-locked', name: 'Locked demo', color: '#f97066', locked: true,
-      members: ['where-to-go-next', 'colour-everywhere'], children: [],
-    },
-    'g-pinned': {
-      id: 'g-pinned', name: 'Pinned demo', color: '#58a6ff', pinned: true,
-      members: ['try-the-worldbuilding-canvas', 'the-three-panes'], children: [],
-    },
     'g-progression': {
-      id: 'g-progression', name: 'Progression board', color: '#d29922', layout: 'progression',
+      id: 'g-progression', name: 'Progression board', color: '#d29922', icon: '▦', layout: 'progression',
       members: ['welcome-to-your-vault', 'diagramming', 'reference-cards-and-hand-written-links', 'flowchart', 'sequence-diagram'],
       children: [],
+    },
+    'g-locked': {
+      id: 'g-locked', name: 'Locked demo — click the padlock', color: '#f97066', icon: '⚙', locked: true,
+      members: ['where-to-go-next', 'colour-everywhere'], children: [],
+    },
+    'g-frozen': {
+      id: 'g-frozen', name: 'Frozen demo — right-click Unfreeze', color: '#58a6ff', icon: '✦', locked: 'frozen',
+      members: ['freeze-and-static', 'unfreeze-from-the-menu'], children: [],
+    },
+    'g-pinned': {
+      id: 'g-pinned', name: 'Pinned demo', color: '#57d364', icon: '⌂', pinned: true,
+      members: ['try-the-worldbuilding-canvas', 'the-three-panes'], children: [],
+    },
+    'g-modes': {
+      id: 'g-modes', name: 'Card modes', color: '#bc8cff', icon: '▦',
+      members: ['card-display-modes', 'compact-card', 'thumbnail-card', 'folded-card'], children: [],
+    },
+    'g-collapsed': {
+      id: 'g-collapsed', name: 'Collapsed group', color: '#8d6e63', icon: '▣',
+      members: ['collapsible-groups', 'collapsed-group-summary'], children: [],
+    },
+    'g-thin': {
+      id: 'g-thin', name: 'Thin group — health warning', color: '#ffa657', icon: '⚠',
+      members: ['health-and-orphans'], children: [],
+    },
+    'g-nested-outer': {
+      id: 'g-nested-outer', name: 'Nested groups', color: '#45c4b0', icon: '⁂',
+      members: ['nested-groups'], children: ['g-nested-field', 'g-nested-results'],
+    },
+    'g-nested-field': {
+      id: 'g-nested-field', name: 'Nested group: field', color: '#57d364', icon: '⌂',
+      members: ['nested-group-field-notes', 'nested-group-lab-notes'], children: [],
+    },
+    'g-nested-results': {
+      id: 'g-nested-results', name: 'Nested group: results', color: '#da70d6', icon: '≡',
+      members: ['nested-group-samples', 'nested-group-results'], children: [],
     },
   };
   const relations = {
@@ -490,6 +669,9 @@ function showcaseWorldRecord() {
     'diagramming->reference-cards-and-hand-written-links': 'affects',
     'diagramming->flowchart': 'contains',
     'group:g-locked->where-to-go-next': 'associate',
+    'group:g-frozen->welcome-to-your-vault': 'controls',
+    'card-display-modes->thumbnail-card': 'contains',
+    'collapsible-groups->collapsed-group-summary': 'contains',
   };
   const types = {
     diagramming: 'stat',
@@ -498,47 +680,135 @@ function showcaseWorldRecord() {
     'where-to-go-next': 'place',
     'reference-cards-and-hand-written-links': 'thing',
     'try-the-worldbuilding-canvas': 'scene',
+    'the-three-panes': 'table',
+    'freeze-and-static': 'mode',
+    'unfreeze-from-the-menu': 'condition',
+    'card-display-modes': 'note',
+    'compact-card': 'rating',
+    'thumbnail-card': 'image',
+    'folded-card': 'property',
+    'collapsible-groups': 'attribute',
+    'collapsed-group-summary': 'property',
+    'health-and-orphans': 'condition',
+    'orphan-card': 'note',
   };
   const fields = {
     diagramming: { value: '3 diagrams' },
     flowchart: { value: '1 flowchart' },
     'colour-everywhere': { level: 8 },
+    'compact-card': { value: 8 },
+    'folded-card': { key: 'view', value: 'folded' },
+    'collapsible-groups': { key: 'group', value: 'collapsed' },
+    'collapsed-group-summary': { key: 'summary', value: 'one card' },
   };
   const colors = {
     diagramming: '#57d364',
     'colour-everywhere': '#da70d6',
     'where-to-go-next': '#45c4b0',
     'reference-cards-and-hand-written-links': '#ffa657',
+    'freeze-and-static': '#58a6ff',
+    'unfreeze-from-the-menu': '#79c0ff',
+    'card-display-modes': '#bc8cff',
+    'compact-card': '#ffd166',
+    'thumbnail-card': '#ff8c00',
+    'folded-card': '#8b949e',
+    'collapsible-groups': '#d2a8ff',
+    'collapsed-group-summary': '#8d6e63',
+    'health-and-orphans': '#ffa657',
+    'orphan-card': '#8b949e',
   };
-  const images = { 'reference-cards-and-hand-written-links': DEMO_IMAGE_REF };
-  const pinned = { 'colour-everywhere': true };
+  const images = {
+    'reference-cards-and-hand-written-links': DEMO_IMAGE_REF,
+    'thumbnail-card': DEMO_IMAGE_REF,
+  };
+  const pinned = { 'the-three-panes': true };
   const locked = { 'where-to-go-next': true };
-  const annotations = {
-    'ann-tour-1': { id: 'ann-tour-1', x: 832, y: 712, text: 'Start here: Overview folds everything, then fits.' },
-    'ann-tour-2': { id: 'ann-tour-2', x: 40, y: 1720, text: 'Elbow wires + arrowheads are on for this canvas.' },
+  const cardModes = { 'compact-card': 'compact', 'thumbnail-card': 'thumbnail' };
+  const cardSizes = { 'health-and-orphans': 'content' };
+  const collapsedGroups = { 'g-collapsed': true };
+  const folded = { 'folded-card': { card: true } };
+  const cardDims = {
+    'nested-group-field-notes': { width: 420, height: 180 },
   };
-  // The retired “links” part, kept as saved data older records carry: the
-  // canvas ignores it now that a card's fold is its only fold.
-  const folded = { 'the-three-panes': { links: true } };
+  const annotations = {
+    'ann-overview': { id: 'ann-overview', x: 40, y: 700, text: 'Overview folds every card, then fits the whole gallery.' },
+    'ann-static': {
+      id: 'ann-static', x: 316, y: 700, color: '#58a6ff', folded: true,
+      text: 'Blue snowflake = Static. Right-click and choose Unfreeze.',
+    },
+    'ann-wires': {
+      id: 'ann-wires', x: 592, y: 700, color: '#57d364',
+      text: 'Elbow wires and arrowheads; drag a card to see overlap warnings.',
+    },
+    'ann-nested': {
+      id: 'ann-nested', x: 868, y: 700, color: '#da70d6', folded: true,
+      text: 'Nested groups: drag a child tab to move its pair, or the outer tab to move all five cards.',
+    },
+  };
   const view = { x: 0, y: 0, s: 1 };
-  const current = { positions, groups, relations, folded, types, fields, colors, images, pinned, locked, annotations, view };
+  const current = {
+    positions, groups, relations, folded, types, fields, colors, images, pinned, locked,
+    cardModes, cardSizes, cardDims, collapsedGroups, annotations, view,
+  };
   const tight = {
     ...current,
-    positions: Object.fromEntries(Object.keys(positions).map((anchor, i) => [anchor, { x: 40 + (i % 2) * 340, y: 40 + Math.floor(i / 2) * 300 }])),
-    groups: {}, relations: {}, folded: {}, types: {}, fields: {}, colors: {}, images: {}, pinned: {}, locked: {}, annotations: {},
+    positions: Object.fromEntries(Object.keys(positions).map((anchor, i) => [
+      anchor,
+      { x: 40 + (i % 3) * 396, y: 40 + Math.floor(i / 3) * 336 },
+    ])),
+    groups: {},
+    relations: {},
+    folded: {},
+    types: {},
+    fields: {},
+    colors: {},
+    images: {},
+    pinned: {},
+    locked: {},
+    cardModes: {},
+    cardSizes: {},
+    cardDims: {},
+    collapsedGroups: {},
+    annotations: {},
   };
   const typed = { ...tight, positions, groups, relations, types, fields };
-  const noted = { ...typed, folded, annotations };
+  const noted = {
+    ...typed,
+    folded,
+    colors,
+    images,
+    pinned,
+    locked,
+    cardModes,
+    cardSizes,
+    cardDims,
+    collapsedGroups,
+    annotations,
+  };
   return {
     marked: true,
-    positions, groups, relations, folded, types, fields, colors, images, pinned, locked, annotations,
+    positions,
+    groups,
+    relations,
+    folded,
+    types,
+    fields,
+    colors,
+    images,
+    pinned,
+    locked,
+    cardModes,
+    cardSizes,
+    cardDims,
+    collapsedGroups,
+    annotations,
     routing: { elbow: true, arrows: true },
     view,
     history: {
       past: [
-        { name: 'Group the welcome cards', snap: canvasSnapshot(tight) },
-        { name: 'Set diagramming to a Stat', snap: canvasSnapshot(typed) },
-        { name: 'Add demo annotations', snap: canvasSnapshot(noted) },
+        { name: 'Place the feature gallery', snap: canvasSnapshot(tight) },
+        { name: 'Add the tour groups and labels', snap: canvasSnapshot(typed) },
+        { name: 'Freeze, pin, collapse and annotate', snap: canvasSnapshot(noted) },
       ],
       future: [],
     },

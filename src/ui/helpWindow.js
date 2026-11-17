@@ -47,7 +47,7 @@ export function createHelpWindow({ root, markdown = buildHelpMarkdown() }) {
     class: 'help-search-input',
     type: 'search',
     id: 'help-search',
-    placeholder: 'Search the manual…  (every word has to appear; "quote a phrase")',
+    placeholder: 'Search the manual…  (every word must appear; "quote a phrase")',
     spellcheck: 'false',
     autocomplete: 'off',
   });
@@ -162,7 +162,7 @@ export function createHelpWindow({ root, markdown = buildHelpMarkdown() }) {
     const hits = new Map(plan.sections.map((match) => [match.slug, match.hits]));
     const shown = sections.filter((section) => visibleSet.has(section.slug));
     if (!shown.length) {
-      nav.append(el('p', { class: 'help-nav-empty', text: `Nothing in the manual mentions “${query}”.` }));
+      nav.append(el('p', { class: 'help-nav-empty', text: `The manual has no section that mentions “${query}”.` }));
       return;
     }
 

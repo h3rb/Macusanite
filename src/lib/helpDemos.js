@@ -56,7 +56,7 @@ const DEMOS = {
     + node(250, 30, 'Fieldwork', { d: 0.4 })
     + node(70, 92, 'Ghost ＋', { fill: 'none', d: 0.6 })
     + node(250, 92, '#fieldwork', { fill: 'var(--ok)', d: 0.8 }),
-  ), 'The concept graph: one large vein, its sections, neighbours, ghosts and tags.'),
+  ), 'The concept graph shows one large vein together with its sections, neighbouring veins, ghosts and tags.'),
 
   // The vault folder, its .macusanite files appearing one by one.
   'vault-disk': () => figure('vault-disk', (
@@ -65,7 +65,7 @@ const DEMOS = {
       '.macusanite/history.json', '.macusanite/index.json']
       .map((name, i) => `<span class="help-demo-line" style="animation-delay:${i * 0.35}s">${esc(name)}</span>`).join('')
     + '</div>'
-  ), 'A vault is a folder: veins, chambers and the .macusanite bookkeeping.'),
+  ), 'A vault is a folder containing veins, chambers and the .macusanite bookkeeping.'),
 
   // The three panes light up in turn.
   'window-tour': () => figure('window-tour', (
@@ -74,7 +74,7 @@ const DEMOS = {
     + '<span class="help-demo-pane" style="animation-delay:1.2s">The vein</span>'
     + '<span class="help-demo-pane" style="animation-delay:2.4s">Concept graph</span>'
     + '</div>'
-  ), 'The window: tree on the left, the vein in the centre, the graph on the right.'),
+  ), 'The window places the tree on the left, the vein in the centre and the graph on the right.'),
 
   // A query being typed, results arriving, a hit ringed.
   'search-type': () => figure('search-type', (
@@ -84,7 +84,7 @@ const DEMOS = {
     + '<span class="help-demo-result" style="animation-delay:0.8s">§ Sieve series · <mark class="help-demo-hit">sieve</mark> series</span>'
     + '<span class="help-demo-result" style="animation-delay:1.2s">2 in text · standard half-phi <mark class="help-demo-hit is-current">sieve</mark>s</span>'
     + '</div>'
-  ), 'Search ranks title, then heading, then tag, then body — and rings the hit you are on.'),
+  ), 'Search ranks a title match first, followed by headings, tags and body text, and it rings the current hit.'),
 
   // A swatch cycling through colours while an edge fades between two of them.
   'colours': () => figure('colours', svg(
@@ -94,7 +94,7 @@ const DEMOS = {
     + node(80, 60, 'source', { d: 0 }) + node(240, 60, 'target', { fill: '#da70d6', d: 0.3 })
     + '<circle class="help-demo-swatch" cx="160" cy="22" r="10"/>'
     + '<text x="160" y="48" text-anchor="middle">click the swatch</text>',
-  ), 'Colours resolve most-specific-first, and graph edges fade from link colour to target colour.'),
+  ), 'Colours resolve from most specific to least specific, and graph edges fade from the link colour to the target colour.'),
 
   // Nodes slowly orbiting the vein, edges following.
   'graph-orbits': () => figure('graph-orbits', svg(
@@ -103,7 +103,7 @@ const DEMOS = {
     + node(70, 30, 'A', { d: 0 }) + node(250, 30, 'B', { d: 0.2 })
     + node(70, 92, 'C', { d: 0.4 }) + node(250, 92, 'D', { d: 0.6 })
     + '</g>' + node(160, 60, 'Vein', { r: 12, d: 0 }),
-  ), 'Drag a node to rearrange, the background to pan, scroll to zoom.'),
+  ), 'Dragging a node rearranges the graph, dragging the background pans it, and the wheel zooms.'),
 
   // Text changes, then an undo arrow reverts it.
   'undo-flip': () => figure('undo-flip', (
@@ -112,7 +112,7 @@ const DEMOS = {
     + '<span class="help-demo-undo-arrow">↩ Ctrl+Z</span>'
     + '<span class="help-demo-undo-before">“sieve sizes”</span>'
     + '</div>'
-  ), 'Every write records a before/after snapshot — undo restores exactly what changed.'),
+  ), 'Every write records a before-and-after snapshot, so undo restores the recorded state.'),
 
   // An external edit lands and the live dot turns green.
   'watching': () => figure('watching', (
@@ -121,7 +121,7 @@ const DEMOS = {
     + '<span class="help-demo-watch-line">Home.md <em>edited by another program…</em></span>'
     + '<span class="help-demo-watch-line is-new">…and it is in the tree, the graph and the reader, no reload</span>'
     + '</div>'
-  ), 'The vault is watched: external changes appear without a reload, unsaved drafts always win.'),
+  ), 'The viewer watches the vault, so external changes appear without a reload while unsaved drafts take precedence.'),
 
   // The index filling in behind an already-usable window.
   'lazy-index': () => figure('lazy-index', (
@@ -129,7 +129,7 @@ const DEMOS = {
     + '<span class="help-demo-index-bar"><span class="help-demo-index-fill"></span></span>'
     + '<span class="help-demo-index-label">indexing 420/5001 → 5001/5001 — the window works throughout</span>'
     + '</div>'
-  ), 'A vault opens by describing it: the index cache answers first, the rest is read in the background.'),
+  ), 'A vault opens by being described, because the index cache answers first and the remaining metadata is read in the background.'),
 
   // The folder becomes one archive and travels to the cloud.
   'backup-upload': () => figure('backup-upload', (
@@ -138,7 +138,7 @@ const DEMOS = {
     + '<span class="help-demo-box">notes.tar.gz</span><span class="help-demo-arrow">→</span>'
     + '<span class="help-demo-box is-cloud">☁ bucket</span>'
     + '</div>'
-  ), 'A backup is the whole folder as one timestamped .tar.gz — direct, over SSH, or automatic.'),
+  ), 'A backup captures the whole folder in one timestamped .tar.gz archive, uploaded directly, over SSH or automatically.'),
 
   // Shortcut keys lighting up in sequence.
   'keyboard-keys': () => figure('keyboard-keys', (
@@ -146,7 +146,7 @@ const DEMOS = {
     + ['Ctrl+S', 'Ctrl+Z', 'Ctrl+K', 'Ctrl+F', 'F3', 'F1']
       .map((key, i) => `<span class="help-demo-key" style="animation-delay:${i * 0.5}s">${esc(key)}</span>`).join('')
     + '</div>'
-  ), 'The whole window is keyboard-first: save, undo, jump, search, step hits, help.'),
+  ), 'The window is designed for keyboard use, with shortcuts for saving, undo, jumping, searching, stepping through hits and opening help.'),
 
   // A terminal session: CLI command, then the MCP handshake.
   'agents-terminal': () => figure('agents-terminal', (
@@ -156,7 +156,7 @@ const DEMOS = {
     + '<span class="help-demo-term-line is-cmd" style="animation-delay:1.6s">$ macusanite mcp serve --port 8765</span>'
     + '<span class="help-demo-term-line" style="animation-delay:2.4s">→ POST /mcp · GET /health · same API, no window</span>'
     + '</div>'
-  ), 'CLI and MCP are the same API as the window — Node programs, no build step.'),
+  ), 'The CLI and MCP server expose the same API as the window through Node programs that require no build step.'),
 
   // Cards sliding from a pile into progression columns by heading tier.
   'worldbuild-arrange': () => figure('worldbuild-arrange', svg(
@@ -172,7 +172,7 @@ const DEMOS = {
     + card(224, 28, 72, 'Flowchart', 0.7)
     + card(224, 62, 72, 'Sequence', 0.9),
     '0 0 320 120',
-  ), 'Split a group into progression columns: top cards left, each heading tier one column right.'),
+  ), 'Splitting a group into progression columns places the top cards on the left and each heading tier one column to the right.'),
 
   // A vein as a canvas: cards, the outline and a prose link.
   'worldbuild-canvas': () => figure('worldbuild-canvas', svg(
@@ -184,7 +184,7 @@ const DEMOS = {
     + '<line class="help-demo-edge" x1="224" y1="61" x2="252" y2="33" style="animation-delay:0.55s"/>'
     + '<text x="160" y="102" text-anchor="middle" fill="var(--text-faint)" font-size="9">dotted outline · solid prose link</text>',
     '0 0 320 120',
-  ), 'A worldbuilding vein as cards: headings, groups of cards, and the links its prose already makes.'),
+  ), 'A Worldbuilding vein appears as cards for its headings, groups of cards and the links that its prose already defines.'),
 
   // Fixed-height card beside a card grown to its prose.
   'worldbuild-cards': () => figure('worldbuild-cards', svg(
@@ -192,7 +192,7 @@ const DEMOS = {
     + '<g class="help-demo-card" style="animation-delay:0.6s"><rect x="184" y="14" width="118" height="96" rx="5"/><text x="192" y="30">Fit to content</text><text x="192" y="46">the whole note shows</text><text x="192" y="62">and the card grows</text><text x="192" y="78">to hold it</text><text x="192" y="94">no inner scrollbar</text></g>'
     + '<text x="160" y="118" text-anchor="middle" fill="var(--text-faint)" font-size="9">per node · default in Settings → Worldbuilding</text>',
     '0 0 320 126',
-  ), 'Card height: a fixed box with scrolling prose, or a card fitted to its content.'),
+  ), 'A card can use a fixed box in which prose scrolls, or it can fit its content and grow to show the whole note.'),
 
   // The same node with different types, each bringing its fields.
   'worldbuild-types': () => figure('worldbuild-types', (
@@ -202,7 +202,7 @@ const DEMOS = {
     + '<span class="help-demo-line" style="animation-delay:0.8s">◆ <b>Skill</b> — level 0–10</span>'
     + '<span class="help-demo-line" style="animation-delay:1.2s">≡ <b>Attribute</b> — sieve mesh · 0.5 mm</span>'
     + '</div>'
-  ), 'A node’s type gives it an icon, a colour and, for game-like types, its own fields.'),
+  ), 'The type of a node supplies its icon, its colour and, for game-like types, its structured fields.'),
 
   // A group box, a bond with a word, and a second weight for group bonds.
   'worldbuild-bonds': () => figure('worldbuild-bonds', svg(
@@ -215,7 +215,7 @@ const DEMOS = {
     + '<text x="168" y="46" fill="var(--ok)" font-size="9">ally</text>'
     + '<text x="164" y="98" fill="var(--text-faint)" font-size="9">group bond · twice the weight</text>',
     '0 0 320 120',
-  ), 'Groups box cards that move together; every wire carries a relationship you can step or reverse.'),
+  ), 'Groups box cards that move together, and every wire carries a relationship that can be advanced or reversed.'),
 
   // One canvas step swapped: a card's height, named in the history.
   'worldbuild-history': () => figure('worldbuild-history', (
@@ -224,7 +224,7 @@ const DEMOS = {
     + '<span class="help-demo-undo-arrow">↶</span>'
     + '<span class="help-demo-undo-before">Fit to content · “Field notes”</span>'
     + '</div>'
-  ), 'Canvas undo is its own named history: every drag, layout and setting is one step you can jump back to.'),
+  ), 'Canvas undo maintains its own named history, in which each drag, layout and setting is one step to which the view can return.'),
 
   // Version pill, download bar, restart into the new version.
   'update-flow': () => figure('update-flow', (
@@ -234,7 +234,7 @@ const DEMOS = {
     + '<span class="help-demo-download"><span class="help-demo-download-fill"></span></span>'
     + '<span class="help-demo-update-note">signed · verified · installed in place · restarted</span>'
     + '</div>'
-  ), 'Signed self-update: check latest.json, verify, download, install in place, restart.'),
+  ), 'The signed updater checks latest.json, verifies the package, downloads it, installs it in place and restarts the application.'),
 };
 
 /** Every demo kind the generator knows, in manual order. */

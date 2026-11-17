@@ -9,13 +9,14 @@
   </head>
   <body class="help-window">
     <!--
-      The help window is its own page (and its own OS window on the desktop), so
-      reading the manual never costs you the vein you had open. It renders the
-      generated document from src/lib/helpDoc.js — the same text `macusanite docs`
-      prints and the MCP server serves — and it needs no vault access at all.
+      The help page is a separate document and, in the desktop application, a
+      separate window, so opening it does not replace the vein the reader has
+      open. It renders the generated manual from src/lib/helpDoc.js, which is
+      the same text that `macusanite docs` prints and the MCP server serves, and
+      it requires no access to a vault.
     -->
     <div id="help-root" class="help-root" data-booting="true"></div>
-    <noscript>This manual is rendered by JavaScript. Run <code>macusanite docs</code> for the same text.</noscript>
+    <noscript>This manual is rendered with JavaScript. Run <code>macusanite docs</code> to print the same text.</noscript>
     <script type="module" src="/src/help.js"></script>
   </body>
 </html>

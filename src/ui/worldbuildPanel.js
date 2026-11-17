@@ -22,7 +22,7 @@ import {
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
   TABLE_ALIGNMENTS, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_HEADER_MAX_LENGTH, TABLE_CELL_MAX_LENGTH,
   dropMembershipKind,
-  clampView, snapZoomView, fitView, centreView, snapDelta, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
+  clampView, snapZoomView, fitView, centreView, snapDelta, rectsOverlap, resolveOverlaps, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
   normalizeRouting, prepareConnectorGeometry, cleanAnnotations, makeAnnotationId,
   placeConnectorLabels,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
@@ -58,6 +58,14 @@ const DETAIL_ZOOM = 1;
 // exp(-0.2) at the usual 100px delta, so three notches land near 0.549: 0.55
 // switches to the screen-readable summary on that third notch, not the first.
 const SUMMARY_ZOOM = 0.55;
+// Below this, semantic summaries shrink with the canvas instead of holding a
+// fixed screen size. Type keeps shrinking until ICON_ZOOM, where text stops
+// being useful and each card becomes its type icon.
+const COMPACT_ZOOM = 0.25;
+const ICON_ZOOM = 0.125;
+// Annotation text stays editable at 62% and above. Below that the note is a
+// single grab surface, so a drag cannot be swallowed by its textarea.
+const ANNOTATION_DRAG_ZOOM = 0.62;
 // A stacked pair leaves a short wire between them — tight enough that the
 // folded card and the card under it read as one stack, not two neighbours.
 const STACK_GAP = 8;
@@ -117,6 +125,9 @@ export function createWorldbuildPanel({ app, root }) {
     el('span', { class: 'wb-zoom-hud-label', text: 'Zoom' }),
     zoomHudValue,
   ]);
+  // A quiet warning while a drag covers another card. It is decorative like
+  // the scale badge; the cards themselves carry the dashed warning outline.
+  const overlapHud = el('div', { class: 'wb-overlap-hud hidden', 'aria-hidden': 'true' });
   const statsBar = el('div', { class: 'wb-stats' });
   // The inspector is a second view of the selection: a place to read what a
   // card is, what it points at, and how it is grouped without opening its
@@ -143,7 +154,7 @@ export function createWorldbuildPanel({ app, root }) {
   const workbench = el('div', { class: 'wb-workbench' }, [stage, inspector]);
 
   canvas.append(edgeSvg, cards, annotationsLayer, guides);
-  stage.append(canvas, marqueeBox, linkOverlay, zoomHud);
+  stage.append(canvas, marqueeBox, linkOverlay, overlapHud, zoomHud);
   // Canvas search: titles, types, fields, colours and group names in this
   // vein, with jump-to, highlight, select-all-matches and isolate.
   const searchInput = el('input', {
@@ -268,6 +279,9 @@ export function createWorldbuildPanel({ app, root }) {
   // Connector display: bezier wires by default, optionally right-angle
   // elbows, and optionally arrowheads showing each wire's direction.
   let routing = normalizeRouting(null);
+  // Whether a drag pushes free cards out of its way instead of only warning
+  // about the overlap. A per-vein preference, not a canvas undo step.
+  let pushAside = false;
   let marked = false;
   // The relationship the next link from each card asserts, by note index.
   let linkKinds = new Map();
@@ -335,6 +349,16 @@ export function createWorldbuildPanel({ app, root }) {
     return view.s < SUMMARY_ZOOM;
   }
 
+  /** True when text is gone and each card is only its type icon. */
+  function isIconZoom() {
+    return view.s <= ICON_ZOOM;
+  }
+
+  /** True when an annotation is below its editing floor and drags as a whole. */
+  function isAnnotationDragZoom() {
+    return view.s < ANNOTATION_DRAG_ZOOM;
+  }
+
   /* ------------------------------------------------------------ content -- */
 
   /** The vein's text as the reader currently holds it (an unsaved draft wins). */
@@ -354,6 +378,7 @@ export function createWorldbuildPanel({ app, root }) {
       inspector.classList.add('hidden');
       clear(inspectorBody);
       zoomHud.classList.remove('is-visible');
+      clearOverlapUi();
       closeMenu();
       closeMoreMenu({ returnFocus: false });
       closeSelectMenu();
@@ -414,6 +439,7 @@ export function createWorldbuildPanel({ app, root }) {
     groups = record?.groups ?? {};
     annotations = cleanAnnotations(record?.annotations);
     routing = normalizeRouting(record?.routing);
+    pushAside = record?.pushAside === true;
     // The saved view: the canvas point in the viewport's top-left corner at
     // the zoom it was left at, so the graph reopens exactly as it was left.
     view = viewOfAnchor(record?.view) ?? { x: 0, y: 0, s: 1 };
@@ -475,7 +501,7 @@ export function createWorldbuildPanel({ app, root }) {
     drawEdges();
     renderStats();
     renderInspector();
-    syncOverviewInteraction();
+    syncZoomInteraction();
   }
 
   function commit() {
@@ -529,6 +555,17 @@ export function createWorldbuildPanel({ app, root }) {
         title: 'Arrange the selection, a group, a connected component, or one type — grid, rows, columns, cascade, layered, or progression columns. Pinned and locked cards stay put.',
         onclick: (event) => toggleArrangeMenu(event.currentTarget),
       }),
+      el('button', {
+        class: `btn btn-ghost btn-mini wb-push-aside${pushAside ? ' is-active' : ''}`,
+        type: 'button',
+        text: 'Push aside',
+        'data-push-aside': '',
+        'aria-pressed': String(pushAside),
+        title: pushAside
+          ? 'Push-aside is on — dragging moves free cards out of the way; pinned and locked cards stay put'
+          : 'Push free cards out of the way while dragging; pinned and locked cards stay put',
+        onclick: togglePushAside,
+      }),
       (overviewButton = el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: 'Overview',
         title: overviewFolded
@@ -580,7 +617,9 @@ export function createWorldbuildPanel({ app, root }) {
 
   /** Whether a More-menu toggle is currently on. */
   function moreState(kind) {
-    return kind === 'marked' ? marked : Boolean(routing[kind]);
+    if (kind === 'marked') return marked;
+    if (kind === 'pushAside') return pushAside;
+    return Boolean(routing[kind]);
   }
 
   /** One More-menu row: a tick box, then the label. */
@@ -624,6 +663,7 @@ export function createWorldbuildPanel({ app, root }) {
         closeMoreMenu({ returnFocus: false });
         zoomToFitSelection();
       }, { disabled: !selected.size, attrs: { 'data-fit-selection': '' } }),
+      moreItem('Push overlaps aside', 'While dragging, move free cards out of the way; pinned and locked cards stay put', () => togglePushAside(), { kind: 'pushAside' }),
       el('div', { class: 'wb-menu-label', text: 'This vein' }),
       moreItem(marked ? 'Unmark Worldbuilding' : 'Mark as Worldbuilding', marked
         ? 'This vein opens as a worldbuilding graph — unmarking keeps the layout and relationships'
@@ -723,6 +763,29 @@ export function createWorldbuildPanel({ app, root }) {
     renderToolbar();
     app.setMode(app.state.ui.mode);
     app.toast(marked ? 'Marked as Worldbuilding — it opens as a graph' : 'Unmarked', 'ok', 1800);
+  }
+
+  /** Turn live push-aside on or off for this vein; the choice survives reopen. */
+  function togglePushAside() {
+    if (!currentPath) return;
+    pushAside = !pushAside;
+    app.saveWorldPushAside?.(currentPath, pushAside);
+    const button = toolbar.querySelector('[data-push-aside]');
+    button?.classList.toggle('is-active', pushAside);
+    button?.setAttribute('aria-pressed', String(pushAside));
+    if (button) {
+      button.title = pushAside
+        ? 'Push-aside is on — dragging moves free cards out of the way; pinned and locked cards stay put'
+        : 'Push free cards out of the way while dragging; pinned and locked cards stay put';
+    }
+    syncMoreChecks();
+    app.toast(
+      pushAside
+        ? 'Push-aside on — dragging moves free cards out of the way; pinned and locked cards stay put'
+        : 'Push-aside off — overlaps are warned, not moved',
+      'ok',
+      2200,
+    );
   }
 
   /** Toggle a connector display preference, keeping it with this vein. */
@@ -855,9 +918,13 @@ export function createWorldbuildPanel({ app, root }) {
       saveAnnotations();
       build();
     }, 'Add annotation');
-    const input = annotationsLayer.querySelector(`[data-annotation-id="${id}"] textarea`);
-    input?.focus();
-    input?.select();
+    // Below the annotation editing floor the note is a canvas object, not a
+    // text field. Adding one there should not pull focus into inert text.
+    if (!isAnnotationDragZoom()) {
+      const input = annotationsLayer.querySelector(`[data-annotation-id="${id}"] textarea`);
+      input?.focus();
+      input?.select();
+    }
     return id;
   }
 
@@ -887,8 +954,33 @@ export function createWorldbuildPanel({ app, root }) {
       dataset: { annotationId: annotation.id },
       style: `left:${annotation.x}px; top:${annotation.y}px; width:${ANNOTATION_W}px; --wb-annotation-color:${annotation.color || '#fff3a6'}; --wb-annotation-border:${annotation.color ? `color-mix(in srgb, ${annotation.color} 70%, #000)` : '#d8c94c'};`,
     });
+    const fold = el('button', { class: 'wb-annotation-fold', type: 'button', text: '▾' });
+    const paintFold = () => {
+      const folded = annotations[annotation.id]?.folded === true;
+      fold.textContent = folded ? '▸' : '▾';
+      fold.title = `${folded ? 'Expand' : 'Fold'} annotation`;
+      fold.setAttribute('aria-label', fold.title);
+      fold.setAttribute('aria-expanded', folded ? 'false' : 'true');
+      note.classList.toggle('is-folded', folded);
+    };
+    fold.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const current = annotations[annotation.id];
+      if (!current) return;
+      const nextFolded = current.folded !== true;
+      step(() => {
+        const next = { ...current };
+        if (nextFolded) next.folded = true;
+        else delete next.folded;
+        annotations = { ...annotations, [annotation.id]: next };
+        saveAnnotations();
+        paintFold();
+      }, `${nextFolded ? 'Fold' : 'Expand'} annotation`);
+    });
+    paintFold();
     const head = el('div', { class: 'wb-annotation-head', title: 'Drag to move this annotation' }, [
       el('span', { class: 'wb-annotation-grip', text: '⠿' }),
+      fold,
       el('span', { class: 'wb-annotation-title', text: 'Annotation' }),
       el('button', {
         class: 'wb-annotation-remove', type: 'button', text: '✕', title: 'Delete this annotation',
@@ -917,8 +1009,11 @@ export function createWorldbuildPanel({ app, root }) {
       saveAnnotations();
       if (!annotations[annotation.id]) build();
     });
-    head.addEventListener('pointerdown', (event) => {
-      if (event.target.closest('button')) return;
+    const startDrag = (event) => {
+      if (event.button !== 0) return;
+      // In annotation-drag mode the whole note, including its controls, is the
+      // drag surface; no child target can take the gesture first.
+      if (!isAnnotationDragZoom() && event.target.closest?.('button, textarea')) return;
       beginStep('Move annotation');
       const startX = event.clientX;
       const startY = event.clientY;
@@ -945,6 +1040,13 @@ export function createWorldbuildPanel({ app, root }) {
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', end);
       event.preventDefault();
+    };
+    head.addEventListener('pointerdown', startDrag);
+    // Below 62% the whole note is a grab surface, including its head and text.
+    // Above it, the head and textarea keep their own gestures.
+    note.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !isAnnotationDragZoom()) return;
+      startDrag(event);
     });
     appendAll(note, [head, body]);
     return note;
@@ -1027,7 +1129,7 @@ export function createWorldbuildPanel({ app, root }) {
         // “Appears above”: the partner’s middle sits below the folded
         // card’s, and its centre is within the folded card’s own span.
         const cx = box.x + box.width / 2;
-        return box.y + box.height / 2 > foldedMiddle && Math.abs(cx - foldedCx) <= CARD_W / 2 && sameGroup(notes[other]?.anchor);
+        return box.y + box.height / 2 > foldedMiddle && Math.abs(cx - foldedCx) <= CARD_W / 2 && sameGroup(notes[other]?.anchor) && !isAnchorFrozen(notes[other]?.anchor);
       })
       .sort((a, b) => a.box.y - b.box.y || a.other - b.other);
     if (!below.length) return false;
@@ -1455,7 +1557,7 @@ export function createWorldbuildPanel({ app, root }) {
       el('span', { class: 'wb-semantic-icon', text: icon || '•', 'aria-hidden': 'true' }),
       el('span', { class: 'wb-semantic-type-name', text: typeLabel || 'Note' }),
       ...flags.map((flag) => el('span', {
-        class: 'wb-semantic-flag',
+        class: `wb-semantic-flag${flag.className ? ` ${flag.className}` : ''}`,
         text: flag.glyph,
         title: flag.title,
         'aria-hidden': 'true',
@@ -2263,18 +2365,25 @@ export function createWorldbuildPanel({ app, root }) {
     const accent = app.colorFor('section', { path: currentPath, anchor: note.anchor });
     const type = nodeTypeOf(nodeTypes, note.anchor);
     const lockedGroup = lockedGroupOf(note.anchor);
+    const frozenGroup = frozenGroupOf(note.anchor);
+    const nodeFrozen = isNodeFrozen(note.anchor);
+    const frozen = nodeFrozen || Boolean(frozenGroup);
     const locked = Boolean(lockedGroup);
     const noteLocked = isNodeLocked(note.anchor);
     const contentLocked = locked || noteLocked;
     const notePinned = isAnchorPinned(note.anchor);
-    const lockTitle = locked
-      ? `“${note.title || 'This note'}” is in locked group “${lockedGroup.name || 'Group'}” — links can still be added`
-      : noteLocked
-        ? `“${note.title || 'This note'}” is locked read-only — unlock it to change its content`
-        : undefined;
+    const lockTitle = nodeFrozen
+      ? `“${note.title || 'This note'}” is frozen (Static) — right-click it and choose Unfreeze to edit it`
+      : frozenGroup
+        ? `“${note.title || 'This note'}” is inside frozen group “${frozenGroup.name || 'Group'}” — right-click that group and choose Unfreeze`
+        : locked
+          ? `“${note.title || 'This note'}” is in locked group “${lockedGroup.name || 'Group'}” — click its padlock to unlock it`
+          : noteLocked
+            ? `“${note.title || 'This note'}” is locked read-only — click its padlock to unlock it`
+            : undefined;
     const mode = cardModeOf(note.anchor);
     const card = el('article', {
-      class: `wb-card wb-level-${note.level}${mode === 'compact' ? ' is-mode-compact' : ''}${mode === 'thumbnail' ? ' is-mode-thumbnail' : ''}${isContentSized(note.anchor) ? ' is-content-sized' : ''}${isGroupHidden(note.anchor) ? ' is-group-hidden' : ''}${selected.has(note.anchor) ? ' is-selected' : ''}${locked ? ' is-locked' : ''}${notePinned ? ' is-pinned' : ''}${isFolded(note.anchor) ? ' is-folded' : ''}${searchMatches.some((m) => m.anchor === note.anchor) ? ' is-search-hit' : ''}${searchMatches[searchCurrent]?.anchor === note.anchor ? ' is-search-current' : ''}${isolatedAnchors && !isolatedAnchors.has(note.anchor) ? ' is-dimmed' : ''}`,
+      class: `wb-card wb-level-${note.level}${mode === 'compact' ? ' is-mode-compact' : ''}${mode === 'thumbnail' ? ' is-mode-thumbnail' : ''}${isContentSized(note.anchor) ? ' is-content-sized' : ''}${isGroupHidden(note.anchor) ? ' is-group-hidden' : ''}${selected.has(note.anchor) ? ' is-selected' : ''}${locked ? ' is-locked' : ''}${frozen ? ' is-frozen' : ''}${notePinned ? ' is-pinned' : ''}${isFolded(note.anchor) ? ' is-folded' : ''}${searchMatches.some((m) => m.anchor === note.anchor) ? ' is-search-hit' : ''}${searchMatches[searchCurrent]?.anchor === note.anchor ? ' is-search-current' : ''}${isolatedAnchors && !isolatedAnchors.has(note.anchor) ? ' is-dimmed' : ''}`,
       style: `left:${pos.x}px; top:${pos.y}px; border-left-color:${accent};${sizeStyleOf(note.anchor)}`,
       'data-note': String(index),
       'data-anchor': note.anchor,
@@ -2362,14 +2471,24 @@ export function createWorldbuildPanel({ app, root }) {
     const fold = foldToggle(note.anchor);
     const linkFrom = linkHandle(note.anchor, `“${note.title || 'this card'}”`);
     const remove = el('button', {
-      class: 'wb-card-del', type: 'button', title: locked ? lockTitle : 'Delete this note', text: '✕',
-      disabled: locked ? true : undefined,
+      class: 'wb-card-del', type: 'button', title: contentLocked ? lockTitle : 'Delete this note', text: '✕',
+      disabled: contentLocked ? true : undefined,
     });
     const head = el('div', { class: 'wb-card-head' }, [
       fold,
-      el('span', { class: 'wb-grip', text: '⠿', title: locked ? lockTitle : 'Drag to move this note' }),
+      el('span', { class: 'wb-grip', text: '⠿', title: frozen || locked ? lockTitle : 'Drag to move this note' }),
       notePinned ? el('span', { class: 'wb-pin', text: '📌', title: 'Pinned — Arrange works around this card' }) : null,
-      noteLocked ? el('span', { class: 'wb-pin', text: '🔒', title: lockTitle ?? 'Content locked read-only — unlock from the right-click menu' }) : null,
+      contentLocked ? el('button', {
+        class: `wb-pin wb-node-lock${frozen ? ' is-frozen' : ''}`,
+        type: 'button',
+        text: frozen ? '❄' : '🔒',
+        title: lockTitle ?? 'Content locked read-only — click to unlock',
+        'aria-label': lockTitle ?? 'Unlock content',
+        onclick: (event) => {
+          event.stopPropagation();
+          unlockCardFromIcon(note.anchor);
+        },
+      }) : null,
       nodeImage,
       typeChip,
       typeSelect,
@@ -2546,9 +2665,11 @@ export function createWorldbuildPanel({ app, root }) {
       typeColor: nodeColors[note.anchor] ?? type.color,
       className: 'wb-card-semantic',
       flags: [
-        noteLocked || locked
-          ? { glyph: '🔒', title: lockTitle ?? 'Locked' }
-          : notePinned ? { glyph: '📌', title: 'Pinned' } : null,
+        frozen
+          ? { glyph: '❄', title: lockTitle ?? 'Frozen (Static)', className: 'is-frozen' }
+          : noteLocked || locked
+            ? { glyph: '🔒', title: lockTitle ?? 'Locked' }
+            : notePinned ? { glyph: '📌', title: 'Pinned' } : null,
       ].filter(Boolean),
     });
     const semanticLinks = el('span', { class: 'wb-semantic-count' });
@@ -2662,8 +2783,8 @@ export function createWorldbuildPanel({ app, root }) {
         event.preventDefault();
         event.stopPropagation();
         const anchor = model.notes[index]?.anchor ?? note.anchor;
-        if (isAnchorLocked(anchor)) {
-          lockedToast(anchor);
+        if (isAnchorLocked(anchor) || isAnchorFrozen(anchor)) {
+          contentLockedToast(anchor);
           return;
         }
         // One drag is one undo step, and the snapshot is taken before the
@@ -2824,9 +2945,9 @@ export function createWorldbuildPanel({ app, root }) {
       // cards, and dragging a locked card itself is refused.
       const pickingSelection = selected.has(note.anchor) && selected.size > 1;
       const anchors = (pickingSelection ? [...selected] : [note.anchor])
-        .filter((anchor) => !isAnchorLocked(anchor));
+        .filter((anchor) => !isAnchorLocked(anchor) && !isAnchorFrozen(anchor));
       if (!anchors.length) {
-        lockedToast(note.anchor);
+        contentLockedToast(note.anchor);
         event.preventDefault();
         return;
       }
@@ -3090,37 +3211,66 @@ export function createWorldbuildPanel({ app, root }) {
    * slight overpan past the canvas edges so wires there stay reachable. */
   function applyView() {
     view = clampView(view, canvas.clientWidth, canvas.clientHeight, stage.clientWidth, stage.clientHeight);
-    if (isOverviewZoom() !== stage.classList.contains('is-zoomed-out')) syncOverviewInteraction();
-    stage.classList.toggle('is-semantic-zoom', isSemanticZoom());
+    const overview = isOverviewZoom();
+    const annotationDrag = isAnnotationDragZoom();
+    if (
+      overview !== stage.classList.contains('is-zoomed-out')
+      || annotationDrag !== stage.classList.contains('is-annotation-drag')
+    ) syncZoomInteraction();
+    const semantic = isSemanticZoom();
+    const icon = isIconZoom();
+    stage.classList.toggle('is-semantic-zoom', semantic);
+    stage.classList.toggle('is-icon-zoom', icon);
     // The semantic face is laid out in screen pixels: the canvas scale shrinks
     // its box, while its own inverse scale keeps its type and counts legible.
+    // Below 25% that fixed size is too large to see a whole graph, so both the
+    // face and its type shrink together until the icon handoff at 12.5%.
+    const compact = view.s >= COMPACT_ZOOM
+      ? 1
+      : Math.max(0.5, view.s / COMPACT_ZOOM);
+    const iconSize = 18 * Math.max(0.22, Math.min(1, view.s / ICON_ZOOM));
     canvas.style.setProperty('--wb-zoom', String(view.s));
     canvas.style.setProperty('--wb-inv-zoom', String(1 / view.s));
+    canvas.style.setProperty('--wb-semantic-shrink', String(compact));
+    canvas.style.setProperty('--wb-icon-font', `${iconSize}px`);
     canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.s})`;
   }
 
   /** Show the current scale for a moment; a continuous wheel keeps it up. */
   function showZoomHud() {
     if (!Number.isFinite(view.s) || view.s <= 0) return;
-    zoomHudValue.textContent = `${Math.round(view.s * 100)}%`;
+    const percent = view.s * 100;
+    const digits = percent >= 10 ? 1 : percent >= 1 ? 2 : 4;
+    zoomHudValue.textContent = `${Number(percent.toFixed(digits))}%`;
     zoomHud.classList.add('is-visible');
     clearTimeout(zoomHudTimer);
     zoomHudTimer = setTimeout(() => zoomHud.classList.remove('is-visible'), 1100);
   }
 
   /**
-   * Below 1:1 card prose and controls are too small to read or aim at. The
-   * CSS makes their contents transparent to the pointer; this also takes the
-   * controls out of the Tab order. Dragging, resizing, folding and the card's
-   * right-click menu stay available.
+   * Keep card and annotation interaction in step with the camera. Cards give
+   * up their detail controls below 1:1. Annotations keep their text editable
+   * down to 62%, then become one drag surface with every inner control out of
+   * reach. The CSS handles pointer shielding; this also keeps disabled
+   * controls out of the Tab order.
    */
-  function syncOverviewInteraction() {
+  function syncZoomInteraction() {
     const wasOverview = stage.classList.contains('is-zoomed-out');
+    const wasAnnotationDrag = stage.classList.contains('is-annotation-drag');
     const overview = isOverviewZoom();
+    const annotationDrag = isAnnotationDragZoom();
     stage.classList.toggle('is-zoomed-out', overview);
+    stage.classList.toggle('is-annotation-drag', annotationDrag);
     if (overview && !wasOverview) {
       const active = document.activeElement;
-      if (active && active !== document.body && stage.contains(active)) active.blur();
+      if (
+        active && active !== document.body && stage.contains(active)
+        && !active.closest?.('.wb-annotation')
+      ) active.blur();
+    }
+    if (annotationDrag && !wasAnnotationDrag) {
+      const active = document.activeElement;
+      if (active && stage.contains(active) && active.closest?.('.wb-annotation')) active.blur();
     }
     const controls = stage.querySelectorAll(
       '.wb-card input, .wb-card select, .wb-card textarea, .wb-card button, .wb-card a[href], .wb-card [contenteditable="true"], .wb-card [tabindex]',
@@ -3135,6 +3285,22 @@ export function createWorldbuildPanel({ app, root }) {
       } else if (control.hasAttribute('data-detail-tabindex')) {
         const previous = control.dataset.detailTabindex;
         delete control.dataset.detailTabindex;
+        if (previous) control.setAttribute('tabindex', previous);
+        else control.removeAttribute('tabindex');
+      }
+    }
+    const annotationControls = stage.querySelectorAll(
+      '.wb-annotation textarea, .wb-annotation button, .wb-annotation [tabindex]',
+    );
+    for (const control of annotationControls) {
+      if (annotationDrag) {
+        if (!control.hasAttribute('data-annotation-tabindex')) {
+          control.dataset.annotationTabindex = control.getAttribute('tabindex') ?? '';
+        }
+        control.setAttribute('tabindex', '-1');
+      } else if (control.hasAttribute('data-annotation-tabindex')) {
+        const previous = control.dataset.annotationTabindex;
+        delete control.dataset.annotationTabindex;
         if (previous) control.setAttribute('tabindex', previous);
         else control.removeAttribute('tabindex');
       }
@@ -3686,7 +3852,172 @@ export function createWorldbuildPanel({ app, root }) {
     }
     el?.classList.add('is-dragging');
     dragging.members.forEach((member) => member.el.classList.add('is-dragging'));
+    paintDragOverlapUi(anchors);
     event.preventDefault();
+  }
+
+  /* ------------------------------------------------------- overlap safety -- */
+
+  /** Every visible card's current canvas box, with its anchor and index. */
+  function visibleCardRects() {
+    return (model?.notes ?? []).map((note, index) => {
+      if (isGroupHidden(note.anchor)) return null;
+      return { anchor: note.anchor, index, ...rectOf(index) };
+    }).filter(Boolean);
+  }
+
+  /** Pairs of visible cards that overlap where at least one is in `anchors`. */
+  function overlapPairsForAnchors(anchors) {
+    const wanted = new Set(anchors ?? []);
+    if (!wanted.size) return [];
+    const rects = visibleCardRects();
+    const picked = rects.filter((rect) => wanted.has(rect.anchor));
+    const others = rects.filter((rect) => !wanted.has(rect.anchor));
+    const pairs = [];
+    // Compare the picked set against the rest once, then against itself. A
+    // whole-canvas pair sweep would be quadratic on every drag frame.
+    for (const rect of picked) {
+      for (const other of others) {
+        if (rectsOverlap(rect, other)) pairs.push([rect, other]);
+      }
+    }
+    for (let i = 0; i < picked.length; i += 1) {
+      for (let j = i + 1; j < picked.length; j += 1) {
+        if (rectsOverlap(picked[i], picked[j])) pairs.push([picked[i], picked[j]]);
+      }
+    }
+    return pairs;
+  }
+
+  /** Hide the overlap badge and the dashed edges on cards. */
+  function clearOverlapUi() {
+    overlapHud.classList.add('hidden');
+    overlapHud.textContent = '';
+    for (const card of cardEls) card?.classList.remove('is-overlapping', 'is-overlap-under');
+  }
+
+  /** Mark the dragged cards and the cards they cover while a grab is live. */
+  function paintDragOverlapUi(anchors) {
+    clearOverlapUi();
+    const dragged = new Set(anchors ?? []);
+    const pairs = overlapPairsForAnchors(dragged);
+    if (!pairs.length) return;
+    const fixed = new Set();
+    for (const [a, b] of pairs) {
+      for (const rect of [a, b]) {
+        const card = cardEls[rect.index];
+        if (dragged.has(rect.anchor)) {
+          card?.classList.add('is-overlapping');
+        } else {
+          card?.classList.add('is-overlap-under');
+          if (isAnchorPinned(rect.anchor) || isContentLocked(rect.anchor)) fixed.add(rect.anchor);
+        }
+      }
+    }
+    const count = pairs.length;
+    overlapHud.textContent = `${count} overlap${count === 1 ? '' : 's'}${fixed.size ? ` · ${fixed.size} pinned/locked` : ''}`;
+    overlapHud.classList.remove('hidden');
+  }
+
+  /**
+   * Live push-aside: move free cards that the drag currently covers just far
+   * enough to clear every visible card. Pinned and locked cards are obstacles,
+   * never entrants, so the warning stays visible when one is in the way.
+   */
+  function pushAsideDragOverlaps(anchors) {
+    if (!pushAside || !dragging || !model) return 0;
+    const dragged = new Set(anchors ?? []);
+    const rects = visibleCardRects();
+    const draggedRects = rects.filter((rect) => dragged.has(rect.anchor));
+    if (!draggedRects.length) return 0;
+    const entries = rects
+      .filter((rect) => !dragged.has(rect.anchor)
+        && !isAnchorPinned(rect.anchor)
+        && !isContentLocked(rect.anchor)
+        && draggedRects.some((dragRect) => rectsOverlap(rect, dragRect)))
+      .map(({ anchor, x, y, width, height }) => ({ key: anchor, x, y, width, height }));
+    if (!entries.length) return 0;
+    const blockers = rects.map(({ anchor, x, y, width, height }) => ({ key: anchor, x, y, width, height }));
+    const result = resolveOverlaps(entries, blockers, { gap: 12, minX: 4, minY: 4 });
+    for (const [anchor, at] of result.positions) {
+      if (!result.moved.has(anchor)) continue;
+      positions.set(anchor, at);
+      const index = model.notes.findIndex((note) => note.anchor === anchor);
+      if (index < 0) continue;
+      const card = cardEls[index];
+      if (card) {
+        card.style.left = `${at.x}px`;
+        card.style.top = `${at.y}px`;
+      }
+    }
+    return result.moved.size;
+  }
+
+  /**
+   * The one-click cleanup from the inspector: move selected free cards to
+   * clear every overlap. Selected pinned/locked cards stay where they are and
+   * act as obstacles for the cards that can move.
+   */
+  function resolveSelectionOverlaps() {
+    if (!model || !selected.size) return;
+    const notes = model.notes ?? [];
+    const pairs = overlapPairsForAnchors(selected);
+    if (!pairs.length) {
+      app.toast('No overlaps in the selection', 'info', 1800);
+      return;
+    }
+    const blockers = visibleCardRects().map(({ anchor, x, y, width, height }) => ({ key: anchor, x, y, width, height }));
+    const entries = [];
+    let fixed = 0;
+    for (const [index, note] of notes.entries()) {
+      if (!selected.has(note.anchor) || isGroupHidden(note.anchor)) continue;
+      if (isAnchorPinned(note.anchor) || isContentLocked(note.anchor)) {
+        fixed += 1;
+        continue;
+      }
+      const rect = rectOf(index);
+      entries.push({ key: note.anchor, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+    }
+    const result = resolveOverlaps(entries, blockers, { gap: 12, minX: 4, minY: 4 });
+    if (!result.moved.size) {
+      app.toast(
+        fixed
+          ? 'Pinned and locked cards cannot move — select the cards covering them'
+          : 'No free space to resolve these overlaps',
+        'warn',
+        2400,
+      );
+      return;
+    }
+    step(() => {
+      for (const [anchor, at] of result.positions) {
+        if (result.moved.has(anchor)) positions.set(anchor, at);
+      }
+      savePositions();
+      build();
+    }, 'Resolve overlaps in selection');
+    const remaining = overlapPairsForAnchors(selected).length;
+    const moved = result.moved.size;
+    if (remaining) {
+      app.toast(`Moved ${moved} card${moved === 1 ? '' : 's'}; ${remaining} overlap${remaining === 1 ? '' : 's'} still involve pinned or locked cards`, 'warn', 2800);
+    } else {
+      app.toast(`Resolved ${pairs.length} overlap${pairs.length === 1 ? '' : 's'} by moving ${moved} card${moved === 1 ? '' : 's'}`, 'ok', 2200);
+    }
+  }
+
+  /** The inspector's one-click cleanup, disabled when the selection is clear. */
+  function resolveOverlapsButton() {
+    const count = overlapPairsForAnchors(selected).length;
+    return el('button', {
+      class: 'btn btn-ghost btn-mini',
+      type: 'button',
+      text: count ? `Resolve overlaps (${count})` : 'Resolve overlaps',
+      title: count
+        ? 'Move selected free cards out of overlapping positions; pinned and locked cards stay put'
+        : 'No overlaps in the selection',
+      disabled: count ? undefined : true,
+      onclick: resolveSelectionOverlaps,
+    });
   }
 
   const GROUP_COLORS = ['#58a6ff', '#57d364', '#da70d6', '#d29922', '#f97066', '#45c4b0', '#f778ba', '#8b949e'];
@@ -3724,22 +4055,42 @@ export function createWorldbuildPanel({ app, root }) {
     return null;
   }
 
-  /**
-   * A group is locked when it — or any group it is nested inside — carries
-   * the lock. Locking guards the group's contents, not its relationships,
-   * so a locked group can still receive or send links.
-   */
-  function isGroupLocked(group) {
+  /** Walk a group and its ancestors, returning the first one matching. */
+  function matchingGroupAncestor(group, predicate) {
     let current = typeof group === 'string' ? groups[group] : group;
     const parents = parentOf();
     const seen = new Set();
     while (current && !seen.has(current.id)) {
-      if (current.locked) return true;
+      if (predicate(current)) return current;
       seen.add(current.id);
       const parentId = parents.get(current.id);
       current = parentId ? groups[parentId] : null;
     }
-    return false;
+    return null;
+  }
+
+  /** The group or ancestor whose lock is holding this group. */
+  function lockedGroupAncestor(group) {
+    return matchingGroupAncestor(group, (candidate) => Boolean(candidate.locked));
+  }
+
+  /** The group or ancestor whose Static/frozen mode is holding this group. */
+  function frozenGroupAncestor(group) {
+    return matchingGroupAncestor(group, (candidate) => candidate.locked === 'frozen');
+  }
+
+  /**
+   * A group is locked when it — or any group it is nested inside — carries
+   * the lock. Locking guards the group's contents, not its relationships,
+   * so a locked group can still receive or send links. A frozen group is
+   * the same lock with a snowflake instead of the padlock.
+   */
+  function isGroupLocked(group) {
+    return Boolean(lockedGroupAncestor(group));
+  }
+
+  function isGroupFrozen(group) {
+    return Boolean(frozenGroupAncestor(group));
   }
 
   /** The innermost locked group containing a note, through nesting, if any. */
@@ -3752,8 +4103,27 @@ export function createWorldbuildPanel({ app, root }) {
     return locked.sort((a, b) => (depths.get(b.id) ?? 0) - (depths.get(a.id) ?? 0))[0];
   }
 
+  /** The innermost frozen group containing a note, if any. */
+  function frozenGroupOf(anchor) {
+    const frozen = Object.values(groups ?? {}).filter(
+      (group) => group.locked === 'frozen' && effectiveMembers(group).has(anchor),
+    );
+    if (!frozen.length) return null;
+    const depths = groupDepths();
+    return frozen.sort((a, b) => (depths.get(b.id) ?? 0) - (depths.get(a.id) ?? 0))[0];
+  }
+
   function isAnchorLocked(anchor) {
     return Boolean(lockedGroupOf(anchor));
+  }
+
+  function isNodeFrozen(anchor) {
+    return nodeLocked[anchor] === 'frozen';
+  }
+
+  /** This note is held static by its own snowflake or a frozen group. */
+  function isAnchorFrozen(anchor) {
+    return isNodeFrozen(anchor) || Boolean(frozenGroupOf(anchor));
   }
 
   /** This note's content is individually locked read-only. */
@@ -3771,12 +4141,29 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   function contentLockedToast(anchor) {
+    const frozenGroup = frozenGroupOf(anchor);
+    if (isNodeFrozen(anchor)) {
+      app.toast(
+        `“${noteTitle(anchor)}” is frozen (Static) — right-click it and choose Unfreeze to edit it`,
+        'warn',
+        2600,
+      );
+      return;
+    }
+    if (frozenGroup) {
+      app.toast(
+        `“${noteTitle(anchor)}” is inside frozen group “${frozenGroup.name || 'Group'}” — right-click that group and choose Unfreeze`,
+        'warn',
+        2800,
+      );
+      return;
+    }
     if (isAnchorLocked(anchor)) {
       lockedToast(anchor);
       return;
     }
     app.toast(
-      `“${noteTitle(anchor)}” is locked — unlock it to change its content (it can still be moved and linked)`,
+      `“${noteTitle(anchor)}” is locked — click its padlock to unlock it (it can still be moved and linked)`,
       'warn',
       2200,
     );
@@ -3784,10 +4171,13 @@ export function createWorldbuildPanel({ app, root }) {
 
   function lockedToast(anchor) {
     const group = lockedGroupOf(anchor);
+    const frozen = group?.locked === 'frozen';
     app.toast(
-      `“${noteTitle(anchor)}” is in locked group “${group?.name || 'Group'}” — links can still be added`,
+      frozen
+        ? `“${noteTitle(anchor)}” is in frozen group “${group?.name || 'Group'}” — right-click that group and choose Unfreeze`
+        : `“${noteTitle(anchor)}” is in locked group “${group?.name || 'Group'}” — click its padlock to unlock it`,
       'warn',
-      2200,
+      frozen ? 2800 : 2200,
     );
   }
 
@@ -3989,6 +4379,7 @@ export function createWorldbuildPanel({ app, root }) {
         ]));
       }
       const actions = el('div', { class: 'wb-inspector-actions' }, [
+        resolveOverlapsButton(),
         el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Fit selection', title: 'Zoom to fit every selected card', onclick: zoomToFitSelection }),
         el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear selection', title: 'Clear the selection and close the inspector', onclick: closeInspector }),
       ]);
@@ -4017,8 +4408,12 @@ export function createWorldbuildPanel({ app, root }) {
       modeLabel ? el('span', { class: 'wb-inspector-badge', text: modeLabel }) : null,
       isFolded(note.anchor) ? el('span', { class: 'wb-inspector-badge', text: 'Folded' }) : null,
       isAnchorPinned(note.anchor) ? el('span', { class: 'wb-inspector-badge', text: 'Pinned' }) : null,
-      isNodeLocked(note.anchor) ? el('span', { class: 'wb-inspector-badge', text: 'Locked' }) : null,
-      lockedGroupOf(note.anchor) ? el('span', { class: 'wb-inspector-badge', text: 'Group locked' }) : null,
+      isNodeFrozen(note.anchor)
+        ? el('span', { class: 'wb-inspector-badge is-frozen', text: 'Frozen' })
+        : isNodeLocked(note.anchor) ? el('span', { class: 'wb-inspector-badge', text: 'Locked' }) : null,
+      frozenGroupOf(note.anchor)
+        ? el('span', { class: 'wb-inspector-badge is-frozen', text: 'Group frozen' })
+        : lockedGroupOf(note.anchor) ? el('span', { class: 'wb-inspector-badge', text: 'Group locked' }) : null,
     ]);
     const words = countWords(note.title) + countWords(note.body);
     const meta = el('div', { class: 'wb-inspector-meta' }, [
@@ -4026,6 +4421,7 @@ export function createWorldbuildPanel({ app, root }) {
       el('span', { text: `${links.outgoing.length} out · ${links.incoming.length} in` }),
     ]);
     const actions = el('div', { class: 'wb-inspector-actions' }, [
+      resolveOverlapsButton(),
       el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Focus', title: 'Centre this card in the canvas', onclick: () => centreOn(index) }),
       el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear', title: 'Clear the selection and close the inspector', onclick: closeInspector }),
     ]);
@@ -5146,6 +5542,22 @@ export function createWorldbuildPanel({ app, root }) {
     return button;
   }
 
+  /** The Freeze/Unfreeze row, led by a blue snowflake. */
+  function freezeMenuItem(frozen, onToggle) {
+    return el('button', {
+      class: 'wb-menu-item wb-freeze-menu-item',
+      type: 'button',
+      title: frozen
+        ? 'Unfreeze this item — return it to normal editing'
+        : 'Freeze this item — lock it into Static mode and show a blue snowflake',
+      'aria-label': frozen ? 'Unfreeze' : 'Freeze',
+      onclick: onToggle,
+    }, [
+      el('span', { class: 'wb-menu-freeze-icon', text: '❄', 'aria-hidden': 'true' }),
+      el('span', { text: frozen ? 'Unfreeze' : 'Freeze' }),
+    ]);
+  }
+
   /** A submenu whose every control is unavailable: disable its parent row. */
   function disableSubmenu(trigger, reason) {
     trigger.disabled = true;
@@ -6145,6 +6557,10 @@ export function createWorldbuildPanel({ app, root }) {
   function toggleGroupLock(id) {
     const group = groups[id];
     if (!group) return;
+    if (group.locked === 'frozen') {
+      app.toast(`“${group.name || 'Group'}” is frozen (Static) — right-click it and choose Unfreeze`, 'info', 2600);
+      return;
+    }
     const nextLocked = !group.locked;
     const parent = restrictingParentGroup(id, 'locked');
     step(() => {
@@ -6164,12 +6580,56 @@ export function createWorldbuildPanel({ app, root }) {
     }
   }
 
+  /** Freeze a group into Static, or unfreeze it from the Group menu. */
+  function toggleGroupFreeze(id) {
+    const group = groups[id];
+    if (!group) return;
+    const nextFrozen = group.locked !== 'frozen';
+    step(() => {
+      const nextGroup = { ...group };
+      if (nextFrozen) nextGroup.locked = 'frozen';
+      else delete nextGroup.locked;
+      const next = { ...groups, [id]: nextGroup };
+      groups = app.saveWorldGroups(currentPath, next) ?? next;
+      build();
+    }, nextFrozen ? `Freeze “${group.name || 'group'}”` : `Unfreeze “${group.name || 'group'}”`);
+    closeMenu();
+  }
+
+  /** Unlock a group from its clickable padlock, or explain why it cannot. */
+  function unlockGroupFromIcon(id) {
+    const group = groups[id];
+    if (!group) return;
+    const frozen = frozenGroupAncestor(group);
+    if (frozen) {
+      const own = frozen.id === group.id;
+      app.toast(
+        own
+          ? `“${group.name || 'Group'}” is frozen (Static) — right-click it and choose Unfreeze`
+          : `“${group.name || 'Group'}” is inside frozen group “${frozen.name || 'Group'}” — right-click that group and choose Unfreeze`,
+        'info',
+        2800,
+      );
+      return;
+    }
+    if (group.locked === true) {
+      toggleGroupLock(id);
+      return;
+    }
+    const locked = lockedGroupAncestor(group);
+    if (locked) toggleGroupLock(locked.id);
+  }
+
   /**
    * Lock one note's content read-only, or unlock it again. The lock blocks
    * content changes only: the card can still be moved when not pinned, and
    * links in and out still work.
    */
   function toggleNodeLock(anchor) {
+    if (isNodeFrozen(anchor)) {
+      app.toast(`“${noteTitle(anchor)}” is frozen (Static) — right-click it and choose Unfreeze`, 'info', 2600);
+      return;
+    }
     const nextLocked = !nodeLocked[anchor];
     const group = lockedGroupOf(anchor);
     step(() => {
@@ -6188,6 +6648,39 @@ export function createWorldbuildPanel({ app, root }) {
         2600,
       );
     }
+  }
+
+  /** Freeze one note into Static, or unfreeze it from its menu. */
+  function toggleNodeFreeze(anchor) {
+    const nextFrozen = !isNodeFrozen(anchor);
+    step(() => {
+      nodeLocked = app.setWorldNodeLock(currentPath, anchor, nextFrozen ? 'frozen' : false) ?? nodeLocked;
+      build();
+    }, nextFrozen ? `Freeze “${noteTitle(anchor)}”` : `Unfreeze “${noteTitle(anchor)}”`);
+    closeMenu();
+  }
+
+  /** Unlock a card's content from its clickable padlock, or explain why not. */
+  function unlockCardFromIcon(anchor) {
+    const frozenGroup = frozenGroupOf(anchor);
+    if (isNodeFrozen(anchor)) {
+      app.toast(`“${noteTitle(anchor)}” is frozen (Static) — right-click it and choose Unfreeze`, 'info', 2600);
+      return;
+    }
+    if (frozenGroup) {
+      app.toast(
+        `“${noteTitle(anchor)}” is inside frozen group “${frozenGroup.name || 'Group'}” — right-click that group and choose Unfreeze`,
+        'info',
+        2800,
+      );
+      return;
+    }
+    if (isNodeLocked(anchor)) {
+      toggleNodeLock(anchor);
+      return;
+    }
+    const group = lockedGroupOf(anchor);
+    if (group) toggleGroupLock(group.id);
   }
 
   /** Pin one note where it stands, or unpin it again. */
@@ -7444,13 +7937,18 @@ export function createWorldbuildPanel({ app, root }) {
           : 'Pin this node where it stands — Arrange works around it',
         onclick: () => toggleNodePin(anchor),
       }));
-      items.push(el('button', {
-        class: 'wb-menu-item', type: 'button', text: nodeLocked[anchor] ? 'Unlock node content' : 'Lock node content',
-        title: nodeLocked[anchor]
-          ? 'Unlock this node’s content so it can be edited again'
-          : 'Lock this node’s content read-only — it can still be moved and linked',
-        onclick: () => toggleNodeLock(anchor),
-      }));
+      if (isNodeFrozen(anchor)) {
+        items.push(freezeMenuItem(true, () => toggleNodeFreeze(anchor)));
+      } else {
+        items.push(el('button', {
+          class: 'wb-menu-item', type: 'button', text: nodeLocked[anchor] ? 'Unlock node content' : 'Lock node content',
+          title: nodeLocked[anchor]
+            ? 'Unlock this node’s content so it can be edited again'
+            : 'Lock this node’s content read-only — it can still be moved and linked',
+          onclick: () => toggleNodeLock(anchor),
+        }));
+        items.push(freezeMenuItem(false, () => toggleNodeFreeze(anchor)));
+      }
     }
     if (group) {
       items.push(submenuItem('Group colour', [el('div', { class: 'wb-menu-swatches' }, GROUP_COLORS.map((color) => el('button', {
@@ -7468,6 +7966,9 @@ export function createWorldbuildPanel({ app, root }) {
         'aria-label': `Group icon ${icon}`,
         onclick: () => setGroupIcon(group.id, icon),
       })))], currentIcon));
+      // On a group's own menu, Freeze/Unfreeze is a top-level action; on a
+      // card's menu it belongs in the Group submenu with the other group state.
+      if (!anchor) items.push(freezeMenuItem(group.locked === 'frozen', () => toggleGroupFreeze(group.id)));
       const groupItems = [];
       groupItems.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Rename group',
@@ -7491,13 +7992,18 @@ export function createWorldbuildPanel({ app, root }) {
           : 'Hide the group’s cards behind one summary card — name, count, types, links',
         onclick: () => { setGroupCollapsed(group.id, !collapsedGroups[group.id]); closeMenu(); },
       }));
-      groupItems.push(el('button', {
-        class: 'wb-menu-item', type: 'button', text: group.locked ? 'Unlock group' : 'Lock group',
-        title: group.locked
-          ? 'Unlock this group’s contents — relationships to the group stay in place'
-          : 'Lock this group’s contents against moving, regrouping, and removal — relationships in and out still work',
-        onclick: () => toggleGroupLock(group.id),
-      }));
+      if (group.locked === 'frozen') {
+        if (anchor) groupItems.push(freezeMenuItem(true, () => toggleGroupFreeze(group.id)));
+      } else {
+        groupItems.push(el('button', {
+          class: 'wb-menu-item', type: 'button', text: group.locked ? 'Unlock group' : 'Lock group',
+          title: group.locked
+            ? 'Unlock this group’s contents — relationships to the group stay in place'
+            : 'Lock this group’s contents against moving, regrouping, and removal — relationships in and out still work',
+          onclick: () => toggleGroupLock(group.id),
+        }));
+        if (anchor) groupItems.push(freezeMenuItem(false, () => toggleGroupFreeze(group.id)));
+      }
       groupItems.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: group.pinned ? 'Unpin group' : 'Pin group',
         title: group.pinned
@@ -7802,9 +8308,11 @@ export function createWorldbuildPanel({ app, root }) {
       typeColor: color,
       className: 'wb-group-semantic',
       flags: [
-        isGroupLocked(group)
-          ? { glyph: '🔒', title: 'Locked' }
-          : group.pinned ? { glyph: '📌', title: 'Pinned' } : null,
+        isGroupFrozen(group)
+          ? { glyph: '❄', title: 'Frozen (Static) — right-click the group and choose Unfreeze', className: 'is-frozen' }
+          : isGroupLocked(group)
+            ? { glyph: '🔒', title: 'Locked' }
+            : group.pinned ? { glyph: '📌', title: 'Pinned' } : null,
       ].filter(Boolean),
     });
     const cardCount = `${members.length} card${members.length === 1 ? '' : 's'}`;
@@ -7815,15 +8323,51 @@ export function createWorldbuildPanel({ app, root }) {
       el('span', { class: 'wb-semantic-count', text: linkCount, title: linkCount }),
     );
     semantic.tile.title = `${group.name || 'Group'} — ${cardCount}${breakdown ? ` · ${breakdown}` : ''} · ${linkCount}`;
+    const summaryFrozen = frozenGroupAncestor(group);
+    const summaryLocked = lockedGroupAncestor(group);
+    const summaryFrozenTitle = summaryFrozen?.id === group.id
+      ? `“${group.name || 'Group'}” is frozen (Static) — right-click it and choose Unfreeze`
+      : `“${group.name || 'Group'}” is inside frozen group “${summaryFrozen?.name || 'Group'}” — right-click that group and choose Unfreeze`;
+    const summaryLockedTitle = group.locked === true
+      ? `“${group.name || 'Group'}” is locked — click the padlock to unlock it`
+      : `“${group.name || 'Group'}” is inside locked group “${summaryLocked?.name || 'Group'}” — click that group’s padlock to unlock it`;
+    const summaryLock = summaryFrozen
+      ? el('button', {
+          class: 'wb-group-lock wb-group-summary-lock is-frozen',
+          type: 'button',
+          text: '❄',
+          title: summaryFrozenTitle,
+          'aria-label': summaryFrozenTitle,
+          onclick: (event) => {
+            event.stopPropagation();
+            app.toast(summaryFrozenTitle, 'info', 2800);
+          },
+        })
+      : summaryLocked
+        ? el('button', {
+            class: 'wb-group-lock wb-group-summary-lock',
+            type: 'button',
+            text: '🔒',
+            title: summaryLockedTitle,
+            'aria-label': summaryLockedTitle,
+            onclick: (event) => {
+              event.stopPropagation();
+              unlockGroupFromIcon(group.id);
+            },
+          })
+        : null;
     const summary = el('div', {
-      class: `wb-group-summary${isGroupLocked(group) ? ' is-locked' : ''}${group.pinned ? ' is-pinned' : ''}`,
+      class: `wb-group-summary${summaryLocked ? ' is-locked' : ''}${summaryFrozen ? ' is-frozen' : ''}${group.pinned ? ' is-pinned' : ''}`,
       dataset: { groupId: group.id },
-      title: `${group.name || 'Group'} — ${members.length} cards · drag to move · double-click to expand`,
+      title: summaryFrozen
+        ? summaryFrozenTitle
+        : summaryLocked ? summaryLockedTitle : `${group.name || 'Group'} — ${members.length} cards · drag to move · double-click to expand`,
     }, [
       el('span', { class: 'wb-group-summary-icon', text: group.icon || GROUP_GENERIC_ICON, style: `color:${color}` }),
       el('span', { class: 'wb-group-summary-name', text: group.name || 'Group' }),
       el('span', { class: 'wb-group-summary-meta', text: `${members.length} card${members.length === 1 ? '' : 's'}${breakdown ? ` · ${breakdown}` : ''} · ${links} link${links === 1 ? '' : 's'}` }),
       el('span', { class: 'wb-group-summary-hint', text: 'Double-click to expand' }),
+      summaryLock,
       linkHandle(groupEndpoint(group.id), `“${group.name || 'Group'}”`, 'wb-group-link-handle'),
       semantic.tile,
     ]);
@@ -7831,18 +8375,30 @@ export function createWorldbuildPanel({ app, root }) {
     summary.style.top = `${rect.y}px`;
     summary.style.borderLeftColor = color;
     summary.addEventListener('pointerdown', (event) => {
+      if (event.target.closest?.('.wb-group-lock')) return;
       event.stopPropagation();
       if (event.button !== 0) return;
-      if (isGroupLocked(group)) {
-        app.toast(`“${group.name || 'Group'}” is locked — unlock it before moving its contents`, 'warn', 2200);
+      if (summaryFrozen) {
+        app.toast(`“${group.name || 'Group'}” is frozen (Static) — right-click it and choose Unfreeze`, 'warn', 2800);
         event.preventDefault();
         return;
       }
-      const indexes = members
+      if (isGroupLocked(group)) {
+        app.toast(`“${group.name || 'Group'}” is locked — click the padlock to unlock it before moving its contents`, 'warn', 2400);
+        event.preventDefault();
+        return;
+      }
+      const movable = members.filter((anchor) => !isAnchorLocked(anchor) && !isAnchorFrozen(anchor));
+      if (!movable.length) {
+        if (members[0]) contentLockedToast(members[0]);
+        event.preventDefault();
+        return;
+      }
+      const indexes = movable
         .map((anchor) => model.notes.findIndex((note) => note.anchor === anchor))
         .filter((index) => index >= 0);
       if (!indexes.length) return;
-      dragMembers(members, event, summary, { groupId: group.id });
+      dragMembers(movable, event, summary, { groupId: group.id });
     });
     summary.addEventListener('click', () => setSelection(new Set(members)));
     summary.addEventListener('dblclick', (event) => {
@@ -7932,20 +8488,52 @@ export function createWorldbuildPanel({ app, root }) {
       // The title: a mini node header straddling the box's top-left corner —
       // grip, accent edge, name — and it grabs the whole group to drag.
       const name = group.name || 'Group';
+      const frozenAncestor = frozenGroupAncestor(group);
+      const lockedAncestor = lockedGroupAncestor(group);
+      const groupFrozen = Boolean(frozenAncestor);
+      const groupLocked = Boolean(lockedAncestor);
+      const frozenTitle = frozenAncestor?.id === group.id
+        ? `“${name}” is frozen (Static) — right-click it and choose Unfreeze`
+        : `“${name}” is inside frozen group “${frozenAncestor?.name || 'Group'}” — right-click that group and choose Unfreeze`;
+      const groupLockTitle = group.locked === true
+        ? `“${name}” is locked — click the padlock to unlock it`
+        : `“${name}” is inside locked group “${lockedAncestor?.name || 'Group'}” — click that group’s padlock to unlock it`;
+      const lockControl = groupFrozen
+        ? el('button', {
+            class: 'wb-grip wb-group-lock is-frozen',
+            type: 'button',
+            text: '❄',
+            title: frozenTitle,
+            'aria-label': frozenTitle,
+            onclick: (event) => {
+              event.stopPropagation();
+              app.toast(frozenTitle, 'info', 2800);
+            },
+          })
+        : groupLocked
+          ? el('button', {
+              class: 'wb-grip wb-group-lock',
+              type: 'button',
+              text: '🔒',
+              title: groupLockTitle,
+              'aria-label': groupLockTitle,
+              onclick: (event) => {
+                event.stopPropagation();
+                unlockGroupFromIcon(group.id);
+              },
+            })
+          : el('span', { class: 'wb-grip', text: group.pinned ? '📌' : '⠿' });
       const tab = el('div', {
-        class: `wb-group-tab${isGroupLocked(group) ? ' is-locked' : ''}${group.pinned ? ' is-pinned' : ''}`,
+        class: `wb-group-tab${groupLocked ? ' is-locked' : ''}${groupFrozen ? ' is-frozen' : ''}${group.pinned ? ' is-pinned' : ''}`,
         dataset: { groupId: group.id },
         tabindex: '0',
         'aria-haspopup': 'menu',
         'aria-keyshortcuts': 'Shift+F10',
-        title: isGroupLocked(group)
-          ? `${name} — locked; unlock from its menu`
-          : group.pinned ? `${name} — pinned; Arrange works around it` : `${name} — drag to move the group`,
+        title: groupFrozen
+          ? frozenTitle
+          : groupLocked ? groupLockTitle : group.pinned ? `${name} — pinned; Arrange works around it` : `${name} — drag to move the group`,
       }, [
-        el('span', {
-          class: 'wb-grip',
-          text: isGroupLocked(group) ? '🔒' : group.pinned ? '📌' : '⠿',
-        }),
+        lockControl,
         el('span', {
           class: 'wb-group-icon',
           text: group.icon || GROUP_GENERIC_ICON,
@@ -7959,14 +8547,29 @@ export function createWorldbuildPanel({ app, root }) {
       tab.style.top = `${boxY - 12}px`;
       tab.style.borderLeft = `3px solid ${color}`;
       tab.addEventListener('pointerdown', (event) => {
+        if (event.target.closest?.('.wb-group-lock')) return;
         event.stopPropagation();
         if (event.button !== 0) return;
-        if (isGroupLocked(group)) {
-          app.toast(`“${name}” is locked — unlock it before moving its contents`, 'warn', 2200);
+        if (groupFrozen) {
+          app.toast(`“${name}” is frozen (Static) — right-click it and choose Unfreeze`, 'warn', 2800);
           event.preventDefault();
           return;
         }
-        dragMembers([...effectiveMembers(group)], event, cardEls[indexes[0]], { groupId: group.id });
+        if (groupLocked) {
+          app.toast(`“${name}” is locked — click the padlock to unlock it before moving its contents`, 'warn', 2400);
+          event.preventDefault();
+          return;
+        }
+        const movable = [...effectiveMembers(group)].filter(
+          (anchor) => !isAnchorLocked(anchor) && !isAnchorFrozen(anchor),
+        );
+        if (!movable.length) {
+          const [first] = effectiveMembers(group);
+          if (first) contentLockedToast(first);
+          event.preventDefault();
+          return;
+        }
+        dragMembers(movable, event, cardEls[indexes[0]], { groupId: group.id });
       });
       // Double-clicking the name edits it in place, like a card's title.
       const nameEl = tab.querySelector('.wb-card-title');
@@ -8285,7 +8888,7 @@ export function createWorldbuildPanel({ app, root }) {
     const rects = dragging.members.map((member) => ({
       x: member.start.x + dx,
       y: member.start.y + dy,
-      width: CARD_W,
+      width: member.el.offsetWidth || CARD_W,
       height: member.el.offsetHeight || CARD_H,
     }));
     const dragRect = {
@@ -8311,6 +8914,14 @@ export function createWorldbuildPanel({ app, root }) {
       member.el.style.left = `${x}px`;
       member.el.style.top = `${y}px`;
     }
+    // Push free cards clear when the reader asked for it, then paint whatever
+    // unavoidable overlaps remain (usually pinned or locked cards). A card
+    // pushed past the canvas edge must get room immediately, not only on drop.
+    if (pushAside) {
+      const pushed = pushAsideDragOverlaps(draggedAnchors);
+      if (pushed) sizeCanvas();
+    }
+    paintDragOverlapUi(draggedAnchors);
     // The box this card would join is drawn lit while it is over it.
     dropTargetId = joinTargetId();
     scheduleEdges();
@@ -8367,6 +8978,7 @@ export function createWorldbuildPanel({ app, root }) {
     dragging = null;
     dropTargetId = null;
     paintGuides([]);
+    clearOverlapUi();
     drop.el.classList.remove('is-dragging');
     drop.members.forEach((member) => member.el.classList.remove('is-dragging'));
     sizeCanvas();

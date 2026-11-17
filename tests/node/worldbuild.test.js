@@ -17,7 +17,7 @@ import {
   DEFAULT_STEP_NAME, normalizeHistoryEntry, cleanHistoryStack, historyJump, historyKey,
   cleanView, restoreSnapshot, canvasRecordPatch,
   pushHistoryStep, rewriteHistoryStack, renameHistoryAnchor, pruneHistoryStack, dropAnchorFromGroups, fitView,
-  centreView, snapDelta, canvasHealth, layoutSelection, normalizeRouting, elbowPoints,   connectorCurve, sampleConnectorCurve, spreadConnectorCurves, prepareConnectorGeometry, CONNECTOR_LANE_PITCH, CONNECTOR_SPREAD, CONNECTOR_CUT_SPAN, cleanAnnotations,
+  centreView, snapDelta, rectsOverlap, resolveOverlaps, canvasHealth, layoutSelection, normalizeRouting, elbowPoints,   connectorCurve, sampleConnectorCurve, spreadConnectorCurves, prepareConnectorGeometry, CONNECTOR_LANE_PITCH, CONNECTOR_SPREAD, CONNECTOR_CUT_SPAN, cleanAnnotations,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
   nodeImageMetaNames, nodeImageMetaNamesFromSnapshot, referencedNodeImageMetaNames, orphanedNodeImageMetaNames,
   NODE_IMAGE_MAX_SIDE, NODE_IMAGE_QUALITY, nodeImageSize,
@@ -638,6 +638,9 @@ test('a content-locked node\'s tags cannot change; linking is not a tag', () => 
   // both count as content-locked, exactly as for title/body/type/fields.
   assert.deepEqual([...lockedContentAnchors({ g: { members: ['sieve'], locked: true } }, { sieve: false })], ['sieve']);
   assert.deepEqual([...lockedContentAnchors({}, { sieve: true })], ['sieve']);
+  // Static/frozen is the same locked state with a distinct marker.
+  assert.deepEqual([...lockedContentAnchors({ g: { members: ['sieve'], locked: 'frozen' } }, { sieve: false })], ['sieve']);
+  assert.deepEqual([...lockedContentAnchors({}, { sieve: 'frozen' })], ['sieve']);
 });
 
 test('tagRecord counts every tag across the vault index, most-used first', () => {
@@ -1040,7 +1043,7 @@ test('zoomViewAt keeps the canvas point under the pointer fixed', () => {
   assert.equal(next.x + 2 * 300, 200);
   assert.equal(next.y + 2 * 200, 150);
   assert.equal(zoomViewAt(view, 200, 150, 100).s, ZOOM_MAX);
-  assert.equal(zoomViewAt(view, 200, 150, 0.001).s, ZOOM_MIN);
+  assert.equal(zoomViewAt(view, 200, 150, 0.0000001).s, ZOOM_MIN);
 });
 
 test('snapZoomView makes 100% a detent when a wheel step crosses it', () => {
@@ -1064,6 +1067,51 @@ test('snapZoomView leaves 100 and far crossings untouched', () => {
   assert.equal(snapZoomView({ x: 0, y: 0, s: 1.2 }, 0, 0, 0.5).s, 0.6);
   assert.equal(snapZoomView({ x: 0, y: 0, s: 0.25 }, 0, 0, Math.exp(2)).s, Math.exp(2) * 0.25);
 });
+
+test('rectsOverlap leaves touching edges clear', () => {
+  const card = { x: 10, y: 20, width: 100, height: 80 };
+  assert.equal(rectsOverlap(card, { x: 110, y: 20, width: 100, height: 80 }), false);
+  assert.equal(rectsOverlap(card, { x: 109, y: 20, width: 100, height: 80 }), true);
+  assert.equal(rectsOverlap(card, { x: 10, y: 100, width: 100, height: 80 }), false);
+});
+
+test('resolveOverlaps moves a covered card clear with breathing room', () => {
+  const fixed = { key: 'fixed', x: 100, y: 100, width: 300, height: 200 };
+  const moving = { key: 'moving', x: 120, y: 120, width: 300, height: 200 };
+  const result = resolveOverlaps([moving], [fixed, moving], { gap: 8, minX: 0, minY: 0 });
+  assert.ok(result.moved.has('moving'));
+  assert.equal(result.unresolved.size, 0);
+  const at = result.positions.get('moving');
+  const placed = { ...moving, ...at };
+  assert.equal(rectsOverlap(placed, fixed), false);
+  assert.ok(
+    placed.x + placed.width + 8 <= fixed.x
+      || fixed.x + fixed.width + 8 <= placed.x
+      || placed.y + placed.height + 8 <= fixed.y
+      || fixed.y + fixed.height + 8 <= placed.y,
+  );
+});
+
+test('resolveOverlaps clears a pile and leaves distant cards alone', () => {
+  const a = { key: 'a', x: 0, y: 0, width: 100, height: 100 };
+  const b = { key: 'b', x: 20, y: 20, width: 100, height: 100 };
+  const distant = { key: 'distant', x: 500, y: 0, width: 100, height: 100 };
+  const result = resolveOverlaps([a, b], [a, b, distant], { gap: 0, minX: 0, minY: 0 });
+  assert.ok(result.moved.size >= 1);
+  const placedA = { ...a, ...result.positions.get('a') };
+  const placedB = { ...b, ...result.positions.get('b') };
+  assert.equal(rectsOverlap(placedA, placedB), false);
+  assert.equal(result.moved.has('distant'), false);
+});
+
+test('resolveOverlaps does not move a card that is merely near another', () => {
+  const fixed = { key: 'fixed', x: 0, y: 0, width: 100, height: 100 };
+  const near = { key: 'near', x: 108, y: 0, width: 100, height: 100 };
+  const result = resolveOverlaps([near], [fixed], { gap: 20, minX: 0, minY: 0 });
+  assert.equal(result.moved.size, 0);
+  assert.deepEqual(result.positions.get('near'), { x: 108, y: 0 });
+});
+
 
 test('clampView keeps the canvas covering the viewport, with a slight overpan', () => {
   const canvas = { w: 800, h: 600 };
@@ -1176,7 +1224,7 @@ test('pruneSnapshotAnchors drops dead anchors, thin groups and their bonds', () 
     images: { gone: 'data:image/png;base64,XXX', a: 'data:image/png;base64,YYY' },
     pinned: { gone: true, a: true },
     locked: { gone: true, a: true },
-    annotations: { note: { x: 10, y: 20, text: 'check this later' }, bad: { x: 'no', y: 0, text: 'junk' } },
+    annotations: { note: { x: 10, y: 20, text: 'check this later', folded: true }, bad: { x: 'no', y: 0, text: 'junk' } },
   }));
   const pruned = pruneSnapshotAnchors(snap, new Set(['a', 'b']));
   assert.deepEqual(pruned.positions, { a: { x: 1, y: 2 }, b: { x: 5, y: 6 } });
@@ -1187,7 +1235,7 @@ test('pruneSnapshotAnchors drops dead anchors, thin groups and their bonds', () 
   assert.deepEqual(pruned.images, { a: 'data:image/png;base64,YYY' });
   assert.deepEqual(pruned.pinned, { a: true });
   assert.deepEqual(pruned.locked, { a: true });
-  assert.deepEqual(pruned.annotations, { note: { id: 'note', x: 10, y: 20, text: 'check this later' } });
+  assert.deepEqual(pruned.annotations, { note: { id: 'note', x: 10, y: 20, text: 'check this later', folded: true } });
   // A group left under two cards dissolves with its bonds; one that survives
   // sheds only the dead members.
   assert.deepEqual(Object.keys(pruned.groups), ['main']);
@@ -1332,8 +1380,9 @@ test('locked content anchors include nested group members and node locks', () =>
     outer: { id: 'outer', members: ['a'], children: ['inner'], locked: true },
     inner: { id: 'inner', members: ['b'], children: [] },
     free: { id: 'free', members: ['c'], children: [] },
+    icy: { id: 'icy', members: ['e'], children: [], locked: 'frozen' },
   }, { d: true, e: false });
-  assert.deepEqual([...anchors].sort(), ['a', 'b', 'd']);
+  assert.deepEqual([...anchors].sort(), ['a', 'b', 'd', 'e']);
 });
 
 test('source sections map headings to their prose ranges', () => {
@@ -1380,14 +1429,14 @@ test('enforcing locked source refuses structural escapes', () => {
 test('node content locks survive snapshot, restore and rename', () => {
   const snap = JSON.parse(canvasSnapshot({
     positions: { a: { x: 1, y: 2 } },
-    locked: { a: true },
+    locked: { a: true, frozen: 'frozen' },
   }));
-  const restored = restoreSnapshot(canvasSnapshot(JSON.parse(JSON.stringify(snap))), new Set(['a']), { locked: {} });
-  assert.deepEqual(restored.locked, { a: true });
+  const restored = restoreSnapshot(canvasSnapshot(JSON.parse(JSON.stringify(snap))), new Set(['a', 'frozen']), { locked: {} });
+  assert.deepEqual(restored.locked, { a: true, frozen: 'frozen' });
   const renamed = renameAnchorIn(snap, 'a', 'b');
-  assert.deepEqual(renamed.locked, { b: true });
-  const patch = canvasRecordPatch({ positions: {}, groups: {}, relations: {}, folded: {}, locked: { b: true } });
-  assert.deepEqual(patch.locked, { b: true });
+  assert.deepEqual(renamed.locked, { b: true, frozen: 'frozen' });
+  const patch = canvasRecordPatch({ positions: {}, groups: {}, relations: {}, folded: {}, locked: { b: true, frozen: 'frozen' } });
+  assert.deepEqual(patch.locked, { b: true, frozen: 'frozen' });
 });
 
 test('renameAnchorIn carries types and fields onto the new name', () => {
@@ -1506,7 +1555,8 @@ test('cleanView keeps the camera, clamped, or keeps the fallback', () => {
   assert.deepEqual(cleanView({ x: 10, y: -20, s: 1.5 }), { x: 10, y: -20, s: 1.5 });
   assert.deepEqual(cleanView({ x: 10, y: -20 }), { x: 10, y: -20, s: 1 });
   assert.equal(cleanView({ x: 0, y: 0, s: 99 }).s, ZOOM_MAX);
-  assert.equal(cleanView({ x: 0, y: 0, s: 0.01 }).s, ZOOM_MIN);
+  assert.equal(cleanView({ x: 0, y: 0, s: 0.01 }).s, 0.01);
+  assert.equal(cleanView({ x: 0, y: 0, s: 0.00000001 }).s, ZOOM_MIN);
   // An unusable stored view keeps whatever camera was there.
   const current = { x: 5, y: 6, s: 2 };
   assert.deepEqual(cleanView(null, current), current);
@@ -1588,12 +1638,12 @@ test('canvasRecordPatch writes a step whole, or not at all', () => {
   const patch = canvasRecordPatch({
     positions: { a: { x: 1, y: 2 } },
     groups: {}, relations: {}, folded: {},
-    types: { a: 'stat' }, fields: {},     colors: { a: '#ff0000' }, images: { a: 'data:image/png;base64,AAA' }, pinned: { a: true }, annotations: { note: { x: 1.4, y: 2.6, text: ' check later ' } },
+    types: { a: 'stat' }, fields: {},     colors: { a: '#ff0000' }, images: { a: 'data:image/png;base64,AAA' }, pinned: { a: true }, annotations: { note: { x: 1.4, y: 2.6, text: ' check later ', folded: true } },
     view: { x: 1, y: 2, s: 99 },
   });
   assert.deepEqual(patch, {
     positions: { a: { x: 1, y: 2 } }, groups: {}, relations: {}, folded: {},
-    types: { a: 'stat' }, fields: {}, colors: { a: '#ff0000' }, images: { a: 'data:image/png;base64,AAA' }, pinned: { a: true }, annotations: { note: { id: 'note', x: 1, y: 3, text: 'check later' } }, view: { x: 1, y: 2, s: ZOOM_MAX },
+    types: { a: 'stat' }, fields: {}, colors: { a: '#ff0000' }, images: { a: 'data:image/png;base64,AAA' }, pinned: { a: true }, annotations: { note: { id: 'note', x: 1, y: 3, text: 'check later', folded: true } }, view: { x: 1, y: 2, s: ZOOM_MAX },
   });
   // No types, fields, colours, images or view in the step: none are written.
   const bare = canvasRecordPatch({});
@@ -1900,15 +1950,23 @@ test('fitView centres content in the viewport with a margin', () => {
   assert.equal(offset.y + 50 * offset.s, 0);
 });
 
-test('fitView keeps its margin and clamps to the zoom limits', () => {
+test('fitView keeps its margin and fits huge canvases below 25%', () => {
   const content = { minX: 0, minY: 0, maxX: 1000, maxY: 1000 };
   // A 40px margin per side leaves 920 of 1000px at 1:1 in a 1000px viewport.
   const margined = fitView(content, 1000, 1000);
   assert.ok(Math.abs(margined.s - 0.92) < 1e-9);
   assert.ok(Math.abs(margined.x - 40) < 1e-9);
-  // Content far wider than any viewport bottoms out at minimum zoom.
+  // A graph far wider than the viewport no longer bottoms out at 25%: its
+  // whole width lands inside the viewport, with the standard margin.
   const huge = fitView({ minX: 0, minY: 0, maxX: 100000, maxY: 100 }, 800, 600);
-  assert.equal(huge.s, ZOOM_MIN);
+  assert.ok(Math.abs(huge.s - 0.0072) < 1e-12);
+  assert.ok(huge.s < 0.25);
+  assert.ok(Math.abs(huge.x - 40) < 1e-9);
+  // An extremely large canvas still gets a usable, non-zero scale.
+  const giant = fitView({ minX: 0, minY: 0, maxX: 10000000, maxY: 1000 }, 800, 600);
+  assert.ok(giant.s > 0);
+  assert.ok(giant.s < 0.001);
+  assert.ok(Number.isFinite(giant.x) && Number.isFinite(giant.y));
   // A single small card tops out at maximum zoom, centred.
   const small = fitView({ minX: 26, minY: 26, maxX: 326, maxY: 286 }, 1200, 800, 0);
   assert.equal(small.s, ZOOM_MAX);
@@ -1928,12 +1986,16 @@ test('cleanAnnotations keeps usable margin notes only', () => {
   assert.deepEqual(cleanAnnotations({
     memo: { x: 12.4, y: 30.6, text: '  check this later  ' },
     colored: { x: 20, y: 40, text: 'remember color', color: '#57D364' },
+    folded: { x: 40, y: 50, text: 'keep me folded', folded: true },
+    open: { x: 60, y: 70, text: 'stay open', folded: false },
     invalidColor: { x: 50, y: 60, text: 'ignore invalid color', color: 'red' },
     blank: { x: 0, y: 0, text: '   ' },
     broken: { x: 'east', y: 0, text: 'junk' },
   }), {
     memo: { id: 'memo', x: 12, y: 31, text: 'check this later' },
     colored: { id: 'colored', x: 20, y: 40, text: 'remember color', color: '#57d364' },
+    folded: { id: 'folded', x: 40, y: 50, text: 'keep me folded', folded: true },
+    open: { id: 'open', x: 60, y: 70, text: 'stay open' },
     invalidColor: { id: 'invalidColor', x: 50, y: 60, text: 'ignore invalid color' },
   });
 });

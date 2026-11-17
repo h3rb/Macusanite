@@ -5,9 +5,7 @@ tags: [guide, syntax, reference]
 ---
 # Macusanite Wiki syntax
 
-This file ships with the application (menu **☰ → Vault Wiki.md**) and is the
-reference for everything the viewer understands. It is ordinary markdown —
-reading it here is also a test that the renderer works.
+This file ships with the application, where it is available from **☰ → Vault Wiki.md**, and it is the reference for every markdown convention that the viewer understands. Because the file is ordinary markdown, reading it in the viewer also confirms that the renderer is working.
 
 ## 1. The shape of a vault
 
@@ -34,37 +32,17 @@ My Vault/
         └── Analytical Methods.md
 ```
 
-Folders whose name starts with `.` are never indexed, so `.macusanite` and
-`.git` stay out of the tree and the graph. Vein extensions are `.md`,
-`.markdown` and `.mdx`.
+Folders whose names begin with `.` are never indexed, which keeps `.macusanite` and `.git` out of the tree and the graph. A vein may use the `.md`, `.markdown` or `.mdx` extension.
 
-The viewer follows the folder while it is open: add, edit or delete a vein with
-any other program and the tree, the graph and the open page catch up on their
-own. Unsaved text in the editor is never overwritten: if the vein you are typing
-into is saved by another program, the warning offers a line-by-line merge of the
-two versions — the disk's lines, yours, and any real conflict marked in the
-editor to settle — and lets you take either version on its own instead.
+The viewer watches the folder while the vault is open, so a vein that another program creates, edits or deletes is reflected in the tree, the graph and the open page without a reload. The viewer never overwrites unsaved text in the editor. If another program saves the vein that is being edited, the warning offers a line-by-line merge of the two versions, showing the lines from disk, the lines from the draft and every real conflict for the reader to settle, and it also allows either version to be taken on its own.
 
-`settings.json` and `colors.json` are followed too, since they are the two files
-you are meant to edit by hand: write a theme, a font size, a panel width or a
-colour into either one and the open window takes it at once, without writing
-anything back. Everything else in the folder is the viewer's own bookkeeping and
-stays quiet.
+The viewer follows `settings.json` and `colors.json` as well, because these are the two metadata files that users are expected to edit by hand. When a theme, font size, panel width or colour is written into either file, the open window applies the change immediately without writing anything back. The remaining files in the folder are the viewer's own bookkeeping, and the viewer leaves them alone.
 
 ### Opening a vault
 
-Opening a vault walks the folder once, then reads `.macusanite/index.json`, which
-remembers what each vein contained the last time it was read — title, aliases,
-headings, links, tags, front-matter colours. A vein whose modification time and
-size still match is taken from the cache, so a vault you have not touched opens
-without reading a single file. Everything else is read afterwards, in the
-background, while the tree, the graph, wiki links and search are already usable;
-the sidebar footer shows the progress (`indexing 420/5001`) and then just how
-many veins are described.
+Opening a vault begins with a single walk of the folder and then reads `.macusanite/index.json`, which records what each vein contained the last time it was read: its title, aliases, headings, links, tags and front-matter colours. If a vein's modification time and size still match the cache entry, the viewer takes its metadata from the cache, so a vault that has not changed opens without reading any vein at all. The viewer reads everything else afterwards in the background while the tree, the graph, wiki links and search are already usable. The sidebar footer reports progress such as `indexing 420/5001`, and it later reports how many veins are described.
 
-Deleting `index.json` is safe: the next open reads the vault and writes it again.
-A vein you edit outside the viewer is re-read the moment the watcher notices, and
-one you save from the viewer refreshes its own entry straight away.
+Deleting `index.json` is safe, because the next open reads the vault and writes the file again. When a vein is edited outside the viewer, it is re-read as soon as the watcher notices the change, and when a vein is saved from the viewer, its own cache entry is refreshed immediately.
 
 ## 2. Wiki links
 
@@ -85,13 +63,11 @@ one you save from the viewer refreshes its own entry straight away.
 4. a front-matter `title:` or `aliases:` match
 5. a case-insensitive file-name match
 
-If nothing matches, the link renders as a **ghost**: dotted underline with a `＋`
-badge. Clicking it creates the vein at the suggested location inside the current
-chamber, then opens it.
+If no target matches, the link appears as a **ghost**, which is drawn with a dotted underline and a `＋` badge. Clicking a ghost creates the vein at the suggested location inside the current chamber and then opens it.
 
 ### Heading anchors
 
-Every ATX heading (`#`, `##`, …) gets a stable anchor id derived from its text:
+Every ATX heading (`#`, `##`, …) receives a stable anchor id derived from its text:
 
 | Heading | Anchor |
 | --- | --- |
@@ -99,15 +75,11 @@ Every ATX heading (`#`, `##`, …) gets a stable anchor id derived from its text
 | `### Th 780C — hot, dry!` | `th-780c-hot-dry` |
 | `## Undo/redo` | `undoredo` |
 
-The same rules run in Rust and JavaScript, so `[[Note#Th 780C — hot, dry!]]`
-resolves identically no matter which side computes it.
+The same rules run in Rust and JavaScript, so `[[Note#Th 780C — hot, dry!]]` resolves identically regardless of which side computes the anchor.
 
 ## 3. Colours
 
-Every **page**, every **link** and every **section** can carry a colour. Click
-the small swatch that sits beside a heading, beside a wiki link, or in the
-document header. Each starts at the vault default — **white** until you change
-it in **Settings → Default colours**.
+Every **page**, every **link** and every **section** can carry a colour. To assign one, click the small swatch beside a heading, beside a wiki link or in the document header. Each element begins at the vault default, which is **white** until it is changed in **Settings → Default colours**.
 
 ```text
 page  ●  the swatch in the title row
@@ -115,16 +87,12 @@ link  ●  the swatch immediately before a [[wiki link]]
 sect  ●  the swatch immediately before a heading
 ```
 
-Rules the viewer applies:
+The viewer applies the following rules:
 
-* a **section** with no colour of its own inherits its page colour;
-* a **link** with no colour of its own inherits the colour of the page it starts
-  from;
-* in the graph, an edge is drawn as a gradient: it leaves the **source** in the
-  link colour and arrives at the **target** in the target page's colour, fading
-  across the line;
-* front matter `color:` seeds a document's colour, and a colour you pick with the
-  swatch overrides it — picking always has a visible effect:
+* a **section** without a colour of its own inherits its page colour;
+* a **link** without a colour of its own inherits the colour of the page from which it starts;
+* in the graph, an edge is drawn as a gradient that leaves the **source** in the link colour and arrives at the **target** in the target page's colour, fading across the line;
+* front matter `color:` supplies a document's initial colour, and a colour chosen with the swatch overrides it, so a selection always has a visible effect:
 
 ```markdown
 ---
@@ -135,12 +103,11 @@ section-color: SlateBlue
 ---
 ```
 
-The picker offers a common palette, a searchable selection of X11 colours, a
-`#hex` field, and red/green/blue sliders that stay in sync with each other.
+The picker offers a common palette, a searchable selection of X11 colours, a `#hex` field and red, green and blue sliders that remain synchronized with one another.
 
 ## 4. Diagrams with mermaid
 
-Fence a block with `mermaid` and it renders in place:
+A block fenced with `mermaid` renders in place:
 
 ```mermaid
 flowchart LR
@@ -150,26 +117,22 @@ flowchart LR
   Link --> Graph[Concept graph]
 ```
 
-Flowcharts, sequence diagrams, class diagrams, state diagrams, pie, gantt and
-journey diagrams are all available — anything mermaid supports. A diagram that
-fails to parse shows its error and source inline instead of breaking the page.
+Flowcharts, sequence diagrams, class diagrams, state diagrams, pie charts, gantt charts and journey diagrams are all available, as is anything else that mermaid supports. If a diagram fails to parse, the page shows its error and source inline rather than failing.
 
 ## 5. Tags and concepts
 
-A `#tag` written in prose, or a `tags:` front-matter list, becomes a **concept
-node** in the graph:
+A `#tag` written in prose, or a `tags:` front-matter list, becomes a **concept node** in the graph:
 
 ```markdown
 tags: [petrology, geochemistry]
 ```
 
-Tags group pages that never link to each other directly, which is how a
-"vault-wide" view stays useful.
+Tags connect pages that never link to each other directly, which is what allows a vault-wide view to remain useful.
 
 ## 6. Other markdown you will use
 
 > [!TIP] Callouts
-> Blockquotes that open with `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`,
+> Blockquotes that begin with `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`,
 > `[!WARNING]` or `[!CAUTION]` are styled as callouts.
 
 | Feature | Syntax |
@@ -181,8 +144,7 @@ Tags group pages that never link to each other directly, which is how a
 
 ## 7. The concept graph
 
-The right-hand pane always answers two questions: *what is this note made of*
-and *where does it sit in the vault*.
+The right-hand pane answers two questions: what the current note contains and where that note sits within the vault.
 
 | Node | Meaning |
 | --- | --- |
@@ -192,19 +154,11 @@ and *where does it sit in the vault*.
 | Dashed circle | a **ghost** — a page that does not exist yet |
 | `#` circle | a tag |
 
-Edge kinds: solid = wiki link, dotted = *contains* (page → its sections),
-faint = tag. Depth, sections, tags, ghost pages and vault context are toggles at
-the bottom of the pane. Drag a node to rearrange, drag the background to pan,
-scroll to zoom, click a node to navigate.
+The graph draws solid edges for wiki links, dotted edges for containment from a page to its sections, and faint edges for tags. The toggles at the bottom of the pane control depth, sections, tags, ghost pages and vault context. A node can be dragged to rearrange the graph, the background can be dragged to pan, the wheel zooms, and clicking a node navigates to it.
 
 ## 8. Searching
 
-The sidebar has two tabs: **Chambers** (the vault tree) and **Search**. `Ctrl+F`
-opens Search with the box ready; typing searches every vein in the vault as you
-go — titles, section headings, tags and body text, with results ranked in that
-order. A vein whose title is what you typed comes first; then veins that have it
-as a heading; tags and body text follow, and a match near the top of a vein
-outranks the same word buried in a footnote.
+The sidebar provides two tabs: **Chambers**, which shows the vault tree, and **Search**. `Ctrl+F` opens Search and places the cursor in the box, and typing searches every vein in the vault as the query changes, covering titles, section headings, tags and body text in that order of rank. A vein whose title matches the query comes first, followed by veins that contain the query as a heading, while tags and body text follow; a match near the top of a vein also outranks the same word in a footnote.
 
 | Query | Finds |
 | --- | --- |
@@ -213,22 +167,11 @@ outranks the same word buried in a footnote.
 | `Analytical Methods` | the vein of that name, first, whatever else matches |
 | `#fieldwork` | the tag, wherever it appears |
 
-Each result shows why it matched — `title`, `§ section`, `tag`, or how many times
-the words appear in the text — plus a snippet with the terms already marked.
-Clicking one opens the vein and marks **every** hit inside the page, with the
-current hit ringed; `F3` and `Shift+F3` step through them and the counter above
-the results says where you are. `Esc` clears the query, and `Esc` again puts the
-tree back.
+Each result explains its match as a `title`, a `§ section`, a `tag` or a count of occurrences in the text, and it includes a snippet with the search terms already marked. Clicking a result opens the vein and marks every hit in the page while ringing the current one; `F3` and `Shift+F3` move through the hits, and the counter above the results reports the position. `Esc` clears the query, and a second `Esc` restores the tree.
 
-The search follows the vault: because the viewer watches the folder, a vein that
-another program adds or edits is searchable immediately, and text you have typed
-but not yet saved is searchable too.
+Search reflects the current state of the vault, because the viewer watches the folder. A vein that another program adds or edits becomes searchable immediately, and text that has been typed into the editor but not yet saved is searchable as well.
 
-A vault is indexed lazily, so a search is answered in two stages while you type.
-Titles, sections and tags are ranked from `.macusanite/index.json` at once; body
-text is read behind the results and they grow as it arrives, with `reading
-240/5001…` shown in the status row. A title match is therefore the first result
-before any file has been read at all.
+Because a vault is indexed lazily, a search is answered in two stages while the query is being typed. Titles, sections and tags are ranked from `.macusanite/index.json` immediately, while body text is read behind the results and those results appear as the text arrives; the status row shows progress such as `reading 240/5001…`. A title match therefore appears before any file has been read.
 
 ## 9. Keyboard
 
@@ -245,24 +188,13 @@ before any file has been read at all.
 
 ### This file is the syntax guide; the Help window is the program manual
 
-They document different things, and both are meant to be open at once:
+The two documents cover different subjects, and both can be open at the same time:
 
-* **this wiki** ([Wiki.md](Wiki.md)) — the vault format: wiki links, aliases,
-section anchors, mermaid, tags, callouts, colours, undo semantics;
-* the **Help** window (`?` in the top bar, **☰ → Help and manual**, or `F1`) —
-everything the program does, including the command line interface and the MCP
-server that let an AI agent do all of it without a window. It is the generated
-document [docs/Help.md](docs/Help.md), the same text `macusanite docs` prints.
+* **this wiki** ([Wiki.md](Wiki.md)) documents the vault format, including wiki links, aliases, section anchors, mermaid, tags, callouts, colours and undo semantics;
+* the **Help** window, opened with `?` in the top bar, **☰ → Help and manual**, or `F1`, documents everything the program does, including the command-line interface and the MCP server that allow an AI agent to perform the same operations without a window. It displays the generated document [docs/Help.md](docs/Help.md), which is the same text that `macusanite docs` prints.
 
-The Help window has no vault and needs none: it opens over whatever you are
-reading, is searchable — every word you type has to appear, `"a quoted phrase"`
-has to appear whole, and `Enter` steps through the hits — and it closes without
-touching the vault.
+The Help window has no connection to a vault and requires none. It opens over whatever is being read, provides a search in which every typed word must appear and a `"a quoted phrase"` must appear whole, steps through the hits with `Enter`, and closes without modifying the vault.
 
 ## 10. What undo actually restores
 
-Undo and redo are recorded as before/after snapshots of a single file, so they
-restore **exactly**: edits to veins, new veins and chambers, colour assignments,
-settings changes and vault description changes are all undoable. Viewer state
-(which page was open, what was expanded) is stored in `state.json` and is
-deliberately *not* part of the undo stack.
+Undo and redo are recorded as before-and-after snapshots of a single file, so they restore the file exactly. Edits to veins, new veins and chambers, colour assignments, settings changes and vault description changes are all undoable. Viewer state, such as which page was open and which chambers were expanded, is stored in `state.json` and is deliberately excluded from the undo stack.

@@ -33,13 +33,22 @@ Open [[Home]] — it is marked as Worldbuilding, so it opens as a canvas.
 | Smart snap guides | drag any card near another card's edge or centreline |
 | Drag a selection as a unit | Ctrl+click several cards, then drag one |
 | Align / distribute a selection | right-click a selected card: **Align**, **Distribute** (three or more cards) |
+| Overlap warning, push aside, resolve | drag one free card over another, then try **Push aside** or **Resolve overlaps** |
 | Progression columns | the amber **Progression board** on Home: heading tiers left to right, tier headers over each lane |
-| Locked group | the red group on Home: cards cannot move, edit or be removed, but links still work |
-| Pinned group and node | the blue group and the pinned card: **Arrange** flows around them |
-| Health / orphans panel | the ⚠ chip in the canvas toolbar |
+| Locked group + clickable padlock | the red **Locked demo** on Home: cards cannot move, edit or be removed, but links still work; click its gold padlock to unlock |
+| Frozen / Static | the blue **Frozen demo**: a blue snowflake is read-only and fixed; only **Unfreeze** in the right-click menu clears it |
+| Pinned group and node | the green **Pinned demo**: pinned cards and groups stay put while **Arrange** works around them |
+| Card modes and folds | the purple **Card modes** group: full, compact, thumbnail and folded cards |
+| Card height / fit to content | the **Thin group** card at the bottom uses **Fit to content**; right-click any card to choose **Card height** |
+| Nested groups | the teal **Nested groups** cluster on Home: an outer group holding two child groups |
+| Resized cards | drag a card's bottom-right corner; the field-notes card in **Nested groups** is 420 × 180 |
+| Annotation colour and fold | the notes above the demo groups: right-click for a colour, or click the chevron to fold one |
+| Collapsed group + summary | the **Collapsed group** on Home: one summary card replaces its cards; double-click to expand |
+| Annotations | the coloured **Note** boxes above the demo groups; right-click to change colour, and drag, edit, fold or delete them |
+| Health / orphans panel | the ⚠ chip in the toolbar; the bottom **Thin group** and **Orphan card** are deliberate warnings |
 | Elbow connectors + arrowheads | the routing toggles in the toolbar (on for Home) |
-| Annotations | the **Note** button, or double-click empty canvas; drag, edit or delete them |
-| Node types, fields, colours, images | a card's type menu and the right-click menu (**Set colour**, **Embed image**) — all undoable |
+| Node types, fields, colours, images | a card's type menu and the right-click menu (**Card mode**, **Card height**, **Set colour**, **Embed image**); the thumbnail card shows an image |
+| Named canvas history | the history browser beside the canvas undo button, or **More ▾ → History** |
 
 ## Portable export and import
 

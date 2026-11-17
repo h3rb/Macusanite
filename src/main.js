@@ -1048,7 +1048,7 @@ const app = {
   markWorld(path, marked) {
     if (!path) return null;
     const record = { ...state.world[path], marked: Boolean(marked) };
-    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups', 'colors', 'images', 'resources', 'pinned', 'locked', 'annotations', 'routing', 'history', 'cardModes', 'cardSizes', 'cardDims', 'collapsedGroups', 'savedViews']
+    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups', 'colors', 'images', 'resources', 'pinned', 'locked', 'annotations', 'routing', 'pushAside', 'history', 'cardModes', 'cardSizes', 'cardDims', 'collapsedGroups', 'savedViews']
       .some((part) => record[part]);
     if (record.marked || keepsWork) state.world[path] = record;
     else delete state.world[path];
@@ -1063,6 +1063,17 @@ const app = {
     state.world[path] = { ...state.world[path], routing: next };
     app.scheduleStatePersist();
     return next;
+  },
+
+  /** Whether drags push free cards aside for this vein; a view preference. */
+  saveWorldPushAside(path, enabled) {
+    if (!path) return false;
+    const record = { ...(state.world[path] ?? {}) };
+    if (enabled) record.pushAside = true;
+    else delete record.pushAside;
+    state.world[path] = record;
+    app.scheduleStatePersist();
+    return Boolean(enabled);
   },
 
   /** Free-floating annotations for a vein, keyed by annotation id. */
@@ -1293,12 +1304,15 @@ const app = {
   /**
    * Lock one node's content read-only: its markdown, type, fields, colour
    * and image can no longer change, but the card itself can still be moved
-   * (unless pinned) and linked. Returns the vein's locked record.
+   * (unless pinned) and linked. `'frozen'` is the Static variant of the same
+   * lock; it behaves as locked and is distinguished by its snowflake icon.
+   * Returns the vein's locked record.
    */
   setWorldNodeLock(path, anchor, lock) {
     if (!path || !anchor) return {};
     const next = { ...(state.world[path]?.locked ?? {}) };
-    if (lock) next[anchor] = true;
+    if (lock === 'frozen') next[anchor] = 'frozen';
+    else if (lock) next[anchor] = true;
     else delete next[anchor];
     state.world[path] = { ...state.world[path], locked: next };
     app.scheduleStatePersist();

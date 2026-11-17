@@ -26,18 +26,12 @@ export const FEATURES = [
     slug: 'what-macusanite-is',
     title: 'What Macusanite is',
     demo: 'vault-graph',
-    body: `Macusanite is a viewer for a **vault**: a folder tree of markdown that behaves like a
-wiki. Folders are **chambers**, markdown files are **veins**, and a **concept graph** shows how a
-document is built and where it sits in the vault.
+    body: `Macusanite is a viewer for a **vault**, which is a folder tree of markdown that behaves like a wiki. Folders are **chambers**, markdown files are **veins**, and a **concept graph** shows how a document is structured and where it sits within the vault.
 
-There is no database server and no account. A vault is a folder; everything the viewer needs lives in
-a \`.macusanite\` folder at its root, and every file in it is plain text you can read, diff and
-version.
+The application requires no database server and no account. A vault is a folder, and everything the viewer needs is stored in a \`.macusanite\` folder at its root, where every file is plain text that can be read, diffed and versioned.
 
-* **The window** — [src/](../../src) is plain ES modules rendered by the platform webview; the shell
-  is Rust with Tauri, so the shipped artefact is one small native binary.
-* **The headless side** — the same vault operations are available to scripts and AI agents through a
-  **CLI** and an **MCP server**; both run on Node and neither needs a window.`,
+* **The window** renders plain ES modules from [src/](../../src) through the platform webview, while the shell uses Rust and Tauri, so the shipped artefact is one small native binary.
+* **The headless side** exposes the same vault operations to scripts and AI agents through a **CLI** and an **MCP server**, both of which run on Node and neither of which requires a window.`,
   },
   {
     slug: 'vault-on-disk',
@@ -62,14 +56,11 @@ My Vault/
         └── Analytical Methods.md
 \`\`\`
 
-* Folders whose name starts with \`.\` are never indexed, so \`.macusanite\` and \`.git\` stay out of
-  the tree and the graph. Vein extensions are \`.md\`, \`.markdown\` and \`.mdx\`.
-* Venom files (a chamber with nothing in it) are kept visible by a \`.keep\` marker file.
-* \`vault.json\` is written on first open with the folder's name, so a vault always has an identity.
-* Deleting \`index.json\` is safe: the next open reads the vault and writes it again.
-* \`settings.json\` and \`colors.json\` are the two files you are meant to edit by hand, so the open window
-  follows them: save one and the change lands at once — see [Following the vault](#following-the-vault).
-  Everything else in the folder is the viewer's own bookkeeping, and the watcher ignores it.`,
+* Folders whose names begin with \`.\` are never indexed, which keeps \`.macusanite\` and \`.git\` out of the tree and the graph. Veins may use the \`.md\`, \`.markdown\` or \`.mdx\` extension.
+* An empty chamber remains visible through a \`.keep\` marker file.
+* \`vault.json\` is written on the first open with the folder's name, so every vault has an identity.
+* Deleting \`index.json\` is safe, because the next open reads the vault and writes the file again.
+* \`settings.json\` and \`colors.json\` are the two files that users are expected to edit by hand, so the open window follows both of them: when either file is saved, the change takes effect immediately, as described in [Following the vault](#following-the-vault). The remaining files are the viewer's own bookkeeping, and the watcher ignores them.`,
   },
   {
     slug: 'window',
@@ -81,82 +72,59 @@ My Vault/
 | **Second bar** | back and forward, the current file location, chips for recently visited veins, and undo/redo buttons that name what they would change |
 | **Left** | two panes behind tabs: **Chambers** (the vault tree, chambers fold open, a filter box narrows it) and **Search** |
 | **Centre** | the rendered vein: a colour swatch beside the page title, every heading and every wiki link, edit mode with autosave, and backlinks at the bottom |
-| **Right** | the concept graph — sections, linked veins, unwritten "ghost" pages and tags, with pan, zoom, drag and depth toggles; fold it to a vertical rail or click the rail to unfold it |
+| **Right** | the concept graph, which shows sections, linked veins, unwritten "ghost" pages and tags, and which provides pan, zoom, drag and depth controls; it can fold to a vertical rail, and clicking that rail unfolds it |
 
 Reading:
 
-* Clicking a **wiki link** opens its vein, scrolled to the section when the link names one. A link to
-  a vein that does not exist yet renders as a **ghost**: dotted underline, a \`＋\` badge, and clicking
-  it creates the vein in the current chamber and opens it.
-* \`Ctrl+K\` opens **quick jump**: type any part of a path to score every vein by name, path and
-  subsequence (\`fm\` finds \`Fieldwork/Macusanite\`).
-* The **backlinks** list at the foot of a document names every vein that links to it, with the section
-  that did the linking.
-* Web links open in your browser, never inside the vault window.
+* Clicking a **wiki link** opens its vein and scrolls to the named section when the link includes one. A link to a vein that does not exist yet appears as a **ghost**, which has a dotted underline and a \`＋\` badge, and clicking it creates the vein in the current chamber and opens it.
+* \`Ctrl+K\` opens **quick jump**, where typing any part of a path scores every vein by name, path and subsequence, so \`fm\` can find \`Fieldwork/Macusanite\`.
+* The **backlinks** list at the foot of a document names every vein that links to it, together with the section that contains the link.
+* Web links open in the system browser and never inside the vault window.
 
 Editing:
 
-* **Edit** turns the reader into an editor for one vein. \`Ctrl+S\` saves; autosave writes for you
-  \`autosaveDelayMs\` after you stop typing (800 ms by default; turn it off in Settings).
-* Leaving edit mode with unsaved text asks the editor to keep or discard the draft — the draft is what
-  the search pane and the graph see while it is unsaved.
-* Markdown support: headings, tables, task lists, callouts, fenced code, and **mermaid** diagrams
-  (flowcharts, sequence, class, state, pie, gantt, journey). A diagram that fails to parse shows its
-  error and source inline instead of breaking the page.
-* If the same vein is saved by another program while you have unsaved text, the warning offers a
-  line-by-line merge — the disk's changes, yours, and any conflict marked in the editor — instead of
-  only keeping your draft. See [Following the vault](#following-the-vault).`,
+* **Edit** turns the reader into an editor for one vein. \`Ctrl+S\` saves the vein, while autosave writes \`autosaveDelayMs\` after typing stops (800 ms by default, and the delay can be disabled in Settings).
+* Leaving edit mode with unsaved text asks whether to keep or discard the draft, and that draft is what the search pane and graph use until it is saved.
+* Markdown support includes headings, tables, task lists, callouts, fenced code and **mermaid** diagrams such as flowcharts, sequence diagrams, class diagrams, state diagrams, pie charts, gantt charts and journey diagrams. If a diagram fails to parse, the page shows its error and source inline instead of failing.
+* If another program saves a vein while unsaved text exists, the warning offers a line-by-line merge of the disk changes, the draft and every conflict, rather than only preserving the draft. See [Following the vault](#following-the-vault).`,
   },
   {
     slug: 'search',
     title: 'Search',
     demo: 'search-type',
-    body: `\`Ctrl+F\` opens the search pane. Typing searches every vein as you go — titles, section
-headings, tags and body text, ranked in that order:
+    body: `\`Ctrl+F\` opens the search pane, and typing searches every vein as the query changes across titles, section headings, tags and body text, ranked in that order:
 
-* a vein whose **title** is exactly what you typed comes first;
-* then veins with a **heading** match, shallower headings first;
-* then **tags**;
-* then **body** text, and a match near the top of a vein outranks one buried in a footnote.
+* a vein whose **title** matches the query comes first;
+* veins with a **heading** match follow, and shallower headings outrank deeper ones;
+* **tags** come next;
+* **body** text comes last, and a match near the top of a vein outranks one buried in a footnote.
 
-Every term you type has to appear somewhere for a vein to be a result. Two words match anywhere and in
-any order; quoting them — \`"sieve series"\` — requires the phrase. \`#fieldwork\` matches the tag.
+Every term in the query must appear somewhere before a vein becomes a result. Two unquoted words may match anywhere and in any order, while quoting them as \`"sieve series"\` requires the phrase, and \`#fieldwork\` matches the tag.
 
-Each result says *why* it matched (\`title\`, \`§ Sieve series\`, \`tag\`, \`2 in text\`) and shows a
-snippet with the terms already marked. Clicking a result opens the vein and marks **every** hit in the
-page, with the current one ringed; \`F3\` and \`Shift+F3\` step through them, and the counter above the
-results says where you are. \`Esc\` clears the query, \`Esc\` again puts the tree back.
+Each result explains why it matched by reporting a \`title\`, a \`§ Sieve series\`, a \`tag\` or a count such as \`2 in text\`, and it includes a snippet with the terms already marked. Clicking a result opens the vein and marks **every** occurrence in the page while ringing the current one; \`F3\` and \`Shift+F3\` move through the occurrences, and the counter above the results reports the position. \`Esc\` clears the query, and a second \`Esc\` restores the tree.
 
-Because a vault is indexed lazily, a search on a cold vault answers in two stages: titles, sections and
-tags are ranked straight from the index cache, while the body text behind them is read in the
-background and the results grow as it arrives (the status row shows \`reading 240/5001…\`).`,
+Because a vault is indexed lazily, a search on a cold vault answers in two stages. Titles, sections and tags are ranked directly from the index cache, while body text is read in the background and the results grow as it arrives, with the status row showing progress such as \`reading 240/5001…\`.`,
   },
   {
     slug: 'colours',
     title: 'Colours',
     demo: 'colours',
-    body: `Every **page**, every **link** and every **section** starts at the vault default —
-white until you change it in **Settings → Default colours** — and can be recoloured by clicking its
-swatch. The picker offers a common palette, a searchable selection of X11 colours, a \`#hex\` field and
-red/green/blue sliders that stay in sync.
+    body: `Every **page**, every **link** and every **section** begins at the vault default, which is white until it is changed in **Settings → Default colours**, and each element can be recoloured by clicking its swatch. The picker offers a common palette, a searchable selection of X11 colours, a \`#hex\` field and red, green and blue sliders that remain synchronized.
 
-Colours resolve most-specific-first:
+Colours resolve from most specific to least specific:
 
-1. an explicit pick in the picker (this wins, so picking always has a visible effect);
-2. front-matter \`color:\`, \`link-color:\` or \`section-color:\`;
-3. inheritance — a section from its page, a link from the page it starts on;
+1. an explicit selection in the picker, which takes precedence so that a selection always has a visible effect;
+2. front matter \`color:\`, \`link-color:\` or \`section-color:\`;
+3. inheritance, where a section inherits from its page and a link inherits from the page on which it starts;
 4. the vault default.
 
-In the graph, an edge leaves the **source** in the link colour and arrives at the **target** in the
-target page's colour, fading across the line. On the command line the same assignments are
-\`color set\`, \`color clear\`, \`color reset\` and \`color resolve\`.`,
+In the graph, an edge leaves the **source** in the link colour and arrives at the **target** in the target page's colour, fading across the line. On the command line, the same assignments are available through \`color set\`, \`color clear\`, \`color reset\` and \`color resolve\`.`,
   },
   {
     slug: 'graph',
     title: 'The concept graph',
     demo: 'graph-orbits',
-    body: `The right-hand pane answers two questions at once: *what is this note made of*, and *where
-does it sit in the vault*.
+    body: `The right-hand pane answers two questions: what the current note contains, and where that note sits within the vault.
 
 | Node | Meaning |
 | --- | --- |
@@ -166,92 +134,49 @@ does it sit in the vault*.
 | Dashed circle | a **ghost** — a page that does not exist yet |
 | \`#\` circle | a tag |
 
-Edge kinds: solid = a wiki link, dotted = *contains* (a page and its sections), faint = a tag. Depth,
-sections, tags, ghost pages and vault context are toggles at the bottom of the pane. Drag a node to
-rearrange, drag the background to pan, scroll to zoom, click a node to navigate. \`graph\` returns the
-same structure as data.
+Solid edges represent wiki links, dotted edges represent containment between a page and its sections, and faint edges represent tags. The toggles at the bottom of the pane control depth, sections, tags, ghost pages and vault context. A node can be dragged to rearrange the graph, the background can be dragged to pan, the wheel zooms, and clicking a node navigates to it. The \`graph\` command returns the same structure as data.
 
-The **hide** button folds the pane to a narrow vertical rail on the right; the centre widens to use
-the space. Click the rail — or the **Graph** button in the top bar — to unfold it again. The folded
-state is remembered with the rest of the vault's layout.`,
+The **hide** button folds the pane into a narrow vertical rail on the right, and the centre then expands into the available space. Clicking the rail or the **Graph** button in the top bar unfolds the pane again, and the folded state is stored with the rest of the vault's layout.`,
   },
   {
     slug: 'undo',
     title: 'Undo and redo',
     demo: 'undo-flip',
-    body: `Every mutation is recorded as a before/after snapshot of a single file, so undo restores
-**exactly** what changed: vein edits, new veins and chambers, colour assignments, settings changes and
-vault details. The stack lives in \`.macusanite/history.json\`, holds 400 entries and is shared — a vein
-you change from the CLI can be undone with \`Ctrl+Z\` in the window and vice versa.
+    body: `Every mutation is recorded as a before-and-after snapshot of one file, so undo restores the affected file exactly, whether the change was a vein edit, a new vein or chamber, a colour assignment, a settings change or an edit to vault details. The stack is stored in \`.macusanite/history.json\`, holds 400 entries and is shared, so a vein changed from the CLI can be undone with \`Ctrl+Z\` in the window and a change made in the window can be undone from the CLI.
 
-Pure viewer state (which page was open, what was expanded, panel widths) is written to \`state.json\`
-and deliberately stays out of the stack, as do log lines and the index cache. A save that changes
-nothing is not recorded.
+Pure viewer state, including the open page, expanded chambers and panel widths, is written to \`state.json\` and deliberately excluded from the stack. Log lines and the index cache are excluded as well, and a save that changes nothing is not recorded.
 
-The undo and redo buttons show only the top of each stack, but **History log…** in the burger menu
-opens the whole thing as a list: time, change and file, newest first, with the current state marked.
-Picking any row jumps straight to it — the steps in between are undone or redone in one move — and
-the list can be narrowed to the file you have open.
+The undo and redo buttons show only the top of each stack, while **History log…** in the burger menu opens the entire history as a list of time, change and file, newest first, with the current state marked. Selecting any row jumps directly to that state, which undoes or redoes all the steps between the current state and the selected row in one move, and the list can be filtered to the open file.
 
-One documented asymmetry: deleting a vein records \`after: ""\`, because the window reads the stack with
-a non-optional \`after\` field. Undo brings the text back; redo re-creates the file empty.`,
+One documented asymmetry affects deletion: removing a vein records \`after: ""\`, because the window reads the stack with a non-optional \`after\` field. Undo therefore restores the text, while redo recreates the file empty.`,
   },
   {
     slug: 'watching',
     title: 'Following the vault',
     demo: 'watching',
-    body: `The vault is watched while it is open, in the window *and* by nothing else — the watcher
-lives in the desktop shell. A vein created, edited or deleted by another program appears in the tree,
-the index, the graph and — when it is the open vein and nothing is unsaved — in the reader itself,
-without a reload.
+    body: `The desktop shell watches the vault while it is open, so a vein that another program creates, edits or deletes appears in the tree, the index, the graph and the reader without a reload, provided that the affected vein is open and no unsaved text exists.
 
-Bursts of events are coalesced into one refresh, the viewer's own writes never echo back, and a change
-that a walk says has not moved anything (the viewer's own bookkeeping, another window's ping) is
-recognised as nothing at all. Unsaved text always wins: an external edit to the file you are typing
-into warns instead of replacing your caret. The \`◈\` beside the vault name turns green while the vault
-is being followed.
+Bursts of events are combined into one refresh, the viewer's own writes never echo back, and a change that a subsequent walk shows to have had no effect, such as one caused by the viewer's own bookkeeping or another window's ping, is ignored. Unsaved text takes precedence, and an external edit to the file being typed into produces a warning instead of replacing the caret. The \`◈\` beside the vault name turns green while the vault is being followed.
 
-Unsaved text still wins, but it no longer wins by itself: a warning that a vein changed under your
-draft comes with a **Merge…** button, and the dialog shows the two versions line by line — which
-lines came from disk, which are yours, and every place they disagree, marked with \`<<<<<<<\`, \`=======\` and \`>>>>>>>\` the way a merge tool does. From there: **Merge into my draft**, **Use the disk
-version**, or **Keep my draft**. Autosave holds back while that question is open, and it stays out of
-the way while merge markers are still in the text, so the clock can never write a half-resolved
-conflict into a vein — \`Ctrl+S\` saves one deliberately.
+Unsaved text still takes precedence, but the viewer no longer resolves the conflict silently. A warning that a vein changed under the draft includes a **Merge…** button, and the dialog shows both versions line by line, identifying the lines from disk, the lines from the draft and every disagreement with \`<<<<<<<\`, \`=======\` and \`>>>>>>>\` markers. The dialog offers **Merge into my draft**, **Use the disk version** and **Keep my draft**. Autosave pauses while the question is open and remains paused while merge markers are present, so the timer cannot write a half-resolved conflict into a vein; \`Ctrl+S\` saves such a file deliberately.
 
-Two files inside \`.macusanite\` are followed for a different reason: \`settings.json\` and
-\`colors.json\` are the two you are meant to edit by hand. Change the theme, a font size, a panel width
-or a colour and save, and the window that is already open takes it at once — the document is
-re-rendered, the graph and the settings dialog follow, and nothing is written back, because reading a
-file is not an edit and never enters the undo stack. A file that cannot be parsed is refused with a
-warning and your current settings are kept. Everything else in the folder (\`index.json\`, \`state.json\`,
-the undo stacks, the session log, \`vault.json\`) is the viewer's own bookkeeping and stays quiet.`,
+Two files inside \`.macusanite\` are followed for a different reason: \`settings.json\` and \`colors.json\` are the two files that users are expected to edit by hand. When a theme, font size, panel width or colour is changed and saved, the open window applies the change immediately, re-rendering the document and updating the graph and settings dialog; nothing is written back, because reading a file is not an edit and never enters the undo stack. A file that cannot be parsed is refused with a warning, and the current settings are retained. The remaining files in the folder, including \`index.json\`, \`state.json\`, the undo stacks, the session log and \`vault.json\`, are the viewer's own bookkeeping and are ignored.`,
   },
   {
     slug: 'lazy-index',
     title: 'Opening a large vault',
     demo: 'lazy-index',
-    body: `A vault is opened by *describing* it, not by reading it. Opening walks the folder once —
-which veins exist, when each last changed — and reads \`.macusanite/index.json\`, which holds what each
-vein contained the last time it was read: its title, aliases, headings, links, tags and front-matter
-colours. Anything whose modification time and size still match is taken from the cache, so reopening a
-vault you have not touched reads no files at all.
+    body: `A vault opens by being described rather than by being read in full. Opening walks the folder once to determine which veins exist and when each one last changed, and it then reads \`.macusanite/index.json\`, which records what each vein contained the last time it was read: its title, aliases, headings, links, tags and front-matter colours. When a vein's modification time and size still match the cache entry, the viewer uses the cached description, so reopening a vault that has not changed reads no files.
 
-Whatever the cache cannot describe — a new vein, an edited one, a vault opened for the first time — is
-read afterwards, in the background, a couple of dozen files at a time. The window is usable from the
-first walk: the tree, the graph, wiki links and search all work while the index fills in, and the
-sidebar footer shows the progress (\`indexing 420/5001\`) and then how many veins are described.
+The viewer reads in the background, a few dozen files at a time, whatever the cache cannot describe, including a new vein, an edited vein or a vault opened for the first time. The window is usable from the first walk, because the tree, graph, wiki links and search all work while the index fills in, and the sidebar footer reports progress such as \`indexing 420/5001\` before reporting how many veins are described.
 
-Freshness is modification time **plus** size. A file rewritten inside the same clock tick without
-changing size is the one blind spot: the watcher covers edits made while the vault is open, and a vein
-saved by the viewer refreshes its own entry immediately. \`vault index\` reports the cache's state and
-\`vault index rebuild\` rewrites it.`,
+Freshness is determined by modification time and size. The one case this check cannot detect is a file that is rewritten within the same clock tick without a change in size; the watcher covers edits made while the vault is open, and a vein saved by the viewer refreshes its own entry immediately. \`vault index\` reports the state of the cache, while \`vault index rebuild\` rewrites it.`,
   },
   {
     slug: 'backups',
     title: 'Backing up to S3',
     demo: 'backup-upload',
-    body: `A vault is a folder, so its backup is the folder: one timestamped \`.tar.gz\` of every vein,
-chamber and \`.macusanite\` file, uploaded as a single object. A run never changes the vault.
+    body: `Because a vault is a folder, its backup is a single timestamped \`.tar.gz\` containing every vein, chamber and \`.macusanite\` file, uploaded as one object. A backup run never changes the vault.
 
 | Where | How |
 | --- | --- |
@@ -259,31 +184,13 @@ chamber and \`.macusanite\` file, uploaded as a single object. A run never chang
 | The CLI | \`macusanite vault backup <bucket>\` — same options as flags |
 | An MCP client | the \`vault_backup\` tool |
 
-The key is \`<prefix><vault>/<YYYYMMDDTHHMMSSZ>.tar.gz\`; the prefix defaults to \`macusanite/\`, so one
-bucket can hold several vaults, and restoring means untarring an object and opening the folder it made.
-The archive skips \`.git\` and symlinks, and includes the viewer's metadata, so settings, colours and the
-undo stacks come back with the notes.
+The object key is \`<prefix><vault>/<YYYYMMDDTHHMMSSZ>.tar.gz\`, and the prefix defaults to \`macusanite/\`, so one bucket can hold several vaults. Restoring consists of extracting an object and opening the folder it creates. The archive excludes \`.git\` and symbolic links but includes the viewer's metadata, so settings, colours and undo stacks return with the notes.
 
-The other route is SSH. \`--ssh-host user@backup-host\` streams the archive over the connection
-(\`--ssh-key ~/keys/backup.pem\` for a PEM private key, \`--ssh-port\` when it is not 22); the host
-writes it to a temporary file, uploads it with its own \`aws\` CLI, and deletes it. This machine then
-needs no AWS credential at all — and the command reads none — while \`--region\`, \`--profile\` and
-\`--endpoint\` name settings on the remote host. The window's dialog offers the same choice. The remote
-host needs an OpenSSH server, a POSIX shell, the AWS CLI and its own working identity. The connection
-runs with \`BatchMode=yes\`, so a passphrase-protected key or a password prompt fails at once instead of
-waiting.
+The other route is SSH. \`--ssh-host user@backup-host\` streams the archive over the connection, and \`--ssh-key ~/keys/backup.pem\` supplies a PEM private key, while \`--ssh-port\` handles a port other than 22. The host writes the archive to a temporary file, uploads it with its own \`aws\` CLI and deletes the file. The local machine therefore needs no AWS credential, and the command reads none, while \`--region\`, \`--profile\` and \`--endpoint\` describe settings on the remote host. The window's dialog offers the same choice. The remote host needs an OpenSSH server, a POSIX shell, the AWS CLI and a working identity of its own. The connection uses \`BatchMode=yes\`, so a passphrase-protected key or a password prompt fails immediately instead of waiting.
 
-**☰ → Back up to S3…** also edits the vault’s automatic-backup setting. Ticking *Upload
-automatically after each save* writes \`.macusanite/backup.json\` — the same file the CLI and MCP
-server read — and the window then waits five seconds after saving stops and uploads with those
-settings. One upload runs at a time — a save during an upload queues another — and a failed run
-pauses automatic uploads for five minutes so a misconfiguration does not fill the session log.
+**☰ → Back up to S3…** also edits the vault's automatic-backup setting. Selecting *Upload automatically after each save* writes \`.macusanite/backup.json\`, which is the same file read by the CLI and MCP server. The window then waits five seconds after saving stops and uploads with those settings. Only one upload runs at a time, so a save made during an upload queues another, and a failed run pauses automatic uploads for five minutes to prevent a misconfiguration from filling the session log.
 
-The file holds every non-secret field, never a credential: a hand-typed AWS secret lasts until the
-window closes, after which the environment or \`~/.aws/credentials\` supplies it (SSH needs no local
-secret at all). Because the setting belongs to the vault rather than the window, a vault armed here
-is armed in the other direction too, and the headless side needs no window and no repeated
-invocation:
+The file stores every non-secret field but never a credential. A hand-typed AWS secret lasts until the window closes, after which the environment or \`~/.aws/credentials\` supplies credentials, while SSH needs no local secret at all. Because the setting belongs to the vault rather than the window, a vault armed in the window is armed for the headless side as well, and that side needs neither a window nor a repeated invocation:
 
 \`\`\`bash
 macusanite --vault ./notes vault autobackup --bucket my-notes-backups --region eu-west-1 --on
@@ -291,52 +198,27 @@ macusanite --vault ./notes vault autobackup --bucket my-notes-backups --ssh-host
 macusanite --vault ./notes vault autobackup --off
 \`\`\`
 
-Once armed, every write uploads a timestamped archive: a save in the window after the pause above,
-and from the CLI or MCP server every command that writes — \`vein write\`, \`vein create\`, \`append\`,
-\`section\`, \`rename\`, \`delete\`, a chamber, colours, settings, vault details, \`undo\` and \`redo\`.
-A CLI command uploads once, before it exits, and prints the report after its
-normal output (\`autoBackup\` in \`--json\`). A long-lived MCP server coalesces instead: it waits a
-couple of seconds after the last write and uploads one archive for the whole burst, so an agent
-writing forty veins makes one object rather than forty. That outcome goes to the session log, because
-no single tool call owns it, and a pending upload is flushed as the server stops, so the final write
-is never lost. Reads never upload, and neither do the viewer's own bookkeeping commands (log lines,
-state, the index cache) or \`vault backup\` itself. A failed upload does not fail the write — the edit
-has landed — it is reported or logged, and the command still exits 0. \`vault autobackup\` with no flags
-reports the current setting.
+Once the vault is armed, every write uploads a timestamped archive. Such writes include a window save after the pause described above and every CLI or MCP command that changes the vault, including \`vein write\`, \`vein create\`, \`append\`, \`section\`, \`rename\`, \`delete\`, a chamber operation, colours, settings, vault details, \`undo\` and \`redo\`. A CLI command uploads once before it exits and prints the report after its normal output, under \`autoBackup\` in \`--json\` mode. A long-lived MCP server coalesces uploads instead: it waits a couple of seconds after the last write and uploads one archive for the whole burst, so an agent that writes forty veins creates one object rather than forty. That outcome is written to the session log, because no single tool call owns it, and a pending upload is flushed when the server stops so that the final write is not lost. Reads never upload, and neither do the viewer's bookkeeping commands, log lines, state, the index cache or \`vault backup\` itself. A failed upload does not fail the write, because the edit has already landed; the failure is reported or logged, and the command still exits 0. Running \`vault autobackup\` without flags reports the current setting.
 
-Credentials are resolved the way AWS's own tools resolve them: the access key and secret from the
-command's flags (or the dialog), otherwise \`AWS_ACCESS_KEY_ID\` / \`AWS_SECRET_ACCESS_KEY\` /
-\`AWS_SESSION_TOKEN\`, otherwise \`~/.aws/credentials\` and \`~/.aws/config\` — with \`--profile\` naming a
-profile. \`--secret-key-file\` reads the secret from a file, which keeps it out of shell history and a
-process list. A region comes from \`--region\`, \`AWS_REGION\`, \`AWS_DEFAULT_REGION\` or the profile and
-defaults to \`us-east-1\`. \`--endpoint\` sends the upload to an S3-compatible service (MinIO, R2, a
-gateway), addressed path-style; AWS itself is virtual-host addressed. \`--dry-run\` builds the archive
-and prints where it would go, without uploading. The secret is never written to the vault or to the
-session log.
+Credentials are resolved in the same order used by AWS's own tools. The access key and secret come from the command's flags or the dialog, otherwise from \`AWS_ACCESS_KEY_ID\`, \`AWS_SECRET_ACCESS_KEY\` and \`AWS_SESSION_TOKEN\`, and otherwise from \`~/.aws/credentials\` and \`~/.aws/config\`, with \`--profile\` selecting a profile. \`--secret-key-file\` reads the secret from a file, which keeps it out of shell history and process lists. A region comes from \`--region\`, \`AWS_REGION\`, \`AWS_DEFAULT_REGION\` or the profile, and it defaults to \`us-east-1\`. \`--endpoint\` sends the upload to an S3-compatible service such as MinIO, R2 or a gateway using path-style addressing, while AWS itself is addressed by virtual host. \`--dry-run\` builds the archive and prints the destination without uploading it. The secret is never written to the vault or the session log.
 
-The same folder can travel without a bucket: **☰ → Export vault…** writes one
-\`.tar.gz\` of the vault and its undo stacks, and **☰ → Import vault…** previews and merges one back.
-The CLI equivalents are \`macusanite vault export\` and \`vault import\` (\`vault import plan\` is the
-dry run); with \`--replace\`, import also deletes local files the archive does not carry. The window
-exports the same whole folder — every file, hidden folders included — and imports without recording
-the files as changes. The desktop carries binary files byte-for-byte, and its Replace checkbox names
-the local files the archive does not carry before deleting them. The browser fallback stores text
-only, so it refuses a binary archive with \`binary-unsupported\` instead of corrupting it — use the
-desktop app or the CLI for images and other non-text files.`,
+A folder can also be exported without a bucket. **☰ → Export vault…** writes one \`.tar.gz\` of the vault and its undo stacks, and **☰ → Import vault…** previews and merges one back. The CLI equivalents are \`macusanite vault export\` and \`vault import\`, with \`vault import plan\` performing a dry run, and \`--replace\` also deletes local files that the archive does not contain. The window exports the whole folder, including every hidden folder, and it imports without recording the imported files as changes. The desktop application carries binary files byte-for-byte, and its Replace checkbox lists the local files that the archive does not contain before deleting them. The browser fallback stores text only, so it refuses a binary archive with \`binary-unsupported\` rather than corrupting it; images and other non-text files therefore require the desktop application or the CLI.`,
   },
 
   {
     slug: 'keyboard',
     title: 'Keyboard',
     demo: 'keyboard-keys',
-    body: `| Keys | Action |
+    body: `The window and the editor provide the following shortcuts:
+
+| Keys | Action |
 | --- | --- |
 | \`Ctrl+S\` | save the open vein |
 | \`Ctrl+Z\` / \`Ctrl+Shift+Z\` | undo / redo (file-level, vault-wide) |
 | \`Ctrl+K\` | quick jump to a vein by name |
 | \`Ctrl+F\` | search the whole vault |
 | \`F3\` / \`Shift+F3\` | next / previous search hit in the open vein |
-| \`Shift+F10\` / Menu key | open the focused card or group’s canvas menu; arrows move through it and \`→\` / \`←\` open or leave a submenu |
+| \`Shift+F10\` / Menu key | open the focused card or group's canvas menu; arrows move through it and \`→\` / \`←\` open or leave a submenu |
 | \`Alt+←\` / \`Alt+→\` | back / forward through navigation history |
 | \`Esc\` | clear the search, close the search pane, or leave edit mode |`,
   },
@@ -344,10 +226,7 @@ desktop app or the CLI for images and other non-text files.`,
     slug: 'agents',
     title: 'Driving Macusanite without a window',
     demo: 'agents-terminal',
-    body: `The CLI and the MCP server are the same API over the same vault. Both are Node
-programs and need no build step; both speak to a vault through
-[src/lib/vaultStore.js](../../src/lib/vaultStore.js), which writes the same files the window writes,
-so a vault can be passed back and forth freely.
+    body: `The CLI and the MCP server expose the same API over the same vault. Both are Node programs that require no build step, and both access a vault through [src/lib/vaultStore.js](../../src/lib/vaultStore.js), which writes the same files as the window, so a vault can be passed freely between the window and the headless tools.
 
 ### The CLI
 
@@ -357,10 +236,7 @@ node cli/macusanite.mjs --vault ./notes search "sieve series" --json
 node cli/macusanite.mjs vein write Home.md --text - < new-home.md
 \`\`\`
 
-Every command takes \`--json\` for machine-readable output, \`--vault <folder>\` (or
-\`MACUSANITE_VAULT\`) to pick a vault, and \`--help\` for its own documentation. Output goes to stdout,
-diagnostics to stderr, and the exit code is non-zero when a command fails, so it composes in a shell
-pipeline. Commands that write record an undo step unless you pass \`--no-undo\`.
+Every command accepts \`--json\` for machine-readable output, \`--vault <folder>\` or \`MACUSANITE_VAULT\` to select a vault, and \`--help\` for its documentation. Output goes to stdout, diagnostics go to stderr, and a command that fails returns a non-zero exit code, so the CLI composes in a shell pipeline. Commands that write record an undo step unless \`--no-undo\` is passed.
 
 ### MCP over stdio
 
@@ -368,8 +244,7 @@ pipeline. Commands that write record an undo step unless you pass \`--no-undo\`.
 node cli/macusanite.mjs mcp stdio --vault ./notes
 \`\`\`
 
-One JSON-RPC message per line on stdin, one per line on stdout, logs on stderr. This is what an MCP
-client configured as a *local command* expects.
+The server reads one JSON-RPC message per line from stdin and writes one message per line to stdout, while logs go to stderr. This is the interface an MCP client expects when it is configured with a local command.
 
 ### MCP over HTTP, headless
 
@@ -377,11 +252,7 @@ client configured as a *local command* expects.
 node cli/macusanite.mjs mcp serve --vault ./notes --port 8765
 \`\`\`
 
-The server binds \`127.0.0.1\` by default and speaks JSON-RPC 2.0 on one endpoint (\`POST
-http://127.0.0.1:8765/mcp\`), with \`GET /health\` for readiness. It answers both protocol eras: the
-legacy \`initialize\` handshake (up to \`2025-11-25\`) that Claude Desktop, VS Code and Cursor use, and
-the newer \`server/discover\` handshake of the 2026-07-28 revision. \`--host 0.0.0.0\` exposes it to the
-network — only do that on a machine you trust, since the port is unauthenticated by design.
+The server binds to \`127.0.0.1\` by default and speaks JSON-RPC 2.0 at one endpoint, \`POST http://127.0.0.1:8765/mcp\`, with \`GET /health\` available for readiness checks. It supports both protocol eras: the legacy \`initialize\` handshake through \`2025-11-25\`, which Claude Desktop, VS Code and Cursor use, and the newer \`server/discover\` handshake from the 2026-07-28 revision. \`--host 0.0.0.0\` exposes the server to the network, which should be done only on a trusted machine because the port is intentionally unauthenticated.
 
 ### MCP through a file intake
 
@@ -389,114 +260,64 @@ network — only do that on a machine you trust, since the port is unauthenticat
 node cli/macusanite.mjs mcp intake --dir ./spool --watch
 \`\`\`
 
-For agents that cannot open a socket. Write a JSON-RPC request to \`./spool/<name>.request.json\`; the
-CLI picks it up, runs it, writes \`./spool/<name>.response.json\` with the reply, and moves the request
-aside to \`<name>.done\`. One file may hold a single request or an array of them. Poll the response
-file, or watch the directory. \`--once\` processes whatever is pending and exits, which is all a cron
-job or a tool call needs.`,
+This mode serves agents that cannot open a socket. A JSON-RPC request is written to \`./spool/<name>.request.json\`, the CLI reads and executes it, writes the reply to \`./spool/<name>.response.json\`, and moves the request aside to \`<name>.done\`. One file may contain a single request or an array of requests. The response file can be polled or the directory can be watched. \`--once\` processes whatever is pending and exits, which is sufficient for a cron job or a single tool call.`,
   },
   {
     slug: 'worldbuilding',
     title: 'The Worldbuilding canvas',
     demo: 'worldbuild-canvas',
-    body: `A vein marked as **Worldbuilding** (the switch at the top right of the centre pane, or
-**More ▾ → Mark as Worldbuilding** in the canvas toolbar) opens not as lines but as cards on a canvas — one card
-per heading of the vein, editing the same markdown the reader sees. Switching to **Markdown**
-never loses the layout, and unmarking a vein keeps every card's place and bonds until it is marked
-again.
+    body: `A vein marked as **Worldbuilding**, either with the switch at the top right of the centre pane or with **More ▾ → Mark as Worldbuilding** in the canvas toolbar, opens as cards on a canvas instead of as lines. Each card corresponds to one heading and edits the same markdown that the reader displays. Switching to **Markdown** preserves the layout, and unmarking a vein keeps every card's position and bonds until the vein is marked again.
 
-The canvas *is* the vein: typing in a card writes that heading's prose, **+ Note** writes a new
-section, **✕** deletes one (click once to arm, again to delete), and autosave and the markdown undo
-apply exactly as they do in the editor. Because the layout lives in \`.macusanite/state.json\`
-and the prose stays plain markdown, the same vein still reads correctly in the reader, on GitHub,
-through the CLI and over MCP.
+The canvas represents the vein itself. Typing in a card writes the prose under that heading, **+ Note** adds a section, and **✕** deletes one after a first click arms the control and a second click confirms the action; autosave and markdown undo behave exactly as they do in the editor. Because the layout is stored in \`.macusanite/state.json\` while the prose remains plain markdown, the same vein still reads correctly in the reader, on GitHub, through the CLI and over MCP.
 
 ### Gestures
 
-* **Drag** a card by its grip to move it; snap guides line it up with its neighbours. Dragging the
-  background pans the canvas, the wheel zooms around the pointer, and a small badge reports the zoom
-  percentage while it changes.
-* **Zoom out from 1:1** keeps the full cards for the first two wheel notches. At about 55% — the
-  third notch out — they become semantic summaries: the type, title and link and word counts stay at
-  a readable screen size while full prose and fields step aside. Collapsed groups show their name and
-  card count. Card controls are inert below 1:1 as before; dragging, folding, resizing, selection and
-  connector selection keep working, and editing waits until you zoom back to 1:1 or closer.
-* **Right-click** a card for everything it can be: link it, relate it, colour it, give it an image,
-  choose its type, fold it, pin it or lock it. Right-click a group for the group's own menu, and a
-  connector for its relationship and routing.
-* **Ctrl+click** picks cards into a set that drags as one; **Shift+drag** on the background
-  box-selects. **More ▾ → Quick select** offers quick picks, and the selection's menu aligns and distributes it.
-* **Arrange ▾** lays out the selection, a group, a connected component, one type, or the whole vein.
-* **More ▾** carries the rest: **Canvas gestures** opens the cheatsheet, **Legend** explains every
-  wire and icon, and **Export** writes the canvas out as SVG, PNG or Mermaid.
+* **Drag** a card by its grip to move it, and snap guides align it with neighbouring cards. Dragging the background pans the canvas, the wheel zooms around the pointer, and a small badge reports the zoom percentage while it changes.
+* **Overlaps** produce a dashed warning outline and a small count while a drag covers another card. **Push aside** in the toolbar or **More ▾ → Push overlaps aside** moves free cards out of the way during a drag, while pinned and locked cards remain fixed. To resolve an overlap that already exists, select the affected cards and use **Resolve overlaps** in the inspector, which moves selected free cards clear while leaving pinned or locked cards in place.
+* **Zooming out from 1:1** preserves full cards for the first two wheel notches. At approximately 55%, which is the third notch, cards become semantic summaries in which the type, title, link count and word count remain at a readable screen size while full prose and fields step aside. Below 25%, the summary type and boxes continue to shrink with the canvas, and at 12.5% each card becomes its type icon. Further zooming, or **⤢ Fit**, frames the entire graph regardless of its size, and a collapsed group shows its name and card count. Card controls remain inert below 1:1, while dragging, folding, resizing, selection and connector selection continue to work, and editing resumes when the view returns to 1:1 or closer.
+* **Right-click** a card to access every operation it supports, including linking, relating, colouring, assigning an image, choosing its type, folding, pinning and locking. Right-click a group for its own menu, or right-click a connector for its relationship and routing options.
+* **Ctrl+click** adds cards to a set that then drags as one, while **Shift+drag** on the background box-selects the cards it touches. **More ▾ → Quick select** provides predefined selections, and the selection's menu aligns and distributes the selected cards.
+* **Arrange ▾** lays out the selection, a group, a connected component, one type or the whole vein.
+* **More ▾** contains the remaining tools: **Canvas gestures** opens a cheatsheet, **Legend** explains every wire and icon, and **Export** writes the canvas as SVG, PNG or Mermaid.
 
 ### Undoing canvas changes
 
-The canvas keeps its own undo, separate from the markdown editor's. The toolbar's **↶** and **↷**
-arrows undo and redo one step and name it in their tooltip; **Ctrl+Z** and **Ctrl+Shift+Z** (or
-**Ctrl+Y**) do the same while the canvas has focus, and **More ▾ → History** lists the
-whole stack — redo above the current point, undo below — with a click to jump anywhere in it. Each
-vein keeps its own stack, saved with its canvas record, so the steps are still there when the vault
-is closed and reopened. A step is one canvas change: a move, a group, a bond, a fold, a type, a
-colour, an arrangement. Typing is not a canvas step — a card's title, prose, fields and tag box keep
-their own undo while the cursor is in them, and the prose's markdown undo belongs to the editor.
-[Canvas history](#canvas-history-exports-and-health) covers what a step restores.
+The canvas maintains its own undo history, separate from the markdown editor's. The toolbar's **↶** and **↷** arrows undo and redo one step and name that step in their tooltip, while **Ctrl+Z** and **Ctrl+Shift+Z**, or **Ctrl+Y**, perform the same actions when the canvas has focus. **More ▾ → History** lists the whole stack, with redo above the current point and undo below it, and selecting a row jumps to that point. Each vein keeps its own stack, which is saved with its canvas record so that the steps remain available after the vault is closed and reopened. A step represents one canvas change, such as a move, a group, a bond, a fold, a type, a colour or an arrangement. Typing is not a canvas step, because a card's title, prose, fields and tag box retain their own undo while the cursor is inside them, and the prose's markdown undo belongs to the editor. [Canvas history](#canvas-history-exports-and-health) explains what a step restores.
 
 ### Deeper sections
 
-The rest of this topic goes deeper: [cards and their heights](#cards-prose-and-heights), [types,
-fields, colours and images](#types-fields-colours-and-images), [bonds, groups and
-annotations](#bonds-groups-and-annotations), [arranging and
-navigating](#arranging-and-navigating), and [history, exports and
-health](#canvas-history-exports-and-health).`,
+The remaining topics cover [cards and their heights](#cards-prose-and-heights), [types, fields, colours and images](#types-fields-colours-and-images), [bonds, groups and annotations](#bonds-groups-and-annotations), [arranging and navigating](#arranging-and-navigating), and [history, exports and health](#canvas-history-exports-and-health).`,
   },
   {
     slug: 'worldbuilding-cards',
     title: 'Cards, prose and heights',
     demo: 'worldbuild-cards',
-    body: `Every card is a heading of the vein. Its title is the heading text, its prose is what sits
-under that heading, and the card before the first heading is the **intro** card, titled “Before the
-first heading”. Clicking a card's rendered prose swaps in the source textarea; leaving it renders
-the markdown again — tables, task lists, callouts and mermaid diagrams included.
+    body: `Every card corresponds to a heading of the vein. Its title is the heading text, its prose is the text beneath that heading, and the card before the first heading is the **intro** card, titled "Before the first heading". Clicking a card's rendered prose replaces it with the source textarea, and leaving the textarea renders the markdown again, including tables, task lists, callouts and mermaid diagrams.
 
 ### Modes
 
-**Cards ▾** on the toolbar, or **Card mode** in a card's right-click menu, sets
-every card in the current selection:
+**Cards ▾** on the toolbar or **Card mode** in a card's right-click menu applies one of three modes to every card in the current selection:
 
-* **Full** — prose, fields and links, the normal card.
-* **Compact** — title, type, link and word counts only, for a dense overview.
-* **Thumbnail** — just the node's image (or its initial), 128 × 128, for a face-only map.
+* **Full**, which shows prose, fields and links and is the normal card.
+* **Compact**, which shows only the title, type, link count and word count for a dense overview.
+* **Thumbnail**, which shows the node's image or its initial at 128 × 128 for a face-only map.
 
 ### Height
 
-A full card is either a fixed 260 px box whose prose scrolls, or **fit to content**,
-where the card grows to show the whole note — no inner scrollbar, and the editing textarea grows
-as you type. Choose per node under **Card height** in the right-click menu, or for the selection in
-**Cards ▾**. The default for the vault lives in **Settings → Worldbuilding → Card height**; a
-node's own choice overrides it either way, and overrides are saved with the vein. Content height
-applies to full cards only — compact and thumbnail cards keep their designed boxes. Everything
-that measures the canvas uses the real height, so connectors, group boxes, arrangement, untangle
-scoring and exports follow a taller card.
+A full card either uses a fixed 260 px box with scrolling prose or **fits to content**, in which case the card grows to show the whole note without an inner scrollbar and the editing textarea grows as the user types. The choice is available per node under **Card height** in the right-click menu and for the selection in **Cards ▾**. The vault default is set in **Settings → Worldbuilding → Card height**, and a node's own choice overrides that default in either direction and is saved with the vein. Content height applies only to full cards, because compact and thumbnail cards retain their designed boxes. Every canvas measurement uses the real height, so connectors, group boxes, arrangement, untangle scoring and exports account for a taller card.
 
 ### Folding, tags and locks
 
-* The **▾ Fold** chevron collapses a card to its header; folded cards stack neatly above the card
-they link to, and **Overview** folds every card at once.
-* **Tags** under a card are doors: a tag naming another card flies the camera to it when clicked.
-  The tag is still the note's own markdown either way; a tag that names no card stays plain text.
-* Editing a **title** renames the heading, and every canvas extra — position, folds, type, fields,
-  colour, image, pin, lock, mode, height — follows the new name. Bonds naming the old title drop,
-  because the link target no longer resolves.
-* A **content lock** (or a locked group) disables the textarea, type, fields, colour, image and
-  delete button while leaving the card movable and linkable.`,
+* The **▾ Fold** chevron collapses a card to its header, folded cards stack above the card they link to, and **Overview** folds every card at once.
+* **Tags** beneath a card act as links, because clicking a tag that names another card moves the camera to that card. The tag remains part of the note's markdown either way, and a tag that names no card remains plain text.
+* Editing a **title** renames the heading, and every canvas property follows the new name, including position, folds, type, fields, colour, image, pin, lock, mode and height. Bonds that name the old title are removed because the link target no longer resolves.
+* A **content lock** or a locked group disables the textarea, type, fields, colour, image and delete button. Clicking the padlock on a card, a group tab or a collapsed group summary unlocks it.`,
   },
   {
     slug: 'worldbuilding-types',
     title: 'Types, fields, colours and images',
     demo: 'worldbuild-types',
-    body: `The drop-down in a card's header chooses what the node **is**. The type gives the card its
-icon and colour and, for the game-like types, its structured fields:
+    body: `The drop-down in a card's header determines what the node **is**. A type supplies the card's icon and colour and, for the game-like types, its structured fields:
 
 | Type | Fields |
 | --- | --- |
@@ -511,89 +332,47 @@ icon and colour and, for the game-like types, its structured fields:
 
 ### Fields
 
-Fields are stored with the vein's canvas record, not written into the prose, and a numeric field
-clamps to its range on the way in. A type change is one undo step and rewrites the card's fields
-row in place; the values already stored for the new type are kept. **Tables are the exception**:
-their content is the markdown table itself, so the reader, CLI and MCP never work against a
-second saved copy.
+Fields are stored with the vein's canvas record rather than written into the prose, and a numeric field is clamped to its range when it is entered. A type change is one undo step that rewrites the card's fields row in place while retaining the values already stored for the new type. **Tables are the exception**, because their content is the markdown table itself, so the reader, CLI and MCP never work against a second saved copy.
 
-A **Table** opens as a grid: click a column heading or cell to type, use **+ Row** and **+ Column**
-to grow it, and the small **×** controls remove a row or column. **Enter** moves down a row, adding
-one at the bottom when needed; the table scrolls when it outgrows the card. The grid is read
-from the GitHub-flavoured markdown table in that section on every build, so an edit made in the
-reader, by the CLI or by MCP appears here instead of being overwritten by a stale canvas copy.
-A section with several tables gets a selector and every table keeps its place; captions then stay
-in the reader so no prose between tables can be moved by accident. Changing a **Note** to
-**Table** reads the markdown already there, and changing it back needs no write: markdown was
-always the source.
+A **Table** opens as a grid. A column heading or cell can be clicked to type, **+ Row** and **+ Column** add rows and columns, and the small **×** controls remove them. **Enter** moves down one row and adds a row at the bottom when necessary, while the table scrolls when it exceeds the card. The grid is read from the GitHub-flavoured markdown table in that section on every build, so an edit made in the reader, by the CLI or through MCP appears here instead of being overwritten by a stale canvas copy. A section with several tables provides a selector, and every table keeps its place, while captions remain in the reader so that prose between tables is not moved accidentally. Changing a **Note** to a **Table** reads the existing markdown, and changing it back requires no write because markdown was always the source.
 
-Fast entry: paste a TSV or CSV block straight into a cell (rows and columns grow to fit), drag a
-row number to reorder actual markdown rows, and cycle a column's alignment with the small arrow in
-its heading — alignment is written into the markdown delimiter row. The filter and sort controls
-are **views only**; they never rewrite row order, and **Clear view** returns to the markdown order.
-Canvas undo carries the markdown it changed, so a table edit and its grid come back together.
+Fast entry supports pasting a TSV or CSV block directly into a cell, with rows and columns growing to fit; dragging a row number reorders the actual markdown rows; and the small arrow in a column heading cycles its alignment, which is written into the markdown delimiter row. The filter and sort controls are **views only**, so they never rewrite row order, and **Clear view** restores the markdown order. Canvas undo carries the markdown that it changed, so a table edit and its grid return together.
 
 ### Colour and image
 
-* **Node colour** in the right-click menu overrides the type's colour for that card alone, and
-  **Use the type colour** forgets the override.
-* **Node image** attaches a picture as the node's icon in its header and as its face in thumbnail
-  mode. Images are copied into \`.macusanite/node-images/\`; replacing or removing one deletes the
-  old file once no card — and no undo snapshot — still names it.
+* **Node colour** in the right-click menu overrides the type's colour for one card, and **Use the type colour** removes that override.
+* **Node image** attaches a picture as the node's header icon and as its face in thumbnail mode. Images are copied into \`.macusanite/node-images/\`, and replacing or removing an image deletes the old file once no card and no undo snapshot still refers to it.
+
 ### Pins and locks
 
-* **Pin node** makes Arrange work around the card; the node can still be dragged by hand. **Pin
-group** does the same for a whole group.
-* **Lock node content** makes the card read-only while it stays movable, linkable and exportable.
-  Locking a **group** is stronger: its cards cannot move, be regrouped, edited or removed, though
-  relationships in and out still work. Both locks show a padlock on the card and are undone from
-  the same menu.
+* **Pin node** makes Arrange work around the card without preventing manual dragging, and **Pin group** does the same for a whole group.
+* **Lock node content** makes the card read-only while leaving it movable, linkable and exportable. Locking a **group** is stronger, because its cards cannot move, be regrouped, edited or removed, although relationships into and out of the group still work. Clicking the padlock on a card, group tab or collapsed summary unlocks it.
+* **Freeze** in a card's or group's right-click menu turns the object **Static**, which behaves as locked but displays a blue snowflake instead of the gold padlock, and a frozen card is also immovable as well as read-only. The snowflake is not an unlock button, because only **Unfreeze** in the same menu clears Static.
 
-A **tag** is never a canvas-only annotation: it is parsed from the note's markdown. The canvas just
-makes it clickable, counts it in the stats bar, and offers to open the card it names.`,
+A **tag** is never a canvas-only annotation, because it is parsed from the note's markdown. The canvas makes it clickable, counts it in the stats bar and offers to open the card that it names.`,
   },
   {
     slug: 'worldbuilding-bonds',
     title: 'Bonds, groups and annotations',
     demo: 'worldbuild-bonds',
-    body: `**Wires come from the prose first.** A dotted wire is the vein's own outline — each card
-nested under its nearest shallower heading. A solid wire is a \`[[#Heading]]\` link written in a
-note, and a faint green wire is a mention of another vein, \`[[Another note]]\`. A bond asserted on
-the canvas itself is a **dashed canvas bond**; a link dot in a card's head, a group's tab or a
-collapsed group's summary starts one — drag it to another card or group and choose the
-relationship on release. No markdown link is written into either note. A wire to a group is
-dashed at twice the weight. A pair already joined by a prose link is left to that wire. If removing
-a bond leaves a prose link drawing the same line, the notice offers to remove that markdown link
-too, as a normal prose edit.
+    body: `**Wires originate in the prose.** A dotted wire represents the vein's own outline, in which each card is nested under its nearest shallower heading. A solid wire represents a \`[[#Heading]]\` link written in a note, and a faint green wire represents a mention of another vein through \`[[Another note]]\`. A bond asserted on the canvas is a **dashed canvas bond**, which is created from a link dot in a card's head, a group's tab or a collapsed group's summary by dragging it to another card or group and choosing the relationship on release. Neither kind of canvas bond writes a markdown link into a note. A wire to a group is dashed at twice the weight, and a pair already joined by a prose link uses that wire instead. If removing a bond would leave a prose link drawing the same line, the notice offers to remove that markdown link as a normal prose edit.
 
 ### Wires and relationships
 
-Every wire can carry a **relationship**: associate, member of, template, parent/child,
-contains/contained by, controls/controlled by, affects/affected by, ally and foe, thickening as it
-strengthens. **Click the word on the wire** to step to the next kind. Right-click a connector for
-**Cycle relationship**, **Reverse relationship**, **Remove asserted relationship**, curve style,
-end selection and **Trace upstream/downstream**. Dragging from a selected set's menu, or
-**Relate to…** in a card's menu, or dragging a **link dot**, asserts a bond between cards or a group endpoint. A link dot is refused for a pair a prose link already joins, so the dashed and solid wires never duplicate each other.
+Every wire can carry a **relationship**: associate, member of, template, parent/child, contains/contained by, controls/controlled by, affects/affected by, ally or foe. The wire thickens as the relationship strengthens, and clicking the word on the wire advances to the next kind. Right-clicking a connector provides **Cycle relationship**, **Reverse relationship**, **Remove asserted relationship**, curve style, end selection and **Trace upstream/downstream**. Dragging from a selected set's menu, using **Relate to…** in a card's menu, or dragging a **link dot** asserts a bond between cards or a group endpoint. A link dot is refused for a pair that a prose link already joins, so dashed and solid wires never duplicate each other.
 
 ### Groups
 
 **Groups** gather cards into one coloured box:
 
-* Select two or more cards and choose **Group**. A whole group inside the selection is nested, not
-dissolved; dragging a card into a group's box adds it, and dragging it out removes it.
-* Drag a group's tab to move every member. **Collapse** turns the group into one summary card with
-  a member count and link total; **Collapse all groups** does the whole vein.
-* **Split into progression columns** turns a group into lanes — the group's top cards on the left,
-  their subsections a tier to the right, and so on, each lane headed by its **Tier**.
-* **Group colour** and **Group icon** sit at the top of the group's right-click menu. **Rename group**,
-  **Split into progression columns**, **Collapse/Expand**, **Lock group**, **Pin group**, **Ungroup**
-  (keep the cards) and **Remove from group** are together under its **Group** submenu.
+* Selecting two or more cards and choosing **Group** creates a group. A whole group inside the selection is nested rather than dissolved, dragging a card into a group's box adds it, and dragging the card out removes it.
+* Dragging a group's tab moves every member. **Collapse** turns the group into one summary card with a member count and link total, while **Collapse all groups** does the same for the whole vein.
+* **Split into progression columns** turns a group into lanes, with the group's top cards on the left, their subsections one tier to the right and each lane headed by its **Tier**.
+* **Group colour** and **Group icon** appear at the top of the group's right-click menu. **Rename group**, **Split into progression columns**, **Collapse/Expand**, **Lock group**, **Pin group**, **Ungroup** (which keeps the cards) and **Remove from group** are grouped under the **Group** submenu. **Freeze/Unfreeze** appears directly on a group's right-click menu, while on a card's menu it appears in the **Group** submenu with the other group state controls.
 
 ### Annotations
 
-**Annotations** are free-floating margin notes, independent of every heading: **+ Annotation**, or
-double-click empty canvas. They drag, scroll with the canvas, export with it, and delete from their
-**✕** — the vein's markdown never changes.`,
+**Annotations** are free-floating margin notes that are independent of every heading, and they are created with **+ Annotation** or by double-clicking empty canvas. They drag, scroll and export with the canvas, and they are deleted from their **✕** without changing the vein's markdown. The text is editable at 62% zoom and above; below 62%, the whole note, including its head and text, becomes one grab target so that dragging never selects text, and its fold and delete controls become available again at 62%. The head's fold toggle collapses the note to its title bar.`,
   },
   {
     slug: 'worldbuilding-arrange',
@@ -601,107 +380,64 @@ double-click empty canvas. They drag, scroll with the canvas, export with it, an
     demo: 'worldbuild-arrange',
     body: `### Selecting
 
-Click a card; **Ctrl+click** toggles it in the set and a picked set drags as
-one; **Shift+drag** on the background box-selects everything it touches. **Select ▾** adds quick
-picks — connected, ancestors, descendants, same type or colour, group members, pinned, locked,
-untyped, imageless — and the selection's right-click menu aligns and distributes it. **Fit
-selection** zooms to just those cards.
+Clicking a card selects it, **Ctrl+click** toggles it in the set, and a picked set drags as one. **Shift+drag** on the background box-selects everything it touches. **Select ▾** adds quick selections such as connected cards, ancestors, descendants, cards of the same type or colour, group members, pinned cards, locked cards, untyped cards and cards without images, while the selection's right-click menu aligns and distributes the selection. **Fit selection** zooms to the selected cards.
 
 ### Layouts
 
-**Arrange ▾** asks for a scope — **Selection**, **Group**, **Connected component**, **One type** —
-then one of six layouts:
+**Arrange ▾** requests a scope, which may be **Selection**, **Group**, **Connected component** or **One type**, and then one of six layouts:
 
-* **Grid** — rows of cards in a near-square block.
-* **Rows** and **Columns** — one line, horizontal or vertical.
-* **Cascade** — each card offset down and right from the last.
-* **Layered** — relationship depth as rows, roots on top.
-* **Progression columns** — heading-tree tiers as columns, top items left, deeper tiers right.
+* **Grid**, which arranges cards in rows within a near-square block.
+* **Rows** and **Columns**, which place cards on one horizontal or vertical line.
+* **Cascade**, which offsets each card down and to the right from the previous card.
+* **Layered**, which uses relationship depth as rows and places roots at the top.
+* **Progression columns**, which uses heading-tree tiers as columns, with top items on the left and deeper tiers to the right.
 
-Pinned and locked cards stay where they are and act as obstacles; collapsed groups are laid out as
-their summary; and the untangler only accepts a swap that reduces how many connectors pass behind
-cards. **Whole vein (grid)** is the original one-click tidy. Arrange fits its result into view.
+Pinned and locked cards remain in place as obstacles, collapsed groups are laid out as their summaries, and the untangler accepts only a swap that reduces the number of connectors passing behind cards. **Whole vein (grid)** performs the original one-click tidy, and Arrange fits its result into view.
 
 ### Getting around
 
-Drag the background to pan and wheel to zoom around the pointer; **⤢ Fit**
-frames every card, **Overview** folds every card and then fits, and double-clicking a
-card's header centres it. Zoom and pan are a view, not a canvas change, so they never take an undo
-step.
+Dragging the background pans the canvas, and the wheel zooms around the pointer. **⤢ Fit** frames every card at whatever scale the canvas requires, **Overview** folds every card and then fits the result, and double-clicking a card's header centres that card. Zoom and pan are view operations rather than canvas changes, so they never create an undo step.
 
 ### Routing
 
-**Elbow routing** switches selected connectors (or the whole vein) between curves and
-right-angle bends; **Arrowheads** adds arrowheads; **Trim long wires** ends a wire longer than a screen in a
-diamond that faces the far card. All three sit under **More ▾**, and the connector bar offers them
-for a selection directly. Click it to reveal the far card if it is inside a collapsed group,
-then centre the view on it; otherwise the view centres on the card directly. A connector's
-right-click menu overrides routing for that wire alone or sends it back to the vein default.
+**Elbow routing** switches selected connectors or the whole vein between curves and right-angle bends, **Arrowheads** adds arrowheads, and **Trim long wires** ends a wire longer than one screen in a diamond facing the far card. All three options appear under **More ▾**, and the connector bar offers them for a selection directly. Clicking a trimmed wire reveals the far card when it is inside a collapsed group and then centres the view on it; otherwise the view centres directly on the card. A connector's right-click menu can override routing for that wire alone or restore the vein default.
 
 ### Finding things
 
-**Search** filters the canvas live across titles, types, fields, colours and
-group names, with previous/next jumps, **Select all** and **Isolate** (dim everything outside the
-matches' connected subgraph). **More ▾ → Health** lists orphans and groups holding fewer than two cards,
-and clicking a row selects and centres it. **More ▾** also holds **Legend** and **Canvas gestures**,
-which explain the rest in place.`,
+**Search** filters the canvas live across titles, types, fields, colours and group names, with previous and next jumps, **Select all** and **Isolate**, which dims everything outside the connected subgraph of the matches. **More ▾ → Health** lists orphans and groups that contain fewer than two cards, and clicking a row selects and centres it. **More ▾** also contains **Legend** and **Canvas gestures**, which explain the remaining controls in place.`,
   },
   {
     slug: 'worldbuilding-history',
     title: 'Canvas history, exports and health',
     demo: 'worldbuild-history',
-    body: `The canvas keeps its **own undo history**, separate from the markdown editor's. A drag, a
-layout, a type, a colour, a bond, a fold, a card's mode or height — each is one named step, and
-**Undo** and **Redo** name what they would change (\`Ctrl+Z\`, \`Ctrl+Shift+Z\` or \`Ctrl+Y\` while
-the canvas has focus). **History** opens the stack as a list: redo above the current point, undo
-below it, each row jumpable, capped at 60 steps per vein.
+    body: `The canvas maintains its **own undo history**, separate from the markdown editor's. A drag, a layout, a type, a colour, a bond, a fold, a card's mode or its height each forms one named step, and **Undo** and **Redo** name the change they would make. The shortcuts are \`Ctrl+Z\`, \`Ctrl+Shift+Z\` and \`Ctrl+Y\` while the canvas has focus. **History** opens the stack as a list with redo above the current point and undo below it, each row can be selected, and the stack is capped at 60 steps per vein.
 
 ### What a step restores
 
-A step restores the whole canvas state — positions, groups, bonds, folds, types, fields, colours,
-images, pins, locks, display modes, heights and the camera — because they are saved together in
-the vein's record. History survives closing and reopening the vault. Renaming or deleting a card
-prunes dead anchors from every stored step, and deleting a node sweeps image files no step still
-references.
+A step restores the whole canvas state, including positions, groups, bonds, folds, types, fields, colours, images, pins, locks, display modes, heights and the camera, because those values are stored together in the vein's record. History survives closing and reopening the vault. Renaming or deleting a card prunes dead anchors from every stored step, and deleting a node removes image files that no step still references.
 
 ### Exports
 
-**Export ▾** writes the canvas out for other tools:
+**Export ▾** writes the canvas for use in other tools:
 
-* **SVG — vector file** — a standalone drawing of every visible card, wire, group box and
-  annotation, with text preserved as text.
-* **SVG — Inkscape layers** — the same drawing in four named layers (Groups, Connectors, Cards,
-  Annotations), so each can be selected, reordered or hidden in Inkscape.
-* **PNG — image file** — the whole canvas rendered at up to twice its size, for slides and print.
-* **Mermaid — markdown file** — headings become nodes and the canvas's links become edges in a
-  \`flowchart\`, ready for a markdown file that renders it.
+* **SVG — vector file** produces a standalone drawing of every visible card, wire, group box and annotation, with text preserved as text.
+* **SVG — Inkscape layers** produces the same drawing in four named layers (Groups, Connectors, Cards and Annotations), so each layer can be selected, reordered or hidden in Inkscape.
+* **PNG — image file** renders the whole canvas at up to twice its size for slides and print.
+* **Mermaid — markdown file** converts headings into nodes and canvas links into edges in a \`flowchart\` that is ready for a markdown file.
 
-SVG and PNG draw what is on screen, so a collapsed group exports as its summary and a folded card
-as its header; the Mermaid export lists every note and relationship regardless. Files are named
-after the vein — \`<vein>-canvas.svg\`, \`<vein>-canvas.png\` — so an export is easy to find again.
+SVG and PNG draw what is visible on screen, so a collapsed group exports as its summary and a folded card as its header, while the Mermaid export lists every note and relationship regardless of the current view. Exported files are named after the vein, as \`<vein>-canvas.svg\` or \`<vein>-canvas.png\`, so they are easy to locate again.
 
 ### Health
 
-**Health** is the lint pass for the canvas: orphans (no wire in or out) and thin groups (fewer
-than two cards) appear as jumpable rows, with the counts beside the button. The vault-wide default
-for card height sits in **Settings → Worldbuilding**, and every node can override it from its own
-menu.`,
+**Health** is the lint pass for the canvas. Orphans, which have no wire in or out, and thin groups, which contain fewer than two cards, appear as jumpable rows with counts beside the button. The vault-wide default for card height is set in **Settings → Worldbuilding**, and every node can override it from its own menu.`,
   },
   {
     slug: 'updates',
     title: 'Signed self-updates',
     demo: 'update-flow',
-    body: `The desktop app updates itself from signed GitHub releases. A few seconds after a vault opens
-— unless you turned it off in **Settings → Updates** — it fetches the release's static
-\`latest.json\`, and if it names a newer version a dialog offers it with the release notes.
-Nothing installs itself: **Download & restart** downloads with progress, verifies the installer
-against the public key embedded in the app, installs it and restarts into the new version.
+    body: `The desktop application updates itself from signed GitHub releases. A few seconds after a vault opens, and unless automatic checks have been disabled in **Settings → Updates**, the application fetches the release's static \`latest.json\`; if that file names a newer version, a dialog offers the update together with its release notes. Nothing is installed without confirmation, because **Download & restart** starts the download with progress, verifies the installer against the public key embedded in the application, installs the verified package and restarts into the new version.
 
-On Windows the installed version is the NSIS setup exe, installed per user into
-\`%LOCALAPPDATA%\\Macusanite\` (AppData, never Program Files, no admin), and the update replaces
-\`macusanite.exe\` in place in that same folder — the same way the portable exe is replaced.
-Signing keys live outside the repo (\`~/.tauri/macusanite.key\`); see \`docs/Updates.md\` for the
-publish flow.`,
+On Windows the installed version is the NSIS setup executable, which installs per user into \`%LOCALAPPDATA%\\Macusanite\`, under AppData rather than Program Files, and requires no administrator rights. An update replaces \`macusanite.exe\` in that folder in the same way that it replaces a portable executable. Signing keys are kept outside the repository at \`~/.tauri/macusanite.key\`; \`docs/Updates.md\` documents the publication process.`,
   },
 ];
 
@@ -759,21 +495,15 @@ const slugify = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/g, '-')
 const THIS_MANUAL = {
   slug: 'this-manual',
   title: 'This manual',
-  body: `This document is generated from the same declarations the program runs on, so
-it cannot drift: the commands come from \`src/lib/catalogue.js\` and the prose here from
-\`src/lib/helpDoc.js\`. It has three homes, and they are the same text:
+  body: `This document is generated from the same declarations that the program uses, so it cannot diverge from the implementation: the commands come from \`src/lib/catalogue.js\`, and the prose comes from \`src/lib/helpDoc.js\`. It has three homes, and each serves the same text:
 
 | Where | How to open it |
 | --- | --- |
-| The **help window** | the **?** button in the top bar, the **☰ → Help and manual** menu item, or \`F1\` — a separate window, so your vein stays open. It has a search box: every word you type has to appear, \`"a quoted phrase"\` has to appear whole, sections that match stay and the rest are hidden, and \`Enter\` steps through the hits with the current one ringed |
-| The **CLI** | \`macusanite docs\` prints it, \`macusanite docs <section>\` prints one section, \`macusanite docs --sections\` lists the slugs, and \`macusanite docs --out docs/Help.md\` writes it to a file (that is exactly what \`npm run docs\` does) |
-| An **MCP client** | the \`docs\` tool, or the \`macusanite://manual\` resource, which every agent should read before guessing how something works |
+| The **help window** | the **?** button in the top bar, the **☰ → Help and manual** menu item, or \`F1\`. The manual opens in a separate window so that the current vein stays open. Its search box requires every typed word to appear, requires \`"a quoted phrase"\` to appear whole, hides sections that do not match and steps through hits with \`Enter\` while ringing the current hit |
+| The **CLI** | \`macusanite docs\` prints the manual, \`macusanite docs <section>\` prints one section, \`macusanite docs --sections\` lists the slugs, and \`macusanite docs --out docs/Help.md\` writes it to a file, which is the operation performed by \`npm run docs\` |
+| An **MCP client** | the \`docs\` tool, or the \`macusanite://manual\` resource, which every agent should read before guessing how an operation works |
 
-The sections are the manual's own structure, grouped in the help window's sidebar by topic:
-\`worldbuilding\` and its five deeper sections, \`search\`, \`colours\`, \`graph\`, \`undo\`,
-\`watching\`, \`lazy-index\`, \`backups\`, \`updates\`, \`keyboard\`, \`agents\`, \`commands\`,
-\`limitations\`, and the rest. Each feature section also carries a small animated figure,
-generated from the same declarations — see \`src/lib/helpDemos.js\`.`,
+The sections form the manual's structure, and the help window groups them by topic. The structure includes \`worldbuilding\` and its five deeper sections, \`search\`, \`colours\`, \`graph\`, \`undo\`, \`watching\`, \`lazy-index\`, \`backups\`, \`updates\`, \`keyboard\`, \`agents\`, \`commands\`, \`limitations\` and the remaining topics. Each feature section also carries a small animated figure generated from the same declarations, as described in \`src/lib/helpDemos.js\`.`,
 };
 
 /** Section slugs a caller can ask `docs` for, in order. */
@@ -849,30 +579,18 @@ export function commandReference({ commandsOnly = false } = {}) {
 
 const LIMITATIONS = `## Limitations
 
-* **Matching is literal.** Search does not stem or fuzz: \`sieving\` does not find \`sieve\`. There are
-  no operators beyond a quoted phrase and \`#tag\`.
-* **Index freshness is modification time plus size.** A vein rewritten inside the same clock tick with
-  an identical byte count can look unchanged until it is opened or touched.
-* **Search holds plain text.** Ranking bodies and quoting snippets need the words themselves, so a
-  search on a huge vault reads it (the cache covers the metadata, not the prose).
-* **Deleting a vein is asymmetric.** Undo restores the text; redo re-creates the file empty — see
-  [Undo and redo](#undo-and-redo).
-* **Embeds** (\`![[Note]]\`) render as reference cards, not as transcluded content.
-* **The undo stack is snapshots, not diffs**, capped at 400 entries.
-* **A backup is assembled in memory and uploaded as one object.** A markdown vault is small; a vault
-  holding large binaries is read whole into memory, and every run is a fresh full copy rather than an
-  incremental sync.
-* **MCP over HTTP is unauthenticated.** It binds loopback by default; \`--host\` is your decision.
-* **A merge can only see lines.** Two sides that insert at the same point — both appending to the end
-  of a vein, say — are marked as a conflict rather than guessed at, and a vein whose whole body changed
-  on both sides is one region to resolve.
-* **The merge offer holds autosave back for 15 seconds.** Answer it, or the clock saves the draft as
-  usual; the session log records that the offer went unanswered.
-* **A hand-edit to \`settings.json\` or \`colors.json\` made in the few hundred milliseconds after the
-  viewer saves the same file** is taken for the echo of that save and stays quiet until the next open
-  — the one moment where editing either by hand does not land live.
-* **The manual is generated.** Edit \`src/lib/helpDoc.js\` or \`src/lib/catalogue.js\` and run
-  \`npm run docs\`; edits to \`docs/Help.md\` are overwritten.`;
+* **Matching is literal.** Search does not stem or fuzz, so \`sieving\` does not find \`sieve\`, and the only operators are a quoted phrase and \`#tag\`.
+* **Index freshness depends on modification time and size.** A vein that is rewritten within the same clock tick with an identical byte count can appear unchanged until it is opened or touched.
+* **Search holds plain text.** Ranking bodies and quoting snippets require the words themselves, so a search on a large vault reads the vault because the cache covers metadata rather than prose.
+* **Deleting a vein is asymmetric.** Undo restores the text, while redo recreates the file empty; see [Undo and redo](#undo-and-redo).
+* **Embeds** such as \`![[Note]]\` render as reference cards rather than transcluded content.
+* **The undo stack stores snapshots rather than diffs**, and it is capped at 400 entries.
+* **A backup is assembled in memory and uploaded as one object.** A markdown vault is small, while a vault containing large binaries is read whole into memory, and every run creates a fresh full copy rather than performing an incremental synchronization.
+* **MCP over HTTP is unauthenticated.** It binds to loopback by default, and exposing it with \`--host\` is the operator's decision.
+* **A merge can compare only lines.** When both sides insert at the same point, such as both appending to the end of a vein, the result is marked as a conflict rather than guessed, and a vein whose entire body changed on both sides becomes one region to resolve.
+* **The merge offer suspends autosave for 15 seconds.** Answering the offer resolves the conflict, while allowing the period to expire causes the timer to save the draft as usual and records the unanswered offer in the session log.
+* **A hand-edit to \`settings.json\` or \`colors.json\` made within the few hundred milliseconds after the viewer saves the same file** is interpreted as the echo of that save and remains quiet until the next open. This is the one moment at which a hand-edit to either file does not take effect live.
+* **The manual is generated.** Edit \`src/lib/helpDoc.js\` or \`src/lib/catalogue.js\` and run \`npm run docs\`, because edits to \`docs/Help.md\` are overwritten.`;
 
 /**
  * The whole manual as one markdown string.
@@ -892,7 +610,7 @@ export function buildHelpMarkdown({ section = null, commandsOnly = false } = {})
   const lines = [
     `# ${DOC_TITLE}`,
     '',
-    `Everything Macusanite does — the window, the vault format, the CLI, the API and the MCP server.`,
+    `This manual covers the window, the vault format, the CLI, the API and the MCP server.`,
     '',
     '> Generated by `npm run docs` from `src/lib/catalogue.js` and `src/lib/helpDoc.js`.',
     '> This document is what the **Help** window shows, and what `macusanite docs` prints.',

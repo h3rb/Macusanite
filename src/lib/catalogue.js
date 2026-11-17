@@ -79,12 +79,8 @@ export const COMMANDS = {
 
   'vault.open': {
     group: 'Vault',
-    summary: 'Point this session at a vault folder, creating `.macusanite` if it is not there yet.',
-    description:
-      'The session every other command runs in. `--vault <folder>` on the command line does the same '
-      + 'thing before the command runs, so this is mainly for a long-lived MCP server that is asked to '
-      + 'work on a second vault. With `--create` a missing folder is made instead of refused, which is '
-      + 'also how an agent boots a fresh vault.',
+    summary: 'Open a vault folder for this session, creating its `.macusanite` metadata when necessary.',
+    description: `This command opens the vault in which every other command runs. Passing \`--vault <folder>\` on the command line performs the same operation before the command runs, so this command is mainly useful to a long-lived MCP server that is asked to work on a second vault. With \`--create\`, a missing folder is created instead of refused, which is also how an agent initialises a new vault.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Folder to open.' },
       { name: 'create', type: 'boolean', description: 'Create the folder when it does not exist.' },
@@ -98,24 +94,16 @@ export const COMMANDS = {
 
   'vault.info': {
     group: 'Vault',
-    summary: 'Identity of the open vault, with its settings and colour count.',
-    description:
-      'The same payload the window reads when it opens a folder: the vault\'s name, description and '
-      + 'creation time from `.macusanite/vault.json`, the merged viewer settings and the raw colour '
-      + 'assignments. Missing meta files are created first, so this is also the safe "is this a vault?" '
-      + 'probe — it never fails on a folder that exists.',
+    summary: 'Report the vault\'s identity, settings and colour assignments.',
+    description: `This command returns the payload that the window reads when it opens a folder: the vault's name, description and creation time from \`.macusanite/vault.json\`, the merged viewer settings and the raw colour assignments. Missing metadata files are created first, so the command also serves as a safe check that an existing folder is a vault.`,
     returns: '`{ path, name, description, created, settings, colors }`',
     examples: ['macusanite vault info', 'macusanite --vault ./notes vault info --json'],
   },
 
   'vault.create': {
     group: 'Vault',
-    summary: 'Create a vault folder (and its `.macusanite`), optionally seeded with the sample vault.',
-    description:
-      'Creates the folder if needed, writes `.macusanite/vault.json` with the given name and '
-      + 'description, and fills in `settings.json`, `colors.json` and `history.json` when they are '
-      + 'absent. With `--sample` the bundled reference vault (seven veins about the Macusani glass '
-      + 'project) is written first, and its identity wins — the sample vault keeps its own name.',
+    summary: 'Create a vault folder and its `.macusanite` metadata, optionally seeding the sample vault.',
+    description: `The command creates the folder when necessary, writes \`.macusanite/vault.json\` with the supplied name and description, and fills in \`settings.json\`, \`colors.json\` and \`history.json\` when those files are absent. With \`--sample\`, it first writes the bundled reference vault of seven veins about the Macusani glass project; the sample vault keeps its own identity, so its name and description replace the supplied values.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Folder to create or adopt.' },
       { name: 'name', type: 'string', description: 'Vault name; defaults to the folder name.' },
@@ -143,25 +131,22 @@ export const COMMANDS = {
 
   'vault.stats': {
     group: 'Vault',
-    summary: 'Numbers that describe the vault: veins, chambers, links, tags, ghosts, orphans, bytes.',
-    description:
-      'The orientation call for an agent that has just been pointed at a vault. `ghosts` counts wiki '
-      + 'links that point at nothing, `orphans` counts veins with neither inbound nor outbound links, '
-      + 'and `newest` names the vein that most recently changed.',
+    summary: 'Report counts for veins, chambers, links, tags, ghosts, orphans and bytes.',
+    description: `This command gives an agent an orientation to a vault. The \`ghosts\` count covers wiki links that point at nothing, the \`orphans\` count covers veins with neither inbound nor outbound links, and \`newest\` identifies the vein that changed most recently.`,
     returns: '`{ path, veins, chambers, headings, links, tags, ghosts, orphans, bytes, newest }`',
     examples: ['macusanite vault stats', 'macusanite vault stats --json'],
   },
 
   'vault.tree': {
     group: 'Vault',
-    summary: 'The chamber/vein tree exactly as the sidebar draws it.',
+    summary: 'Return the chamber and vein tree in the same shape as the sidebar.',
     returns: 'nested `[{ kind: "chamber"|"vein", name, path, children }]`',
     examples: ['macusanite vault tree', 'macusanite vault tree --json'],
   },
 
   'vault.veins': {
     group: 'Vault',
-    summary: 'Every vein in the vault, as vault-relative paths.',
+    summary: 'List every vein in the vault as a vault-relative path.',
     params: [
       { name: 'under', type: 'string', description: 'Only veins inside this chamber.' },
       { name: 'query', type: 'string', description: 'Only veins whose path contains this text.' },
@@ -172,28 +157,23 @@ export const COMMANDS = {
 
   'vault.chambers': {
     group: 'Vault',
-    summary: 'Every chamber (folder) in the vault, outermost first.',
+    summary: 'List every chamber in the vault, outermost first.',
     returns: '`string[]` (sorted)',
     examples: ['macusanite vault chambers'],
   },
 
   'vault.settings': {
     group: 'Vault',
-    summary: 'Read the viewer settings, merged over the defaults.',
-    description:
-      'The settings the window writes to `.macusanite/settings.json`: theme, font size, line width, '
-      + 'default colours, the palette, recent colours, graph options, layout widths and editor flags.',
+    summary: 'Read the viewer settings after merging them over the defaults.',
+    description: `The result contains the settings that the window writes to \`.macusanite/settings.json\`, including the theme, font size, line width, default colours, palette, recent colours, graph options, layout widths and editor flags.`,
     returns: 'the merged settings object',
     examples: ['macusanite vault settings --json'],
   },
 
   'vault.settings.set': {
     group: 'Vault',
-    summary: 'Change viewer settings.',
-    description:
-      'Merges a patch over the current settings and writes them back. Unknown keys are dropped and '
-      + 'out-of-range numbers are clamped, exactly as the settings dialog does. Use `--set key=value` '
-      + 'for one value or `--patch \'{...}\'` for a whole object; `-` reads the JSON from stdin.',
+    summary: 'Update viewer settings with a patch.',
+    description: `The command merges a patch over the current settings and writes the result back. Unknown keys are dropped, and out-of-range numbers are clamped in the same way as in the settings dialog. Use \`--set key=value\` for one value or \`--patch '{...}'\` for a whole object, and use \`-\` to read the JSON from stdin.`,
     params: [
       { name: 'set', type: 'string[]', description: 'One or more `key=value` assignments, dotted for nested keys (`graph.depth=3`).' },
       { name: 'patch', type: 'json', description: 'A settings object merged over the current one.' },
@@ -210,25 +190,12 @@ export const COMMANDS = {
 
   'vault.backup': {
     group: 'Vault',
-    summary: 'Upload the whole vault to an S3 bucket as one timestamped tar.gz, directly or over SSH.',
-    description:
-      'One object per run, at `<prefix><vault>/<YYYYMMDDTHHMMSSZ>.tar.gz`, normally uploaded with a '
-      + 'signed `PutObject` request (or over SSH, below). The archive holds every file in the vault — '
-      + 'veins, chambers and `.macusanite` — so restoring is “untar it and open the folder”. A vault '
-      + 'that is also a git repository does not back up `.git`, and symlinks are left out.\n\n'
-      + 'Credentials come from `--access-key` plus `--secret-key`, from `--secret-key-file` (a file '
-      + 'holding the secret, which keeps it off the command line), from `AWS_ACCESS_KEY_ID` / '
-      + '`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, or from `~/.aws/credentials` (or a named '
-      + '`--profile`). Region comes from `--region`, `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile, '
-      + 'and defaults to `us-east-1`. `--endpoint` points the upload at an S3-compatible service, '
-      + 'addressed path-style. `--dry-run` assembles the archive and reports the key and size without '
-      + 'sending anything. Nothing in the vault is changed.\n\n'
-      + 'With `--ssh-host user@host` the archive travels over SSH instead: it is streamed to that '
-      + 'machine, uploaded there by its own `aws` CLI from a temporary file, and the file is removed. '
-      + 'No AWS credential is needed — or read — on this machine. `--ssh-key` names the private key '
-      + '(a `.pem` is fine), `--ssh-port` changes the port, and `--region`, `--profile` and '
-      + '`--endpoint` are handed to the remote `aws` command rather than resolved locally. The remote '
-      + 'host needs the AWS CLI and its own working credentials.',
+    summary: 'Upload the entire vault to an S3 bucket as one timestamped tar.gz, either directly or over SSH.',
+    description: `Each run uploads one object at \`<prefix><vault>/<YYYYMMDDTHHMMSSZ>.tar.gz\`, normally through a signed \`PutObject\` request. The archive contains every file in the vault, including veins, chambers and \`.macusanite\`, so restoring consists of extracting the archive and opening the resulting folder. A vault that is also a git repository does not include \`.git\`, and symbolic links are omitted.
+
+Credentials come from \`--access-key\` and \`--secret-key\`, from \`--secret-key-file\` when the secret is stored in a file, from \`AWS_ACCESS_KEY_ID\`, \`AWS_SECRET_ACCESS_KEY\` and \`AWS_SESSION_TOKEN\`, or from \`~/.aws/credentials\` or a named \`--profile\`. The region comes from \`--region\`, \`AWS_REGION\`, \`AWS_DEFAULT_REGION\` or the profile and defaults to \`us-east-1\`. \`--endpoint\` targets an S3-compatible service using path-style addressing, and \`--dry-run\` assembles the archive and reports its key and size without sending it. The command does not change anything in the vault.
+
+With \`--ssh-host user@host\`, the archive travels over SSH instead. It is streamed to the remote machine, uploaded there by that host's own \`aws\` CLI from a temporary file, and the temporary file is removed afterwards. The local machine needs no AWS credential and the command reads none, while \`--ssh-key\` names the private key, \`--ssh-port\` changes the port, and \`--region\`, \`--profile\` and \`--endpoint\` are passed to the remote \`aws\` command rather than resolved locally. The remote host requires the AWS CLI and working credentials of its own.`,
     external: true,
     params: [
       { name: 'bucket', type: 'string', required: true, positional: true, description: 'Destination bucket.' },
@@ -256,13 +223,8 @@ export const COMMANDS = {
 
   'vault.export': {
     group: 'Vault',
-    summary: 'Export the open vault to one portable compressed file.',
-    description:
-      'Write a single `.tar.gz` archive holding every vault file, including `.macusanite/history.json`, '
-      + 'so the vault with its undo/redo history can be shared and imported elsewhere. The archive '
-      +       'carries a manifest (`macusanite-archive.json`) listing every file. `.git` internals and '
-      + 'symlinks are left out, exactly as for `vault backup`. Non-text files are carried byte-for-byte, '
-      + 'so images and other binary files survive the round trip unchanged.',
+    summary: 'Export the open vault to one portable compressed archive.',
+    description: `The command writes one \`.tar.gz\` archive containing every vault file, including \`.macusanite/history.json\`, so the vault and its undo/redo history can be shared and imported elsewhere. A manifest named \`macusanite-archive.json\` lists every file in the archive. \`.git\` internals and symbolic links are omitted, as they are for \`vault backup\`, while non-text files are carried byte-for-byte so that images and other binary files survive the round trip unchanged.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Where to write the archive, for example `notes.tar.gz`. Relative to the working directory.' },
     ],
@@ -275,18 +237,7 @@ export const COMMANDS = {
   'vault.import': {
     group: 'Vault',
     summary: 'Import a portable vault archive into the open vault.',
-    description:
-      'Read a `.tar.gz` archive written by `vault.export` and update the open vault with its files, '
-      +       'including its undo/redo history. Files the archive carries are overwritten in place; files '
-      + 'it does not carry are left alone, unless `--replace` is given, which also deletes local files '
-      + 'missing from the archive (except `.git`) so the vault becomes the archive\'s copy. If existing '
-      + 'files would change or be deleted, the import refuses with an `overwrite-required` error naming '
-      + 'them until `--overwrite` confirms it. A malformed archive, an archive whose manifest does not '
-      + 'match its contents, or one without history is refused before anything is written. Files are '
-      + 'compared and written as bytes, so non-text files survive unchanged. A session that can only '
-      + 'write text (the desktop window, the browser) refuses an archive carrying non-text files — '
-      + 'naming them, with a `binary-unsupported` error — instead of importing them as corrupted text; '
-      + 'use the CLI for those.',
+    description: `The command reads a \`.tar.gz\` archive written by \`vault.export\` and updates the open vault with its files and undo/redo history. Files carried by the archive are overwritten in place, while files that it does not carry remain untouched unless \`--replace\` is supplied; that option also deletes local files missing from the archive, except \`.git\`, so the vault becomes an exact copy of the archive. If existing files would change or be deleted, the command refuses with an \`overwrite-required\` error that names them until \`--overwrite\` confirms the operation. A malformed archive, an archive whose manifest does not match its contents, or an archive without history is refused before anything is written. Files are compared and written as bytes, so non-text files survive unchanged. A session that can write only text, such as the desktop window or the browser, refuses an archive containing non-text files with a \`binary-unsupported\` error that names them, rather than importing them as corrupted text; the CLI should be used for such archives.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'The archive to read, for example `notes.tar.gz`. Relative to the working directory.' },
       { name: 'overwrite', type: 'boolean', description: 'Confirm overwriting existing files whose contents would change, and deleting the files `--replace` would drop. Required when the import conflicts or deletes.' },
@@ -300,13 +251,8 @@ export const COMMANDS = {
 
   'vault.import.plan': {
     group: 'Vault',
-    summary: 'Preview a portable vault archive import without writing anything.',
-    description:
-      'Read-only preflight for `vault.import`: validates the `.tar.gz` and names the files it would '
-      +       'add, the existing files it would overwrite, the files that would not change, and — with '
-      + '`--replace` — the local files it would delete (except `.git`). The window\'s Import vault '
-      + 'dialog shows this list before anything is written; a CLI caller can use it to decide whether '
-      + '`--overwrite` is needed.',
+    summary: 'Preview an archive import without writing any files.',
+    description: `This read-only preflight for \`vault.import\` validates the \`.tar.gz\` and lists the files that would be added, the existing files that would be overwritten, the files that would remain unchanged, and, with \`--replace\`, the local files that would be deleted, except \`.git\`. The window's Import vault dialog shows this list before it writes anything, and a CLI caller can use it to determine whether \`--overwrite\` is required.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'The archive to read, for example `notes.tar.gz`. Relative to the working directory.' },
       { name: 'replace', type: 'boolean', description: 'Also list the local files missing from the archive (except `.git`) that the import would delete.' },
@@ -318,25 +264,12 @@ export const COMMANDS = {
 
   'vault.autobackup': {
     group: 'Vault',
-    summary: 'Arm this vault to upload itself after every write — window, CLI and MCP — or change where it uploads.',
-    description:
-      'The setting is written to `.macusanite/backup.json`, inside the vault, so it travels with the '
-      + 'folder and every CLI invocation and MCP server pointed at it picks it up. With no arguments the '
-      + 'current setting is reported; `--on` and `--off` arm and disarm it, and any of the connection '
-      + 'fields (also used by `vault backup`) are saved as given.\n\n'
-      + 'Once armed, writes upload a timestamped archive: a window save after five seconds of quiet, a '
-      + 'CLI command once before it exits (reported in the result as `autoBackup`), and, for a '
-      + 'long-lived MCP server, one archive for a whole burst — the server waits a couple of seconds '
-      + 'after the last write, so an agent writing forty veins makes one object rather than forty, and '
-      + 'records the outcome in the session log; a pending upload is flushed as it stops. Reads never '
-      + 'upload, and neither do the '
-      + 'viewer\'s own bookkeeping commands (logs, state, the index cache) or `vault backup` itself. A '
-      + 'failed upload never fails the write — the edit has landed — it is reported, or logged when it '
-      + 'happened in the background.\n\n'
-      + 'Credentials are never stored: a direct upload reads `AWS_ACCESS_KEY_ID` / '
-      + '`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` or `~/.aws/credentials` (with `--profile`), and '
-      + '`--ssh-host` uploads with the remote host\'s own identity. The window’s **Back up to S3…** '
-      + 'dialog edits this same setting, so a vault armed there covers its saves too.',
+    summary: 'Arm the vault to upload after every write from the window, CLI and MCP, or change its upload settings.',
+    description: `The setting is stored in \`.macusanite/backup.json\` inside the vault, so it travels with the folder and is read by every CLI invocation and MCP server that opens that vault. With no arguments the command reports the current setting, \`--on\` and \`--off\` arm and disarm automatic uploads, and any supplied connection fields are saved as given.
+
+Once the vault is armed, writes upload a timestamped archive. A window save uploads after five seconds of quiet, a CLI command uploads once before it exits and reports the result under \`autoBackup\`, and a long-lived MCP server uploads one archive for an entire burst after waiting a couple of seconds from the last write, so an agent that writes forty veins creates one object rather than forty. The server records that outcome in the session log and flushes any pending upload when it stops. Reads never upload, and neither do the viewer's bookkeeping commands, log entries, state, the index cache or \`vault backup\` itself. A failed upload does not fail the write, because the edit has already been recorded; the failure is reported, or logged when it occurs in the background.
+
+Credentials are never stored in the setting. A direct upload reads \`AWS_ACCESS_KEY_ID\`, \`AWS_SECRET_ACCESS_KEY\` and \`AWS_SESSION_TOKEN\`, or \`~/.aws/credentials\` with \`--profile\`, while \`--ssh-host\` uploads with the remote host's own identity. The window's **Back up to S3…** dialog edits the same setting, so arming a vault there also covers uploads from the headless tools.`,
     params: [
       { name: 'bucket', type: 'string', description: 'Destination bucket.' },
       { name: 'region', type: 'string', description: 'Bucket region; defaults to the environment or profile; with `--ssh-host`, the remote region.' },
@@ -360,10 +293,8 @@ export const COMMANDS = {
 
   'vault.state': {
     group: 'Vault',
-    summary: 'Read the viewer state: the last vein read, expanded chambers, panel widths.',
-    description:
-      'Pure bookkeeping in `.macusanite/state.json`. It is deliberately not undoable, and the window '
-      + 'rewrites it as you browse, so treat it as a hint rather than a source of truth.',
+    summary: 'Read the viewer state, including the last vein read, expanded chambers and panel widths.',
+    description: `The state is bookkeeping stored in \`.macusanite/state.json\`. It is deliberately excluded from undo, and the window rewrites it as the user browses, so callers should treat it as a hint rather than as an authoritative record.`,
     returns: 'the stored state object (may be empty)',
     examples: ['macusanite vault state --json'],
   },
@@ -381,10 +312,8 @@ export const COMMANDS = {
 
   'vault.log': {
     group: 'Vault',
-    summary: 'Append a line to the session log.',
-    description:
-      'Logs live in `.macusanite/logs/session-YYYYMMDD.log` as JSON lines, the same file the window '
-      + 'writes to. Logging never touches the undo stack.',
+    summary: 'Append one line to the session log.',
+    description: `Logs are stored as JSON lines in \`.macusanite/logs/session-YYYYMMDD.log\`, which is the same file that the window writes. Logging never changes the undo stack.`,
     params: [
       { name: 'message', type: 'string', required: true, positional: true, description: 'What happened.' },
       { name: 'level', type: 'string', description: '`info`, `warn` or `error`.', default: 'info', values: ['info', 'warn', 'error'] },
@@ -407,11 +336,8 @@ export const COMMANDS = {
 
   'vault.index': {
     group: 'Vault',
-    summary: 'Report the state of `.macusanite/index.json`, the document index cache.',
-    description:
-      'The cache holds each vein\'s title, aliases, headings, links, tags and front-matter colours, '
-      + 'keyed by modification time and size. `fresh` entries are reused when the window — or this CLI '
-      + '— opens the vault; `stale` ones have to be read again.',
+    summary: 'Report the state of the document index cache in `.macusanite/index.json`.',
+    description: `The cache stores each vein's title, aliases, headings, links, tags and front-matter colours, keyed by modification time and size. The window and the CLI reuse \`fresh\` entries when they open the vault, while \`stale\` entries must be read again.`,
     returns: '`{ path, bytes, version, entries, veins, fresh, stale, present }`',
     examples: ['macusanite vault index'],
   },
@@ -419,10 +345,7 @@ export const COMMANDS = {
   'vault.index.rebuild': {
     group: 'Vault',
     summary: 'Read every vein again and rewrite the index cache.',
-    description:
-      'Use it after bulk edits made outside Macusanite (a script, a git checkout, an editor that does '
-      + 'not update modification times). It is never required for correctness — a stale entry is '
-      + 'detected and re-read — but it makes the next open warm.',
+    description: `This command is useful after bulk edits made outside Macusanite, such as edits from a script, a git checkout or an editor that does not update modification times. Correctness never depends on it, because a stale entry is detected and re-read, but rebuilding the cache makes the next open faster.`,
     returns: '`{ index }` describing every vein',
     examples: ['macusanite vault index rebuild'],
     mutates: true,
@@ -431,7 +354,7 @@ export const COMMANDS = {
   'vault.index.drop': {
     group: 'Vault',
     summary: 'Delete the index cache.',
-    description: 'The next open (window or CLI) reads the whole vault once and writes it again.',
+    description: `The next open, whether from the window or the CLI, reads the whole vault once and writes the cache again.`,
     returns: '`{ path, dropped }`',
     examples: ['macusanite vault index drop'],
     mutates: true,
@@ -439,11 +362,8 @@ export const COMMANDS = {
 
   'vault.doctor': {
     group: 'Vault',
-    summary: 'Check the vault for things that are probably wrong.',
-    description:
-      'Reports missing or unreadable `.macusanite` files, wiki links that point at nothing, veins that '
-      + 'nothing links to and nothing links out of, tag counts, and whether the index cache covers the '
-      + 'veins it claims to. Exit code is 1 when any check fails, which makes it usable in a pipeline.',
+    summary: 'Check the vault for inconsistencies and report each result.',
+    description: `The check reports missing or unreadable \`.macusanite\` files, wiki links that point at nothing, veins with no inbound or outbound links, tag counts, and whether the index cache covers the veins it claims to describe. The command exits with code 1 when any check fails, which makes it usable in a pipeline.`,
     returns: '`{ ok, checks: [{ name, ok, detail }], ghosts, orphans }`',
     examples: ['macusanite vault doctor', 'macusanite vault doctor --json'],
   },
@@ -452,10 +372,8 @@ export const COMMANDS = {
 
   'vein.read': {
     group: 'Documents',
-    summary: 'Read one vein as plain text.',
-    description:
-      'Prints the markdown source, front matter included — exactly the bytes on disk. With `--json` '
-      + 'you get the same text plus its metadata in one payload.',
+    summary: 'Read one vein as plain markdown.',
+    description: `The command prints the markdown source, including front matter, exactly as it appears on disk. With \`--json\`, it returns the same text together with the vein's metadata in one payload.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path, with or without `.md`.' },
       { name: 'with-meta', type: 'boolean', description: 'Return `{ path, text, ...metadata }` instead of the bare text.' },
@@ -466,11 +384,8 @@ export const COMMANDS = {
 
   'vein.info': {
     group: 'Documents',
-    summary: 'Metadata of one vein: title, aliases, tags, headings, links, colours, word count.',
-    description:
-      'The document as the window understands it — front matter parsed, headings given their anchor '
-      + 'ids, wiki links extracted with their targets and sections, and the page/link/section colours '
-      + 'from front matter.',
+    summary: 'Report one vein\'s title, aliases, tags, headings, links, colours and word count.',
+    description: `The result describes the document as the window understands it: front matter is parsed, headings receive anchor ids, wiki links are extracted with their targets and sections, and the page, link and section colours are read from front matter.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path.' },
     ],
@@ -480,11 +395,8 @@ export const COMMANDS = {
 
   'vein.write': {
     group: 'Documents',
-    summary: 'Replace the contents of a vein, recording an undo step.',
-    description:
-      'Line endings are preserved as given. Write `--text -` to read the new contents from stdin, '
-      + 'which is how an agent should send a long document. A write that changes nothing is not '
-      + 'recorded, so an idle save cannot pollute the undo stack.',
+    summary: 'Replace a vein\'s contents and record an undo step.',
+    description: `The command preserves line endings as supplied. Use \`--text -\` to read the new contents from stdin, which is the appropriate method for an agent that sends a long document. A write that changes nothing is not recorded, so an idle save cannot add noise to the undo stack.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path.' },
       { name: 'text', type: 'string', description: 'New contents; `-` reads stdin.', default: '' },
@@ -499,10 +411,8 @@ export const COMMANDS = {
 
   'vein.create': {
     group: 'Documents',
-    summary: 'Create a vein, with front matter and a title heading unless you provide the text.',
-    description:
-      '`.md` is appended when the path has no markdown extension. Creating a vein that already exists '
-      + 'is not an error: the result says `created: false` and the existing text is untouched.',
+    summary: 'Create a vein with front matter and a title heading, unless text is supplied.',
+    description: `The command appends \`.md\` when the path has no markdown extension. Creating a vein that already exists is not an error, because the result reports \`created: false\` and the existing text remains untouched.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path of the new vein.' },
       { name: 'text', type: 'string', description: 'Contents; defaults to `---title---# Title`, `-` reads stdin.' },
@@ -517,7 +427,7 @@ export const COMMANDS = {
   'vein.append': {
     group: 'Documents',
     summary: 'Append text to the end of a vein.',
-    description: 'A newline is inserted first unless the file already ends with one.',
+    description: `The command inserts a newline before the appended text unless the file already ends with one.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path.' },
       { name: 'text', type: 'string', required: true, positional: true, description: 'Text to append; `-` reads stdin.' },
@@ -531,11 +441,8 @@ export const COMMANDS = {
 
   'vein.section': {
     group: 'Documents',
-    summary: 'Replace a section\'s body, or add the section when it is not there yet.',
-    description:
-      'The heading is matched by level and text, case-insensitively. Replacing keeps everything before '
-      + 'the heading and everything from the next heading of the same or a higher level, so a document '
-      + 'never grows a duplicate section.',
+    summary: 'Replace a section\'s body or add the section when it is absent.',
+    description: `The command matches the heading by level and text, case-insensitively. A replacement keeps everything before the heading and everything from the next heading of the same or a higher level, so the document does not acquire a duplicate section.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path.' },
       { name: 'heading', type: 'string', required: true, positional: true, description: 'Heading text, without the `#` marks.' },
@@ -551,9 +458,7 @@ export const COMMANDS = {
   'vein.rename': {
     group: 'Documents',
     summary: 'Move or rename a vein.',
-    description:
-      'Two undo steps are recorded (the new file and the old one), so `undo` twice restores the '
-      + 'original exactly. Renaming onto an existing vein is refused.',
+    description: `The command records two undo steps, one for the new file and one for the old file, so running \`undo\` twice restores the original state. Renaming onto an existing vein is refused.`,
     params: [
       { name: 'from', type: 'string', required: true, positional: true, description: 'Current path.' },
       { name: 'to', type: 'string', required: true, positional: true, description: 'New path.' },
@@ -567,10 +472,7 @@ export const COMMANDS = {
   'vein.delete': {
     group: 'Documents',
     summary: 'Delete a vein.',
-    description:
-      'Undo restores the text. Redo re-creates the file **empty**: a history entry stores `after: ""`, '
-      + 'because the window reads the stack with a non-optional `after` field and would treat a null '
-      + 'there as a corrupt file. Pass `--no-undo` to delete without an undo step at all.',
+    description: `Undo restores the text, while redo recreates the file **empty**. A history entry stores \`after: ""\` because the window reads the stack with a non-optional \`after\` field and would treat a null value as a corrupt file. Pass \`--no-undo\` to delete the vein without recording an undo step.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path.' },
       { name: 'no-undo', type: 'boolean', description: 'Delete without recording an undo step.' },
@@ -583,32 +485,29 @@ export const COMMANDS = {
 
   'vein.links': {
     group: 'Documents',
-    summary: 'The wiki links a vein contains, in source order.',
+    summary: 'List the wiki links in a vein in source order.',
     returns: '`[{ target, section, alias, embed, samePage }]`',
     examples: ['macusanite vein links Home.md --json'],
   },
 
   'vein.headings': {
     group: 'Documents',
-    summary: 'A vein\'s outline, with the anchor id each heading can be linked by.',
+    summary: 'Return a vein\'s outline with the anchor id that each heading can be linked by.',
     returns: '`[{ level, text, anchor }]`',
     examples: ['macusanite vein headings Wiki.md --json'],
   },
 
   'vein.backlinks': {
     group: 'Documents',
-    summary: 'Veins that link to this one.',
+    summary: 'List the veins that link to this one.',
     returns: '`[{ path, title, context }]` sorted by title',
     examples: ['macusanite vein backlinks "Chambers/Lab/Analytical Methods.md" --json'],
   },
 
   'vein.resolve': {
     group: 'Documents',
-    summary: 'Resolve a wiki target the way the viewer would.',
-    description:
-      'Resolution order: an explicit path, a vein in the same chamber, the shallowest vein with that '
-      + 'name, a front-matter title or alias, then a case-insensitive name match. A miss comes back '
-      + 'with `ghost: true` and the path a new vein would be created at.',
+    summary: 'Resolve a wiki target using the viewer\'s resolution order.',
+    description: `Resolution proceeds through an explicit path, a vein in the same chamber, the shallowest vein with that name, a front-matter title or alias, and finally a case-insensitive name match. A miss returns \`ghost: true\` together with the path at which a new vein would be created.`,
     params: [
       { name: 'target', type: 'string', required: true, positional: true, description: 'Link target, e.g. `Fluid Inclusions`.' },
       { name: 'from', type: 'string', description: 'The vein the link appears in, for same-chamber resolution.' },
@@ -622,9 +521,7 @@ export const COMMANDS = {
   'chamber.create': {
     group: 'Chambers',
     summary: 'Create a chamber (folder) inside the vault.',
-    description:
-      'An empty chamber is kept visible by a `.keep` marker file, so it shows up in the tree before it '
-      + 'holds anything — the same convention the window uses.',
+    description: `The command keeps an empty chamber visible through a \`.keep\` marker file, so the chamber appears in the tree before it contains anything, which is the same convention used by the window.`,
     params: [
       { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative folder path.' },
     ],
@@ -637,12 +534,8 @@ export const COMMANDS = {
 
   'search': {
     group: 'Search and graph',
-    summary: 'Search every vein: titles, headings, tags and body text, ranked in that order.',
-    description:
-      'The same ranking the search pane uses. Two words match anywhere and in any order; quote them '
-      + '(`"sieve series"`) to require the phrase. Every term has to appear somewhere in a vein for it '
-      + 'to be a result, and each result carries why it matched plus a snippet with the hits. The index '
-      + 'cache is used for veined metadata and every vein is read for body text.',
+    summary: 'Search every vein by title, heading, tag and body text, in that order of rank.',
+    description: `The command applies the same ranking as the search pane. Two unquoted words may match anywhere and in any order, while quoting them as \`"sieve series"\` requires the phrase. Every term must appear somewhere in a vein for that vein to be a result, and each result reports why it matched together with a snippet containing the hits. The index cache supplies vein metadata, while every vein is read for body text.`,
     params: [
       { name: 'query', type: 'string', required: true, positional: true, description: 'Words, `"a quoted phrase"`, or `#tag`.' },
       { name: 'limit', type: 'integer', description: 'Maximum results.', default: 20 },
@@ -654,28 +547,23 @@ export const COMMANDS = {
 
   'tags': {
     group: 'Search and graph',
-    summary: 'Every tag in the vault, with how many veins carry it.',
+    summary: 'List every tag in the vault and the number of veins that carry it.',
     returns: '`[{ tag, count, veins }]` busiest first',
     examples: ['macusanite tags --json'],
   },
 
   'ghosts': {
     group: 'Search and graph',
-    summary: 'Wiki links that point at veins which do not exist yet.',
-    description:
-      'Each entry names the linking vein, the target text and the path a new vein would be created at. '
-      + 'Creating those veins is the single most common repair an agent makes on a vault.',
+    summary: 'List wiki links whose target veins do not exist.',
+    description: `Each entry names the linking vein, the target text and the path at which a new vein would be created. Creating those veins is the most common repair that an agent performs on a vault.`,
     returns: '`[{ from, target, section, suggestedPath }]`',
     examples: ['macusanite ghosts --json', 'macusanite ghosts'],
   },
 
   'graph': {
     group: 'Search and graph',
-    summary: 'The concept graph as data: document, section and tag nodes with their edges.',
-    description:
-      'The window lays this out for the graph pane; an agent can read the same structure to find what '
-      + 'a vein is made of and what sits around it. `focus` narrows the graph to that vein and its '
-      + 'neighbourhood within `depth` steps.',
+    summary: 'Return the concept graph as document, section and tag nodes with their edges.',
+    description: `The window lays out this structure for the graph pane, and an agent can read the same structure to determine what a vein contains and which documents surround it. \`focus\` narrows the graph to one vein and its neighbourhood within \`depth\` steps.`,
     params: [
       { name: 'focus', type: 'string', description: 'Vein to centre on.' },
       { name: 'depth', type: 'integer', description: 'How many steps out from `focus` to include.', default: null },
@@ -689,11 +577,7 @@ export const COMMANDS = {
   'color.set': {
     group: 'Colours',
     summary: 'Assign a colour to a page, section, link or concept.',
-    description:
-      'Colours are stored in `.macusanite/colors.json` and resolve most-specific-first: an explicit '
-      + 'pick, then front-matter `color:`, then inheritance (a section from its page, a link from its '
-      + 'source page), then the vault default. Any CSS colour name or `#rrggbb` value is accepted and '
-      + 'normalised to `#rrggbb`.',
+    description: `Colours are stored in \`.macusanite/colors.json\` and resolve from most specific to least specific: an explicit selection, front-matter \`color:\`, inheritance from a page for sections or from a source page for links, and finally the vault default. Any CSS colour name or \`#rrggbb\` value is accepted and normalized to \`#rrggbb\`.`,
     params: [
       { name: 'kind', type: 'string', required: true, positional: true, description: 'What is being coloured.', values: ['page', 'section', 'link', 'concept'] },
       { name: 'color', type: 'string', required: true, positional: true, description: 'A colour name or `#rrggbb`.' },
@@ -715,7 +599,7 @@ export const COMMANDS = {
 
   'color.clear': {
     group: 'Colours',
-    summary: 'Remove a colour assignment, so the target inherits again.',
+    summary: 'Remove a colour assignment so that the target inherits again.',
     params: [
       { name: 'kind', type: 'string', required: true, positional: true, description: 'What is being reset.', values: ['page', 'section', 'link', 'concept'] },
       { name: 'path', type: 'string', description: 'Vein path, for `page` and `section`.' },
@@ -741,11 +625,8 @@ export const COMMANDS = {
 
   'color.resolve': {
     group: 'Colours',
-    summary: 'The colour a target would actually be painted.',
-    description:
-      'Answers with the colour *after* the whole resolution order has been applied — an explicit '
-      + 'pick, then front-matter, then inheritance, then the vault default — which is the question '
-      + 'worth asking, since an assignment on its own does not decide what is painted.',
+    summary: 'Report the colour that a target would receive after colour resolution.',
+    description: `The result reflects the complete resolution order: an explicit selection, front matter, inheritance and the vault default. An assignment alone does not determine the painted colour, so this command reports the effective result.`,
     params: [
       { name: 'kind', type: 'string', required: true, positional: true, description: 'What is being painted.', values: ['page', 'section', 'link', 'concept'] },
       { name: 'path', type: 'string', description: 'Vein path, for `page` and `section`.' },
@@ -762,11 +643,8 @@ export const COMMANDS = {
 
   'history': {
     group: 'History',
-    summary: 'The undo and redo stacks, newest first.',
-    description:
-      'Every mutation is a before/after snapshot of one file, so undo is exact. The stack is capped at '
-      + '400 entries and lives in `.macusanite/history.json`; the window shows the same list in its '
-      + 'second bar.',
+    summary: 'List the undo and redo stacks, newest first.',
+    description: `Every mutation is recorded as a before-and-after snapshot of one file, so undo restores the recorded state. The stack is capped at 400 entries and stored in \`.macusanite/history.json\`, and the window shows the same list in its second bar.`,
     returns: '`{ undo: [{ path, label, ts }], redo: [...] }`',
     examples: ['macusanite history --json'],
   },
@@ -774,7 +652,7 @@ export const COMMANDS = {
   'undo': {
     group: 'History',
     summary: 'Undo the most recent recorded change.',
-    description: 'Same stack as the window\'s Ctrl+Z, so the two can be interleaved safely.',
+    description: `The command uses the same stack as the window's Ctrl+Z, so the two interfaces can be interleaved safely.`,
     returns: '`{ applied, path, label, stacks }`',
     examples: ['macusanite undo'],
     mutates: true,
@@ -792,11 +670,8 @@ export const COMMANDS = {
 
   'help': {
     group: 'Help',
-    summary: 'The command reference: every command, its parameters and examples.',
-    description:
-      'With no argument it lists the commands by group. With a command name it prints that command\'s '
-      + 'full page — the same text the MCP server sends to an agent as the tool description, and the '
-      + 'same text the help window renders.',
+    summary: 'Document every command with its parameters and examples.',
+    description: `With no argument, the command lists the commands by group. With a command name, it prints that command's full page, which is the same text that the MCP server sends to an agent as the tool description and the same text that the help window renders.`,
     params: [
       { name: 'command', type: 'string', positional: true, description: 'Command to describe, e.g. `vein.write`.' },
       { name: 'markdown', type: 'boolean', description: 'Print markdown instead of terminal text.' },
@@ -807,11 +682,8 @@ export const COMMANDS = {
 
   'docs': {
     group: 'Help',
-    summary: 'The whole manual, as markdown: every feature of Macusanite, then every command.',
-    description:
-      'This is what the help window shows, and what `--out FILE` writes to disk. It is generated from '
-      + 'the source of truth in `src/lib/catalogue.js` (commands) and `src/lib/helpDoc.js` (features), '
-      + 'so it cannot drift from the implementation.',
+    summary: 'Return the whole manual in markdown, with every feature followed by every command.',
+    description: `This is the document that the help window displays and that \`--out FILE\` writes to disk. It is generated from the source of truth in \`src/lib/catalogue.js\` for commands and \`src/lib/helpDoc.js\` for features, so it cannot diverge from the implementation.`,
     params: [
       { name: 'section', type: 'string', positional: true, description: 'Print only this section (a slug such as `search`).' },
       { name: 'out', type: 'string', description: 'Write the document to this file instead of stdout.' },
