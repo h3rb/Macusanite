@@ -8927,10 +8927,38 @@ export function createWorldbuildPanel({ app, root }) {
     scheduleEdges();
   });
 
+  /** Whether the pointer is over a descendant that can scroll its content. */
+  function scrollRegionAtPointer(event) {
+    const overflowValues = new Set(['auto', 'scroll', 'overlay']);
+    const seen = new Set();
+    const starts = [
+      ...(event.composedPath?.() ?? [event.target]),
+      document.elementFromPoint(event.clientX, event.clientY),
+    ];
+    for (const start of starts) {
+      if (!(start instanceof Element) || !stage.contains(start)) continue;
+      for (let node = start; node && node !== stage; node = node.parentElement) {
+        if (seen.has(node)) continue;
+        seen.add(node);
+        if (!(node instanceof HTMLElement)) continue;
+        const style = getComputedStyle(node);
+        const scrollsX = overflowValues.has(style.overflowX) && node.scrollWidth > node.clientWidth + 1;
+        const scrollsY = overflowValues.has(style.overflowY) && node.scrollHeight > node.clientHeight + 1;
+        if (scrollsX || scrollsY) return true;
+      }
+    }
+    return false;
+  }
+
   // The wheel zooms the graph around the pointer — no modifier needed (a
-  // trackpad pinch is just a ctrl+wheel, which zooms the same way). The stage
-  // is a bounded viewport, so there is no scroll inside it to give up.
+  // trackpad pinch is just a ctrl+wheel, which zooms the same way). Let native
+  // scrolling win over zoom inside overflowing card content and table grids,
+  // including when the pointer is over their scrollbar.
   stage.addEventListener('wheel', (event) => {
+    if (scrollRegionAtPointer(event)) {
+      event.stopPropagation();
+      return;
+    }
     event.preventDefault();
     const rect = stage.getBoundingClientRect();
     const px = event.clientX - rect.left;

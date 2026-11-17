@@ -1040,7 +1040,6 @@ mark.search-hit {
 /* ── markdown ───────────────────────────────────────────────────────── */
 
 .markdown-body {
-  max-width: var(--line-width, 78ch);
   font-size: var(--font-size, 16px);
   line-height: 1.65;
 }
