@@ -71,6 +71,10 @@ const ANNOTATION_DRAG_ZOOM = 0.62;
 const STACK_GAP = 8;
 // How unaligned a folded-above-a-link pair may be and still read as a stack.
 const STACK_TOLERANCE = 2;
+// Picking a card with the keyboard means Ctrl everywhere except a Mac, where
+// Ctrl+click is the secondary click and Cmd is the modifier that adds.
+const PICK_WITH_META = typeof navigator !== 'undefined'
+  && /Mac|iPhone|iPad|iPod/.test(navigator.platform || '');
 
 /** A file size as the card shows it: bytes, KB or MB, one decimal at most. */
 function formatBytes(bytes) {
@@ -2938,20 +2942,24 @@ export function createWorldbuildPanel({ app, root }) {
         void cleanupOrphanedAttachments().catch(() => {});
     });
 
-    /** Start a card grab: Ctrl+click picks it, otherwise drag it (and the
-     * picked set it belongs to). Below 1:1 a plain grab also picks the card,
-     * because its content no longer takes clicks of its own. */
+    // Ctrl+click — Cmd+click on a Mac, where Ctrl+click is the secondary click
+    // — picks this card from anywhere on it, title and prose included. The
+    // press is taken in the capture phase so the field under the pointer never
+    // starts an edit: picking a card is not typing in it.
+    card.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !selectionClick(event)) return;
+      if (event.target.closest?.('.wb-resize, button, a, select')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      toggleSelected(model.notes[index]?.anchor ?? note.anchor);
+    }, true);
+
+    /** Start a card grab: a drag carries it (and the picked set it belongs to).
+     * Below 1:1 a plain grab also picks the card, because its content no longer
+     * takes clicks of its own. */
     function grabCard(event) {
       if (event.button !== 0) return;
       if (event.target.closest?.('input, button, select, textarea')) return;
-      // Ctrl+click picks the node (again to unpick); it never starts a drag.
-      if (event.ctrlKey) {
-        const next = new Set(selected);
-        next.has(note.anchor) ? next.delete(note.anchor) : next.add(note.anchor);
-        setSelection(next);
-        event.preventDefault();
-        return;
-      }
       if (isOverviewZoom() && !selected.has(note.anchor)) setSelection(new Set([note.anchor]));
       // A picked card can carry the whole selection with it; a solo card
       // moves on its own, and dropping it inside or outside a group's box
@@ -4632,6 +4640,19 @@ export function createWorldbuildPanel({ app, root }) {
     isolatedAnchors = null;
     renderSearchResults();
     syncSearchUi();
+  }
+
+  /** Whether a click carries the selection modifier. */
+  function selectionClick(event) {
+    return PICK_WITH_META ? Boolean(event.metaKey) : Boolean(event.ctrlKey);
+  }
+
+  /** Add a card to the selection, or take it out again. */
+  function toggleSelected(anchor) {
+    const next = new Set(selected);
+    if (next.has(anchor)) next.delete(anchor);
+    else next.add(anchor);
+    setSelection(next);
   }
 
   /** Replace the selection with the given anchors that still exist. */
