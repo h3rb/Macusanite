@@ -31,7 +31,7 @@ import {
   nodeFileRef, nodeFileMetaName, cleanNodeResources, normalizeWebUrl,
   referencedNodeFileMetaNames, orphanedNodeFileMetaNames, NODE_FILE_MAX_BYTES, NODE_RESOURCE_LIMIT,
   canvasSnapshot as snapshotCanvas, renameHistoryAnchor, pruneHistoryStack,
-  connectedAnchors, lineageAnchors, anchorsInRect, relationshipDepths, canvasSearch,
+  connectedAnchors, lineageAnchors, anchorsInRect, curvesInRect, relationshipDepths, canvasSearch,
   connectorList, connectorKey, nextConnectorSelection, pathAnchors, effectiveRouting, spreadConnectorCurves, cleanCardModes, cleanCardSizes, cleanCardDims, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
   progressionColumns,
   DEFAULT_STEP_NAME, cleanHistoryStack, historyJump, historyKey,
@@ -328,6 +328,9 @@ export function createWorldbuildPanel({ app, root }) {
   // Connectors picked on the canvas, by connector key. Transient, like
   // card selection: they batch routing/arrowheads and seed path tracing.
   let selectedEdges = new Set();
+  // How each drawn wire was laid out, so a marquee can tell which connectors
+  // its rectangle crosses. Rebuilt with every redraw.
+  let connectorCurves = [];
   let arrangeButton = null;
   let menuEl = null;
   let submenuEl = null;
@@ -8705,6 +8708,7 @@ export function createWorldbuildPanel({ app, root }) {
     const labels = [];
     const surfaceRects = labelSurfaceRects();
     const drawnConnectors = spreadConnectorCurves(prepared);
+    connectorCurves = drawnConnectors.map(({ key, at }) => ({ key, at }));
     for (const { edge, key, eff, stacked, path, at, headAtStart, cut } of drawnConnectors) {
       const isGroup = edge.from.startsWith('group:') || edge.to.startsWith('group:');
       const relation = edge.relation ? relationKind(edge.relation) : null;
@@ -8857,6 +8861,9 @@ export function createWorldbuildPanel({ app, root }) {
         startY: event.clientY,
         additive,
         base: additive ? new Set(selected) : new Set(),
+        // Connectors picked before the drag: while there are any, the
+        // rectangle also gathers the wires it crosses.
+        connectorBase: new Set(selectedEdges),
         moved: false,
       };
       event.preventDefault();
@@ -8931,6 +8938,21 @@ export function createWorldbuildPanel({ app, root }) {
         const rects = (model?.notes ?? []).map((note, index) => ({ anchor: note.anchor, ...rectOf(index) }));
         const hits = anchorsInRect(rects, box);
         setSelection(marquee.additive ? new Set([...marquee.base, ...hits]) : hits);
+        if (marquee.connectorBase.size) {
+          // A connector already picked turns the rectangle into a connector
+          // picker too: every wire it crosses joins the pick instead of
+          // replacing it, so a set of connectors can be swept up in one drag.
+          const crossed = curvesInRect(
+            connectorCurves.map(({ key, at }) => ({
+              key,
+              points: Array.from({ length: 13 }, (_, i) => at(i / 12)),
+            })),
+            box,
+          );
+          selectedEdges = new Set([...marquee.connectorBase, ...crossed]);
+          syncConnectorUi();
+          scheduleEdges();
+        }
       }
       return;
     }

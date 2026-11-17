@@ -24,7 +24,7 @@ import {
   NODE_FILES_DIR, nodeFileRef, nodeFileMetaName, nodeFileMetaNames, nodeFileMetaNamesFromSnapshot,
   referencedNodeFileMetaNames, orphanedNodeFileMetaNames, cleanNodeResources, normalizeWebUrl,
   lockedContentAnchors, sourceSectionRanges, enforceLockedSource, lockedRangeAt,
-  connectedAnchors, lineageAnchors, anchorsInRect, relationshipDepths, canvasSearch,
+  connectedAnchors, lineageAnchors, anchorsInRect, curvesInRect, relationshipDepths, canvasSearch,
   connectorList, connectorKey, nextConnectorSelection, pathAnchors, effectiveRouting, cleanCardModes, cleanCardDims, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
   CARD_MIN_W, CARD_MIN_H, CARD_MAX_W, CARD_MAX_H,
   arrangeCandidateOrigins, findArrangeOrigin,
@@ -289,6 +289,27 @@ test('anchorsInRect finds cards intersecting the marquee', () => {
   // Touching an edge counts: the box from a's corner to b's edge meets both.
   assert.deepEqual([...anchorsInRect(rects, { x: 100, y: 0, width: 100, height: 100 })].sort(), ['a', 'b']);
   assert.deepEqual([...anchorsInRect(rects, { x: 400, y: 400, width: 10, height: 10 })], []);
+});
+
+test('curvesInRect picks the wires a marquee crosses, not only those ending inside', () => {
+  const box = { x: 100, y: 100, width: 100, height: 100 };
+  const curves = [
+    // Straight through: neither end is in the box.
+    { key: 'across', points: [{ x: 50, y: 150 }, { x: 250, y: 150 }] },
+    // One end inside.
+    { key: 'ending', points: [{ x: 150, y: 150 }, { x: 400, y: 400 }] },
+    // Bent wire clearing the box entirely.
+    { key: 'clear', points: [{ x: 0, y: 0 }, { x: 50, y: 250 }, { x: 400, y: 250 }] },
+    // Too short to reach: the only run sits left of the box.
+    { key: 'short', points: [{ x: 0, y: 150 }, { x: 60, y: 150 }] },
+  ];
+  assert.deepEqual([...curvesInRect(curves, box)].sort(), ['across', 'ending']);
+  // A box around the short wire alone picks only it, and an empty patch of
+  // canvas picks nothing.
+  assert.deepEqual([...curvesInRect(curves, { x: 0, y: 145, width: 10, height: 10 })], ['short']);
+  assert.deepEqual([...curvesInRect(curves, { x: 500, y: 500, width: 50, height: 50 })], []);
+  assert.deepEqual([...curvesInRect([], box)], []);
+  assert.deepEqual([...curvesInRect([{ key: 'bare' }, { points: [{ x: 150, y: 150 }] }], box)], []);
 });
 
 test('relationshipDepths layers a chain by longest path', () => {

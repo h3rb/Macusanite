@@ -2308,6 +2308,70 @@ export function anchorsInRect(rects = [], box = {}) {
 }
 
 /**
+ * Whether the straight run between two points touches a box. A run that only
+ * passes through counts: a wire crossing the marquee has neither end inside it.
+ */
+function segmentHitsRect(from, to, box) {
+  const right = box.x + box.width;
+  const bottom = box.y + box.height;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  let enter = 0;
+  let exit = 1;
+  const edges = [
+    [-dx, from.x - box.x],
+    [dx, right - from.x],
+    [-dy, from.y - box.y],
+    [dy, bottom - from.y],
+  ];
+  for (const [edge, distance] of edges) {
+    if (edge === 0) {
+      // Parallel to this edge: only a run already outside it can miss.
+      if (distance < 0) return false;
+      continue;
+    }
+    const at = distance / edge;
+    if (edge < 0) enter = Math.max(enter, at);
+    else exit = Math.min(exit, at);
+    if (enter > exit) return false;
+  }
+  return true;
+}
+
+/**
+ * The keys of the wires a marquee box touches. `curves` are `{key, points}`
+ * sampled along each drawn wire; a wire counts when any of its points is in
+ * the box or a run between two points crosses it, so a wire that passes
+ * straight through the box is picked as readily as one that ends inside it.
+ */
+export function curvesInRect(curves = [], box = {}) {
+  const hits = new Set();
+  if (!box || !Number.isFinite(box.x) || !Number.isFinite(box.y)
+    || !Number.isFinite(box.width) || !Number.isFinite(box.height)) return hits;
+  const right = box.x + box.width;
+  const bottom = box.y + box.height;
+  for (const curve of curves ?? []) {
+    const key = curve?.key;
+    const points = (curve?.points ?? []).filter((point) => point
+      && Number.isFinite(point.x) && Number.isFinite(point.y));
+    if (!key || !points.length) continue;
+    if (hits.has(key)) continue;
+    for (let i = 0; i < points.length; i += 1) {
+      const point = points[i];
+      if (point.x >= box.x && point.x <= right && point.y >= box.y && point.y <= bottom) {
+        hits.add(key);
+        break;
+      }
+      if (i && segmentHitsRect(points[i - 1], point, box)) {
+        hits.add(key);
+        break;
+      }
+    }
+  }
+  return hits;
+}
+
+/**
  * Relationship depth for each anchor in `anchors`: the longest directed
  * path through prose links and bonds inside the set. Roots (no incoming
  * bond) sit at depth 0; cycles are bounded rather than infinite.
