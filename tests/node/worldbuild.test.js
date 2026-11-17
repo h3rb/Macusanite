@@ -17,7 +17,7 @@ import {
   DEFAULT_STEP_NAME, normalizeHistoryEntry, cleanHistoryStack, historyJump, historyKey,
   cleanView, restoreSnapshot, canvasRecordPatch,
   pushHistoryStep, rewriteHistoryStack, renameHistoryAnchor, pruneHistoryStack, dropAnchorFromGroups, fitView,
-  centreView, snapDelta, rectsOverlap, resolveOverlaps, canvasHealth, layoutSelection, normalizeRouting, elbowPoints,   connectorCurve, sampleConnectorCurve, spreadConnectorCurves, prepareConnectorGeometry, CONNECTOR_LANE_PITCH, CONNECTOR_SPREAD, CONNECTOR_CUT_SPAN, cleanAnnotations,
+  centreView, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, normalizeRouting, elbowPoints,   connectorCurve, sampleConnectorCurve, spreadConnectorCurves, prepareConnectorGeometry, CONNECTOR_LANE_PITCH, CONNECTOR_SPREAD, CONNECTOR_CUT_SPAN, cleanAnnotations,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
   nodeImageMetaNames, nodeImageMetaNamesFromSnapshot, referencedNodeImageMetaNames, orphanedNodeImageMetaNames,
   NODE_IMAGE_MAX_SIDE, NODE_IMAGE_QUALITY, nodeImageSize,
@@ -1112,6 +1112,81 @@ test('resolveOverlaps does not move a card that is merely near another', () => {
   assert.deepEqual(result.positions.get('near'), { x: 108, y: 0 });
 });
 
+
+const RESIZE_START = { x: 100, y: 100, width: 200, height: 150 };
+
+/** The resized card's box at a dragged corner; only width and height move. */
+const atCorner = (width, height = RESIZE_START.height) => ({ ...RESIZE_START, width, height });
+
+test('a card beside the resized edge is pushed out and comes back with the corner', () => {
+  const cards = [{ key: 'b', x: 300, y: 120, width: 120, height: 80 }];
+  // The edge reaches the card and carries it along.
+  assert.deepEqual(resizePush({ start: RESIZE_START, next: atCorner(260), cards }).get('b'), { x: 360, y: 120 });
+  // Dragged back to the first size, every card is back where it began.
+  assert.deepEqual(resizePush({ start: RESIZE_START, next: atCorner(200), cards }).get('b'), { x: 300, y: 120 });
+});
+
+test('a card past the growing edge stays put until the edge reaches it', () => {
+  const cards = [{ key: 'far', x: 600, y: 120, width: 100, height: 80 }];
+  assert.deepEqual(resizePush({ start: RESIZE_START, next: atCorner(260), cards }).get('far'), { x: 600, y: 120 });
+  assert.deepEqual(resizePush({ start: RESIZE_START, next: atCorner(560), cards }).get('far'), { x: 660, y: 120 });
+});
+
+test('shrinking the card pulls the cards beside it in', () => {
+  const cards = [{ key: 'b', x: 300, y: 120, width: 100, height: 80 }];
+  // 50px narrower: the card beside the edge closes the same 50px.
+  assert.deepEqual(resizePush({ start: RESIZE_START, next: atCorner(150), cards }).get('b'), { x: 250, y: 120 });
+});
+
+test('a card that cannot come back in without a collision stays where it was', () => {
+  const cards = [
+    // A pinned card holds the space the follower would move into.
+    { key: 'pinned', x: 700, y: 120, width: 60, height: 80, movable: false },
+    { key: 'b', x: 800, y: 120, width: 100, height: 80 },
+  ];
+  const wide = { x: 100, y: 100, width: 500, height: 150 };
+  const out = resizePush({ start: wide, next: { ...wide, width: 400 }, cards });
+  assert.deepEqual(out.get('b'), { x: 800, y: 120 });
+  // The pinned card never moves and never appears in the result.
+  assert.equal(out.get('pinned'), undefined);
+});
+
+test('a push travels through the cards it meets', () => {
+  const cards = [
+    { key: 'b', x: 300, y: 120, width: 100, height: 80 },
+    { key: 'c', x: 400, y: 120, width: 100, height: 80 },
+  ];
+  const out = resizePush({ start: RESIZE_START, next: atCorner(260), cards });
+  assert.deepEqual(out.get('b'), { x: 360, y: 120 });
+  // The first card's new box reaches the second, which moves on in turn.
+  assert.deepEqual(out.get('c'), { x: 460, y: 120 });
+});
+
+test('the bottom edge carries the cards below it, and a corner card clears downwards', () => {
+  const below = { key: 'below', x: 150, y: 250, width: 100, height: 100 };
+  const out = resizePush({ start: RESIZE_START, next: atCorner(200, 200), cards: [below] });
+  assert.deepEqual(out.get('below'), { x: 150, y: 300 });
+
+  // Below and to the right of the first box: no edge band reaches it, so it
+  // is cleared along the axis that moves it least.
+  const corner = { key: 'corner', x: 350, y: 300, width: 100, height: 100 };
+  const grown = resizePush({ start: RESIZE_START, next: atCorner(400, 300), cards: [corner] });
+  assert.deepEqual(grown.get('corner'), { x: 350, y: 400 });
+});
+
+test('cards clear of the resized edges keep their place, overlaps and all', () => {
+  const cards = [
+    { key: 'left', x: 120, y: 400, width: 100, height: 80 },
+    // These two already overlap each other; a resize elsewhere must not tidy them.
+    { key: 'pileA', x: 900, y: 120, width: 100, height: 80 },
+    { key: 'pileB', x: 950, y: 140, width: 100, height: 80 },
+  ];
+  const out = resizePush({ start: RESIZE_START, next: atCorner(320), cards });
+  for (const key of ['left', 'pileA', 'pileB']) {
+    assert.equal(out.get(key).x, cards.find((card) => card.key === key).x);
+    assert.equal(out.get(key).y, cards.find((card) => card.key === key).y);
+  }
+});
 
 test('clampView keeps the canvas covering the viewport, with a slight overpan', () => {
   const canvas = { w: 800, h: 600 };

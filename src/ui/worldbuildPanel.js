@@ -22,7 +22,7 @@ import {
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
   TABLE_ALIGNMENTS, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_HEADER_MAX_LENGTH, TABLE_CELL_MAX_LENGTH,
   dropMembershipKind,
-  clampView, snapZoomView, fitView, centreView, snapDelta, rectsOverlap, resolveOverlaps, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
+  clampView, snapZoomView, fitView, centreView, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
   normalizeRouting, prepareConnectorGeometry, cleanAnnotations, makeAnnotationId,
   placeConnectorLabels,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
@@ -2797,10 +2797,25 @@ export function createWorldbuildPanel({ app, root }) {
           el: card,
           startW: box.width,
           startH: box.height,
+          // The box the drag began from, and every other card at its own
+          // starting place: the push is measured from these, so returning the
+          // corner to its first size restores the canvas around it.
+          startRect: { x: box.x, y: box.y, width: box.width, height: box.height },
+          bases: visibleCardRects()
+            .filter((rect) => rect.anchor !== anchor)
+            .map(({ anchor: key, x, y, width, height }) => ({
+              key,
+              x,
+              y,
+              width,
+              height,
+              movable: !isAnchorPinned(key) && !isContentLocked(key) && !isAnchorFrozen(key),
+            })),
           start: canvasPoint(event),
           width: Math.round(box.width),
           height: Math.round(box.height),
           moved: false,
+          pushed: false,
         };
         card.classList.add('is-resizing');
       });
@@ -3951,6 +3966,40 @@ export function createWorldbuildPanel({ app, root }) {
       }
     }
     return result.moved.size;
+  }
+
+  /**
+   * Cards beside the corner being dragged stick to the edges it moves: each is
+   * pushed once an edge reaches it, and comes back in when the corner is
+   * dragged back, so a resize that ends at its first size leaves the canvas
+   * around it as it was. Only the card being resized and the cards that follow
+   * it move; pinned, frozen and content-locked cards stay put and block a push.
+   */
+  function pushResizeNeighbours() {
+    if (!resizing?.startRect || !model) return 0;
+    const targets = resizePush({
+      start: resizing.startRect,
+      next: { ...resizing.startRect, width: resizing.width, height: resizing.height },
+      cards: resizing.bases,
+      gap: 0,
+      minX: 4,
+      minY: 4,
+    });
+    let moved = 0;
+    for (const [anchor, at] of targets) {
+      const current = positions.get(anchor);
+      if (current && Math.round(current.x) === at.x && Math.round(current.y) === at.y) continue;
+      positions.set(anchor, at);
+      const index = model.notes.findIndex((note) => note.anchor === anchor);
+      const card = index >= 0 ? cardEls[index] : null;
+      if (card) {
+        card.style.left = `${at.x}px`;
+        card.style.top = `${at.y}px`;
+      }
+      moved += 1;
+    }
+    if (moved) resizing.pushed = true;
+    return moved;
   }
 
   /**
@@ -8834,6 +8883,7 @@ export function createWorldbuildPanel({ app, root }) {
       resizing.moved = true;
       resizing.el.style.width = `${resizing.width}px`;
       resizing.el.style.height = `${resizing.height}px`;
+      pushResizeNeighbours();
       sizeCanvas();
       scheduleEdges();
       return;
@@ -8996,6 +9046,9 @@ export function createWorldbuildPanel({ app, root }) {
           done.el.classList.remove('is-content-sized');
         }
         cardDims = app.setWorldCardDims(currentPath, done.anchor, { width: done.width, height: done.height }) ?? cardDims;
+        // Whatever the push moved is part of the same drag, so the one undo
+        // step restores the size and the cards around it together.
+        if (done.pushed) savePositions();
         sizeCanvas();
         drawEdges();
       }

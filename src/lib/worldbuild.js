@@ -3512,6 +3512,171 @@ export function resolveOverlaps(entries, blockers = [], {
 }
 
 /**
+ * Where the cards around a card being resized from its bottom-right corner
+ * belong.
+ *
+ * `start` is the resized box when the drag began and `next` is that box now;
+ * they share a top-left corner, because only the corner handle moves. Cards
+ * beside a moving right or bottom edge stick to it: one is pushed only once
+ * the edge reaches it, and the same cards come back in when the box shrinks
+ * past its original size. Dragging the corner back to where it started
+ * therefore puts every card back where it was. A card the expanded box
+ * reaches under the corner rather than beside an edge is cleared along the
+ * axis that costs it the least movement.
+ *
+ * `cards` are the other cards at the boxes they had when the drag began, each
+ * with a `key`; `movable: false` pins one in place as an obstacle. A push
+ * travels through cards it meets instead of stopping at the first one, while
+ * a card that cannot come back in without landing on another stays put. The
+ * result is a Map of every card's `key` to the `{x, y}` it should now occupy.
+ */
+export function resizePush({ start, next, cards = [], gap = 0, minX = 4, minY = 4 } = {}) {
+  const result = new Map();
+  if (!start || !next) return result;
+  const geometry = [start.x, start.y, start.width, start.height, next.x, next.y, next.width, next.height];
+  if (!geometry.every((value) => Number.isFinite(value))) return result;
+
+  const margin = Number.isFinite(gap) && gap >= 0 ? gap : 0;
+  const floorX = Number.isFinite(minX) ? minX : 4;
+  const floorY = Number.isFinite(minY) ? minY : 4;
+  const startRight = start.x + start.width;
+  const startBottom = start.y + start.height;
+  const right = next.x + next.width;
+  const bottom = next.y + next.height;
+  const box = { x: next.x, y: next.y, width: next.width, height: next.height };
+
+  const live = (cards ?? []).filter((card) => card
+    && Number.isFinite(card.x) && Number.isFinite(card.y)
+    && Number.isFinite(card.width) && Number.isFinite(card.height)
+    && card.width > 0 && card.height > 0);
+
+  /** The moving edge a card sits beside, if any: that edge carries it along. */
+  const sideOf = (card) => {
+    const rightSide = card.y < startBottom && card.y + card.height > start.y;
+    if (rightSide && card.x >= startRight - 0.5) return 'right';
+    const bottomSide = card.x < startRight && card.x + card.width > start.x;
+    return bottomSide && card.y >= startBottom - 0.5 ? 'bottom' : null;
+  };
+
+  // Sticking depends only on the edge and the card's first box, so the same
+  // corner always produces the same places: the move is reversible.
+  const stickTo = (card, side) => {
+    if (side === 'right') {
+      return { x: Math.max(card.x, right) + Math.min(0, right - startRight), y: card.y };
+    }
+    if (side === 'bottom') {
+      return { x: card.x, y: Math.max(card.y, bottom) + Math.min(0, bottom - startBottom) };
+    }
+    return { x: card.x, y: card.y };
+  };
+
+  const current = new Map(live.map((card) => [
+    card.key,
+    { x: card.x, y: card.y, width: card.width, height: card.height },
+  ]));
+  const others = (key) => [...current.entries()]
+    .filter(([other]) => other !== key)
+    .map(([, rect]) => rect);
+  const collisions = (rect, key) => [box, ...others(key)].filter((blocker) => rectsOverlap(rect, blocker));
+
+  // A moving card clears the resized box, the cards that cannot move and the
+  // cards already carried along. A card still awaiting its turn is left to
+  // take the push itself, so a row of cards shifts across instead of the first
+  // one hopping over the rest.
+  const shifted = new Set();
+  const pinned = live
+    .filter((card) => card.movable === false)
+    .map((card) => ({ x: card.x, y: card.y, width: card.width, height: card.height }));
+  const shiftedRects = (key) => [...shifted]
+    .filter((other) => other !== key)
+    .map((other) => current.get(other))
+    .filter(Boolean);
+
+  // Right-side cards are handled before bottom-side ones, and each group from
+  // the edge outwards, so a push meets the next card after it has a new place.
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const ordered = live
+    .filter((card) => card.movable !== false)
+    .map((card) => ({ card, side: sideOf(card) }))
+    .sort((a, b) => {
+      const rank = (entry) => (entry.side === 'right' ? 0 : entry.side === 'bottom' ? 1 : 2);
+      const byRank = rank(a) - rank(b);
+      if (byRank) return byRank;
+      if (a.side === 'right') return a.card.x - b.card.x;
+      if (a.side === 'bottom') return a.card.y - b.card.y;
+      const distance = (entry) => Math.hypot(entry.card.x - centre.x, entry.card.y - centre.y);
+      return distance(a) - distance(b);
+    });
+
+  for (const { card, side } of ordered) {
+    const base = current.get(card.key);
+    const target = stickTo(card, side);
+    let x = Math.round(Math.max(floorX, target.x));
+    let y = Math.round(Math.max(floorY, target.y));
+    let axis = side === 'right' ? 'x' : side === 'bottom' ? 'y' : null;
+    let direction = 1;
+    let pushed = x !== base.x || y !== base.y || rectsOverlap(base, box);
+
+    if (!pushed) {
+      // A card the edges never reached can still stand where one of them was
+      // pushed, and then it moves on in turn.
+      const here = { x: base.x, y: base.y, width: card.width, height: card.height };
+      const hit = [...shifted]
+        .map((key) => current.get(key))
+        .find((other) => other && rectsOverlap(here, other));
+      if (hit) {
+        pushed = true;
+        x = base.x;
+        y = base.y;
+        const acrossX = Math.min(here.x + here.width, hit.x + hit.width) - Math.max(here.x, hit.x);
+        const acrossY = Math.min(here.y + here.height, hit.y + hit.height) - Math.max(here.y, hit.y);
+        axis = axis ?? (acrossX <= acrossY ? 'x' : 'y');
+        // Move away from whatever arrived: a card hit from its left goes right.
+        direction = axis === 'x' ? (hit.x >= here.x ? -1 : 1) : (hit.y >= here.y ? -1 : 1);
+      }
+    }
+    if (!pushed) {
+      result.set(card.key, { x: base.x, y: base.y });
+      continue;
+    }
+
+    if (x < base.x || y < base.y) {
+      // Closing the gap must not open a collision: a card that cannot follow
+      // the shrinking edge where it now is stays where it was.
+      if (collisions({ x, y, width: card.width, height: card.height }, card.key).length) {
+        x = base.x;
+        y = base.y;
+      }
+    } else {
+      if (!axis) axis = right + margin - base.x <= bottom + margin - base.y ? 'x' : 'y';
+      const blockers = [box, ...pinned, ...shiftedRects(card.key)];
+      for (let guard = 0; guard < 64; guard += 1) {
+        const rect = { x, y, width: card.width, height: card.height };
+        const hits = blockers.filter((blocker) => rectsOverlap(rect, blocker));
+        if (!hits.length) break;
+        if (axis === 'x') {
+          x = Math.round(direction > 0
+            ? Math.max(...hits.map((hit) => hit.x + hit.width + margin))
+            : Math.min(...hits.map((hit) => hit.x - card.width - margin)));
+        } else {
+          y = Math.round(direction > 0
+            ? Math.max(...hits.map((hit) => hit.y + hit.height + margin))
+            : Math.min(...hits.map((hit) => hit.y - card.height - margin)));
+        }
+        if (x < floorX || y < floorY) break;
+      }
+      x = Math.max(floorX, x);
+      y = Math.max(floorY, y);
+    }
+
+    current.set(card.key, { x, y, width: card.width, height: card.height });
+    result.set(card.key, { x, y });
+    if (x !== base.x || y !== base.y) shifted.add(card.key);
+  }
+  return result;
+}
+
+/**
  * Lay a selected set out from its current rects. Alignment moves one axis
  * onto the set's bounding edge or centreline; distribution keeps the first
  * and last card fixed and spaces the others evenly between their
