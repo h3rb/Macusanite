@@ -285,8 +285,8 @@ tests/node/     unit tests for everything under src/lib plus the renderers
 ### Tests
 
 ```bash
-npm test                                  # 401 JS tests
-cargo test --manifest-path src-tauri/Cargo.toml   # 41 Rust tests
+npm test                                  # 415 JS tests
+cargo test --manifest-path src-tauri/Cargo.toml   # 44 Rust tests
 ```
 
 The Rust suite covers refusal of path traversal, vault scanning (including the per-vein stat used as the index-cache key and the exact JSON field names in that key), tree shape, atomic writes, undo/redo semantics, `.macusanite` creation, log lines, and the `slugify` parity that keeps `[[Note#Heading]]` anchors working on both sides. It also watches a real temporary folder and verifies that external creates, edits and deletes each arrive as one batch, that a hand-edit to `settings.json` is delivered, and that the application's own writes remain quiet. That last check includes its own metadata, which is not echoed back and is still detected when a person edits it a moment later. The JavaScript suite covers the same contracts as well as rendered HTML (swatches, anchors, ghosts, mermaid capture and code masking), the browser fallback's behavior, the refresh planner that determines the meaning of an external change, and the index cache, including which entries a walk can reuse, which entries must be read, and whether a 5,000-vein vault can be planned without opening anything. It also covers search: which field outranks another, that a phrase beats the same words scattered, that every term must appear, and that snippets and highlights mark the correct characters.

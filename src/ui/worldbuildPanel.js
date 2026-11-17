@@ -10,6 +10,7 @@
  */
 import { el, clear, appendAll, askText } from './dom.js';
 import { renderMarkdown, renderMermaidIn } from './markdown.js';
+import { searchIcons } from '../lib/iconSet.js';
 import {
   parseNotes, serializeNotes, updateNote, updateIntro, addNote, removeNote,
   noteEdges, noteStats, countWords, DEFAULT_LEVEL,
@@ -5735,7 +5736,7 @@ export function createWorldbuildPanel({ app, root }) {
       legendRow(legendSample('wb-edge wb-edge-contains'), 'Dotted', 'the vein’s outline: each card nested under its nearest shallower heading.'),
       legendRow(legendSample('wb-edge wb-edge-section'), 'Solid', 'a link in the prose — [[#Heading]] — between two notes.'),
       legendRow(legendSample('wb-edge wb-edge-mention'), 'Green and faint', 'a mention, [[Another note]], reaching across the vault.'),
-      legendRow(legendSample('wb-edge wb-edge-section wb-rel-affects'), 'A word on the line', 'is its relationship: associate, member of, template, parent, child, contains, controls, affects, and on to ally and foe — thickening as it strengthens. Click the word to step it.'),
+      legendRow(legendSample('wb-edge wb-edge-section wb-rel-affects'), 'A word on the line', 'is its relationship: associate, references, member of, template, parent, child, contains, controls, affects, and on to ally and foe — thickening as it strengthens. Click the word to step it.'),
       legendRow(legendSample('wb-edge wb-edge-bond wb-rel-ally'), 'Dashed', 'a canvas bond asserted from a link dot — no prose link stands behind it.'),
       legendRow(legendSample('wb-edge wb-edge-group wb-rel-ally'), 'Dashed and doubled', 'a canvas bond to a group, drawn at twice the weight of a card bond of the same kind.'),
       el('div', { class: 'wb-menu-label', text: 'Colour' }),
@@ -6346,6 +6347,106 @@ export function createWorldbuildPanel({ app, root }) {
       drawEdges();
     }, `Set group icon for “${groups[id]?.name || 'group'}”`);
     closeMenu();
+  }
+
+  /**
+   * Every character a group tab can wear, behind one search box. The icon row
+   * in the menu covers the everyday marks; this reaches the rest of Unicode,
+   * the dingbats and emoji, matching on names and keywords as well as shape.
+   */
+  function pickGroupIcon(id) {
+    const group = groups[id];
+    if (!group || !currentPath) return;
+    for (const stale of document.querySelectorAll('dialog.wb-icon-dialog')) stale.remove();
+    const dialog = el('dialog', { class: 'md-dialog wb-icon-dialog', 'aria-label': 'Choose a group icon' });
+    const current = group.icon || GROUP_GENERIC_ICON;
+    const search = el('input', {
+      class: 'md-input wb-icon-search',
+      type: 'search',
+      placeholder: 'Search icons — star, castle, sword, weather…',
+      'aria-label': 'Search icons',
+      autocomplete: 'off',
+      spellcheck: 'false',
+    });
+    const results = el('div', { class: 'wb-icon-results' });
+    const status = el('p', { class: 'md-hint wb-icon-status' });
+
+    const finish = (icon) => {
+      document.removeEventListener('keydown', escapeDialog, true);
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      // Picking the icon the group already wears is not a canvas step.
+      if (icon && icon !== current) setGroupIcon(id, icon);
+    };
+
+    function escapeDialog(event) {
+      if (event.key !== 'Escape' || !dialog.open) return;
+      event.preventDefault();
+      event.stopPropagation();
+      finish(null);
+    }
+
+    function paint() {
+      const matches = searchIcons(search.value);
+      clear(results);
+      let section = null;
+      for (const icon of matches) {
+        if (icon.section !== section) {
+          section = icon.section;
+          results.append(el('span', { class: 'wb-icon-section', text: section }));
+        }
+        results.append(el('button', {
+          class: `wb-icon-cell${icon.char === current ? ' is-current' : ''}`,
+          type: 'button',
+          text: icon.char,
+          title: icon.name,
+          'aria-label': `${icon.name}${icon.char === current ? ' (current icon)' : ''}`,
+          onclick: () => finish(icon.char),
+        }));
+      }
+      status.textContent = matches.length
+        ? `${matches.length} icon${matches.length === 1 ? '' : 's'} — Enter picks the first`
+        : 'No icon matches that search';
+      if (!matches.length) {
+        results.append(el('p', {
+          class: 'md-hint wb-icon-empty',
+          text: 'Try a plainer word: star, boat, tree, tool, face, heart.',
+        }));
+      }
+    }
+
+    search.addEventListener('input', paint);
+    search.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        results.querySelector('.wb-icon-cell')?.click();
+      }
+    });
+
+    dialog.append(el('div', { class: 'md-dialog-form' }, [
+      el('h2', { class: 'md-dialog-title', text: `Icon for “${group.name || 'Group'}”` }),
+      search,
+      status,
+      results,
+      el('div', { class: 'md-dialog-actions' }, [
+        el('button', {
+          type: 'button',
+          class: 'btn',
+          text: 'Cancel',
+          title: 'Keep the current icon',
+          onclick: () => finish(null),
+        }),
+      ]),
+    ]));
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      finish(null);
+    });
+    document.addEventListener('keydown', escapeDialog, true);
+    document.body.append(dialog);
+    paint();
+    dialog.showModal();
+    search.focus();
   }
 
   /**
@@ -8032,13 +8133,26 @@ export function createWorldbuildPanel({ app, root }) {
         onclick: () => setGroupColor(group.id, color),
       })))]));
       const currentIcon = group.icon || GROUP_GENERIC_ICON;
-      items.push(submenuItem('Group icon', [el('div', { class: 'wb-menu-icons' }, GROUP_ICONS.map((icon) => el('button', {
+      const iconButtons = GROUP_ICONS.map((icon) => el('button', {
         class: `wb-menu-icon${icon === currentIcon ? ' is-current' : ''}`,
         type: 'button',
         text: icon,
         'aria-label': `Group icon ${icon}`,
         onclick: () => setGroupIcon(group.id, icon),
-      })))], currentIcon));
+      }));
+      // Past the everyday marks: the whole character set, searchable.
+      iconButtons.push(el('button', {
+        class: 'wb-menu-icon is-more',
+        type: 'button',
+        text: '…',
+        'aria-label': 'Search every icon',
+        title: 'Search every icon — Unicode marks, dingbats and emoji',
+        onclick: () => {
+          closeMenu();
+          pickGroupIcon(group.id);
+        },
+      }));
+      items.push(submenuItem('Group icon', [el('div', { class: 'wb-menu-icons' }, iconButtons)], currentIcon));
       // On a group's own menu, Freeze/Unfreeze is a top-level action; on a
       // card's menu it belongs in the Group submenu with the other group state.
       if (!anchor) items.push(freezeMenuItem(group.locked === 'frozen', () => toggleGroupFreeze(group.id)));

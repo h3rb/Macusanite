@@ -4131,6 +4131,101 @@ dialog::backdrop {
   border-color: var(--text-dim);
 }
 
+/* The way past the icon row: the whole character set, searchable. */
+.wb-menu-icon.is-more {
+  color: var(--accent);
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* Group icon picker: every character, behind one search box. */
+.wb-icon-dialog {
+  width: min(680px, 94vw);
+  max-height: 84vh;
+}
+
+.wb-icon-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wb-icon-dialog .md-dialog-form {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.wb-icon-search {
+  flex: 0 0 auto;
+}
+
+.wb-icon-status {
+  margin: -4px 0 0;
+}
+
+.wb-icon-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+  gap: 4px;
+  flex: 1 1 auto;
+  min-height: 140px;
+  max-height: 52vh;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.wb-icon-section {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wb-icon-section:first-child {
+  margin-top: 0;
+}
+
+.wb-icon-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.wb-icon-cell:hover,
+.wb-icon-cell:focus-visible {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.wb-icon-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.wb-icon-cell.is-current {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.wb-icon-empty {
+  grid-column: 1 / -1;
+  margin: 8px 2px;
+}
+
 /* Wider menus: the legend and gesture cheatsheet carry full-sentence rows. */
 .wb-legend,
 .wb-help {
@@ -4499,7 +4594,9 @@ dialog::backdrop {
   --wb-weight: 1.6px;
 }
 
-.wb-rel-member-of {
+.wb-rel-member-of,
+.wb-rel-references,
+.wb-rel-referenced-by {
   --wb-weight: 2.2px;
 }
 

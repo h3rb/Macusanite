@@ -164,6 +164,12 @@ test('relationship kinds run weakest-first, in inverse pairs', () => {
   const ids = RELATION_KINDS.map((k) => k.id);
   assert.ok(ids.indexOf('template') > ids.indexOf('member-of'));
   assert.ok(ids.indexOf('template') < ids.indexOf('parent'));
+  // References is the lightest committed bond, and names its own inverse.
+  assert.equal(relationKind('references').label, 'References');
+  assert.equal(relationKind('references').inverse, 'referenced-by');
+  assert.equal(relationKind('referenced-by').label, 'Referenced By');
+  assert.equal(relationKind('references').rank, relationKind('member-of').rank);
+  assert.ok(ids.indexOf('references') > ids.indexOf('associate'));
   // Affects pairs causation: above Controls, below Ally and Foe.
   assert.equal(relationKind('affects').inverse, 'affected-by');
   assert.ok(relationKind('affects').rank > relationKind('controls').rank);
@@ -175,6 +181,15 @@ test('relationship kinds run weakest-first, in inverse pairs', () => {
   assert.equal(last.id, 'foe');
   assert.ok(last.rank > secondLast.rank);
   assert.ok(secondLast.rank >= relationKind('controls').rank);
+});
+
+test('references and referenced by are asserted like any other kind', () => {
+  const relations = setRelation({}, 'a', 'b', 'references');
+  assert.equal(relationOf(relations, 'a', 'b').id, 'references');
+  // A bond is directed: the other way round is not implied until asserted.
+  assert.equal(relationOf(relations, 'b', 'a').id, DEFAULT_RELATION);
+  const cited = setRelation(relations, 'b', 'a', 'referenced-by');
+  assert.equal(relationOf(cited, 'b', 'a').label, 'Referenced By');
 });
 
 test('setRelation asserts a kind, overwrites it, and refuses nonsense', () => {
@@ -1132,7 +1147,6 @@ test('resolveOverlaps does not move a card that is merely near another', () => {
   assert.equal(result.moved.size, 0);
   assert.deepEqual(result.positions.get('near'), { x: 108, y: 0 });
 });
-
 
 const RESIZE_START = { x: 100, y: 100, width: 200, height: 150 };
 

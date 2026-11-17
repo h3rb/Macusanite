@@ -334,7 +334,7 @@ A **tag** is never a canvas-only annotation, because it is parsed from the note'
 
 ### Wires and relationships
 
-Every wire can carry a **relationship**: associate, member of, template, parent/child, contains/contained by, controls/controlled by, affects/affected by, ally or foe. The wire thickens as the relationship strengthens, and clicking the word on the wire advances to the next kind. Right-clicking a connector provides **Cycle relationship**, **Reverse relationship**, **Remove asserted relationship**, curve style, end selection and **Trace upstream/downstream**. Dragging from a selected set's menu, using **Relate to…** in a card's menu, or dragging a **link dot** asserts a bond between cards or a group endpoint. A link dot is refused for a pair that a prose link already joins, so dashed and solid wires never duplicate each other.
+Every wire can carry a **relationship**: associate, references/referenced by, member of, template, parent/child, contains/contained by, controls/controlled by, affects/affected by, ally or foe. The wire thickens as the relationship strengthens, and clicking the word on the wire advances to the next kind. Right-clicking a connector provides **Cycle relationship**, **Reverse relationship**, **Remove asserted relationship**, curve style, end selection and **Trace upstream/downstream**. Dragging from a selected set's menu, using **Relate to…** in a card's menu, or dragging a **link dot** asserts a bond between cards or a group endpoint. A link dot is refused for a pair that a prose link already joins, so dashed and solid wires never duplicate each other.
 
 ### Groups
 
@@ -353,7 +353,7 @@ Every wire can carry a **relationship**: associate, member of, template, parent/
 
 ### Selecting
 
-Clicking a card selects it, **Ctrl+click** toggles it in the set, and a picked set drags as one. **Shift+drag** on the background box-selects everything it touches. **Select ▾** adds quick selections such as connected cards, ancestors, descendants, cards of the same type or colour, group members, pinned cards, locked cards, untyped cards and cards without images, while the selection's right-click menu aligns and distributes the selection. **Fit selection** zooms to the selected cards.
+Clicking a card selects it, **Ctrl+click** toggles it in the set, and a picked set drags as one. **Shift+drag** on the background box-selects everything it touches. With connectors already selected, a **Shift+drag** marquee also adds every wire its rectangle crosses. **Select ▾** adds quick selections such as connected cards, ancestors, descendants, cards of the same type or colour, group members, pinned cards, locked cards, untyped cards and cards without images, while the selection's right-click menu aligns and distributes the selection. **Fit selection** zooms to the selected cards.
 
 ### Layouts
 

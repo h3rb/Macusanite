@@ -198,6 +198,10 @@ export function updateIntro(model, intro) {
  */
 export const RELATION_KINDS = [
   { id: 'associate', label: 'Associate', rank: 0 },
+  // Citation, the lightest committed bond: a note points at another without
+  // claiming authority over it, so it sits beside Member Of at the low rank.
+  { id: 'references', label: 'References', inverse: 'referenced-by', rank: 1 },
+  { id: 'referenced-by', label: 'Referenced By', inverse: 'references', rank: 1 },
   { id: 'member-of', label: 'Member Of', rank: 1 },
   { id: 'template', label: 'Template', rank: 2 },
   { id: 'parent', label: 'Parent', inverse: 'child', rank: 2 },
