@@ -2719,6 +2719,30 @@ export const ZOOM_MIN = 0.000001;
 export const ZOOM_MAX = 3;
 
 /**
+ * Below this scale the cards read as compact objects rather than editable
+ * surfaces. Forging a relationship stays available there: the link dot is
+ * redrawn at a constant screen size on the card's corner as long as the view
+ * is this small. At the boundary itself the port still sits in the card head.
+ */
+export const FORGE_ZOOM = 0.65;
+
+/** True when a view scale calls for the screen-sized corner forge ring. */
+export function isForgeZoom(scale) {
+  return scale < FORGE_ZOOM;
+}
+
+/**
+ * Toggle the compact-forge stage class for a scale. Takes a classList-like
+ * object so the rule can be exercised without a DOM; returns whether the
+ * class is on once the call is done.
+ */
+export function syncForgeZoomClass(classList, scale) {
+  const forge = isForgeZoom(scale);
+  classList.toggle('is-forge-zoom', forge);
+  return forge;
+}
+
+/**
  * Connector display preferences for a vein: whether wires run as bezier
  * curves or right-angle elbows, whether they carry arrowheads, and whether
  * long wires are cut off at a marker. Stored as a view preference, so junk

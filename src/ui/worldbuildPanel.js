@@ -23,7 +23,7 @@ import {
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
   TABLE_ALIGNMENTS, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_HEADER_MAX_LENGTH, TABLE_CELL_MAX_LENGTH,
   dropMembershipKind,
-  clampView, snapZoomView, fitView, centreView, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
+  clampView, snapZoomView, isForgeZoom, syncForgeZoomClass, fitView, centreView, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
   normalizeRouting, prepareConnectorGeometry, cleanAnnotations, makeAnnotationId,
   placeConnectorLabels,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
@@ -3243,6 +3243,7 @@ export function createWorldbuildPanel({ app, root }) {
     if (
       overview !== stage.classList.contains('is-zoomed-out')
       || annotationDrag !== stage.classList.contains('is-annotation-drag')
+      || isForgeZoom(view.s) !== stage.classList.contains('is-forge-zoom')
     ) syncZoomInteraction();
     const semantic = isSemanticZoom();
     const icon = isIconZoom();
@@ -3287,6 +3288,7 @@ export function createWorldbuildPanel({ app, root }) {
     const overview = isOverviewZoom();
     const annotationDrag = isAnnotationDragZoom();
     stage.classList.toggle('is-zoomed-out', overview);
+    syncForgeZoomClass(stage.classList, view.s);
     stage.classList.toggle('is-annotation-drag', annotationDrag);
     if (overview && !wasOverview) {
       const active = document.activeElement;
@@ -5744,7 +5746,7 @@ export function createWorldbuildPanel({ app, root }) {
       el('div', { class: 'wb-menu-label', text: 'Icons' }),
       legendRow('⠿', 'The grip', 'drag it to move the card, or a group’s tab to move the whole group.'),
       legendRow('▾', 'Fold', 'collapse a card to its header.'),
-      legendRow('◉', 'A link dot', 'in a card’s head, a group’s tab or a collapsed group’s summary — drag it to another card or group and choose the relationship on release.'),
+      legendRow('◉', 'A link dot', 'in a card’s head, a group’s tab or a collapsed group’s summary — drag it to another card or group and choose the relationship on release. It stays grabbable at every zoom, as a screen-sized ring on the card’s corner when the view is compact.'),
       legendRow('✕', 'Delete', 'click once to arm, again to delete the note.'),
       legendRow('⌂', 'A type', 'a coloured icon — Place, Person, Thing, Scene, Stat, Skill, and more — chosen from the drop-down on the card.'),
       legendRow('⁂', 'A group icon', '⁂ until one is picked; then whatever the group’s menu set, in the group’s colour.'),
@@ -7284,7 +7286,9 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   function startLinkDrag(event, from, handle) {
-    if (event.button !== 0 || !currentPath || !model || isOverviewZoom()) return;
+    // Forging stays available at every zoom: zoomed out, the handle is the
+    // card's screen-sized corner ring rather than its tiny head port.
+    if (event.button !== 0 || !currentPath || !model) return;
     event.preventDefault();
     event.stopPropagation();
     closeMenu();

@@ -12,6 +12,7 @@ import {
   splitMarkdownTableRow, markdownTableAt, markdownTables, tableFromMarkdown, markdownTableOnly, markdownFromTable, tableCaptionOf, replaceTableCaption, syncTableMarkdown,
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
   ZOOM_MIN, ZOOM_MAX, clampView, zoomViewAt, snapZoomView, anchorOfView, viewOfAnchor,
+  FORGE_ZOOM, isForgeZoom, syncForgeZoomClass,
   DROP_MIN_PX, dropMembershipKind,
   canvasSnapshot, pruneSnapshotAnchors, renameAnchorIn,
   DEFAULT_STEP_NAME, normalizeHistoryEntry, cleanHistoryStack, historyJump, historyKey,
@@ -1108,6 +1109,31 @@ test('snapZoomView leaves 100 and far crossings untouched', () => {
   // A fling that crosses 100% but lands far past it is not dragged back.
   assert.equal(snapZoomView({ x: 0, y: 0, s: 1.2 }, 0, 0, 0.5).s, 0.6);
   assert.equal(snapZoomView({ x: 0, y: 0, s: 0.25 }, 0, 0, Math.exp(2)).s, Math.exp(2) * 0.25);
+});
+
+test('forge zoom starts below 65% and toggles its stage class', () => {
+  assert.equal(FORGE_ZOOM, 0.65);
+  // At the boundary the port stays in the card head; only below it is the
+  // screen-sized corner ring used.
+  assert.equal(isForgeZoom(0.65), false);
+  assert.equal(isForgeZoom(0.6501), false);
+  assert.equal(isForgeZoom(0.6499), true);
+
+  const classes = new Set();
+  const classList = {
+    contains: (name) => classes.has(name),
+    toggle: (name, force) => (force ? classes.add(name) : classes.delete(name)),
+  };
+  assert.equal(syncForgeZoomClass(classList, 0.65), false);
+  assert.equal(classes.has('is-forge-zoom'), false);
+  assert.equal(syncForgeZoomClass(classList, 0.6), true);
+  assert.equal(classes.has('is-forge-zoom'), true);
+  // Crossing back up at the boundary clears it, and a stale class is corrected.
+  assert.equal(syncForgeZoomClass(classList, 0.65), false);
+  assert.equal(classes.has('is-forge-zoom'), false);
+  classes.add('is-forge-zoom');
+  assert.equal(syncForgeZoomClass(classList, 0.7), false);
+  assert.equal(classes.has('is-forge-zoom'), false);
 });
 
 test('rectsOverlap leaves touching edges clear', () => {

@@ -3689,8 +3689,8 @@ dialog::backdrop {
 }
 
 /* The link port: a small ring in a card head or on a group's title/summary.
- * It is always visible, stronger on hover and selection, and hidden below
- * 1:1 where the canvas is deliberately not an editing surface. */
+ * It is always visible, stronger on hover and selection, and stays grabbable
+ * in the zoomed-out view, where the canvas is otherwise an object map. */
 .wb-link-handle {
   flex: 0 0 auto;
   display: inline-grid;
@@ -4729,9 +4729,9 @@ dialog::backdrop {
 }
 
 /* Below 1:1 the card's text and controls are too small to aim at. Only the
- * card itself, its head, fold toggle and resize handle keep the pointer; the
- * rest falls through to the card, whose body is a drag surface. Menus stay
- * available on right-click, including the card's Rename command. */
+ * card itself, its head, fold toggle, resize handle and link port keep the
+ * pointer; the rest falls through to the card, whose body is a drag surface.
+ * Menus stay available on right-click, including the card's Rename command. */
 .wb-stage.is-zoomed-out .wb-card *,
 .wb-stage.is-zoomed-out .wb-group-tab * {
   pointer-events: none;
@@ -4765,8 +4765,10 @@ dialog::backdrop {
   pointer-events: none;
 }
 
+/* The port is a drag handle, not text: the compact view keeps it reachable
+ * even though every other child control falls through to the card. */
 .wb-stage.is-zoomed-out .wb-link-handle {
-  display: none;
+  pointer-events: auto;
 }
 
 /* At the summary scale cards keep their saved box and hit area, but give up
@@ -4842,7 +4844,42 @@ dialog::backdrop {
   box-shadow: none;
 }
 
-.wb-stage.is-semantic-zoom .wb-group-summary > :not(.wb-semantic) {
+/* Below 65% the nearest port is redrawn at a constant screen size on the
+ * card's corner, clear of the semantic face, so a relationship can still be
+ * forged by dragging from it to another card or group. */
+.wb-stage.is-forge-zoom .wb-card-head .wb-link-handle {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 4;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  opacity: 0.85;
+  transform: scale(var(--wb-inv-zoom, 1));
+  transform-origin: top right;
+}
+
+.wb-stage.is-forge-zoom .wb-card-head .wb-link-handle:hover,
+.wb-stage.is-forge-zoom .wb-card.is-selected .wb-card-head .wb-link-handle {
+  background: var(--bg-hover);
+  opacity: 1;
+}
+
+/* The ring occupies the corner the delete chip would use. That chip is inert
+ * at this zoom, so hide it rather than let the ring sit on top of it. */
+.wb-stage.is-forge-zoom .wb-card-del {
+  visibility: hidden;
+}
+
+.wb-stage.is-forge-zoom .wb-group-tab .wb-link-handle,
+.wb-stage.is-forge-zoom .wb-group-summary .wb-link-handle {
+  z-index: 3;
+  opacity: 0.85;
+  transform: scale(var(--wb-inv-zoom, 1));
+  transform-origin: top right;
+}
+
+.wb-stage.is-semantic-zoom .wb-group-summary > :not(.wb-semantic):not(.wb-link-handle) {
   pointer-events: none;
 }
 
@@ -4977,10 +5014,28 @@ dialog::backdrop {
  * type icon, with the icon held at a small screen size while its position
  * continues to follow the zoomed canvas. The card's own hit area and gestures
  * stay in place underneath. */
-.wb-stage.is-icon-zoom .wb-card-head,
 .wb-stage.is-icon-zoom .wb-resize,
 .wb-stage.is-icon-zoom .wb-group-summary-lock {
   display: none;
+}
+
+/* The card is only its type icon at this scale, but the head still holds the
+ * forge port. Drop the head box and its contents, keeping the handle as a
+ * child of the card so the port survives the icon handoff. */
+.wb-stage.is-icon-zoom .wb-card-head {
+  display: contents;
+}
+
+.wb-stage.is-icon-zoom .wb-card-head > :not(.wb-link-handle) {
+  display: none;
+}
+
+/* At icon scale the card is only about 36px wide: centre the ring on the
+ * top-right corner so it keeps its 16px target without covering the type
+ * icon or the point that selects the card. */
+.wb-stage.is-icon-zoom .wb-card-head .wb-link-handle {
+  top: calc(-8px * var(--wb-inv-zoom, 1));
+  right: calc(-8px * var(--wb-inv-zoom, 1));
 }
 
 .wb-stage.is-icon-zoom .wb-semantic {
