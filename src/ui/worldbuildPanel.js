@@ -23,7 +23,7 @@ import {
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
   TABLE_ALIGNMENTS, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_HEADER_MAX_LENGTH, TABLE_CELL_MAX_LENGTH,
   dropMembershipKind,
-  clampView, snapZoomView, isForgeZoom, syncForgeZoomClass, fitView, centreView, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
+  clampView, snapZoomView, isForgeZoom, syncForgeZoomClass, ICON_ZOOM, isIconZoom, fitView, centreView, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
   normalizeRouting, prepareConnectorGeometry, cleanAnnotations, makeAnnotationId,
   placeConnectorLabels,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
@@ -63,7 +63,6 @@ const SUMMARY_ZOOM = 0.55;
 // fixed screen size. Type keeps shrinking until ICON_ZOOM, where text stops
 // being useful and each card becomes its type icon.
 const COMPACT_ZOOM = 0.25;
-const ICON_ZOOM = 0.125;
 // Annotation text stays editable at 62% and above. Below that the note is a
 // single grab surface, so a drag cannot be swallowed by its textarea.
 const ANNOTATION_DRAG_ZOOM = 0.62;
@@ -355,11 +354,6 @@ export function createWorldbuildPanel({ app, root }) {
   /** True when the canvas is scaled down to its screen-readable summary. */
   function isSemanticZoom() {
     return view.s < SUMMARY_ZOOM;
-  }
-
-  /** True when text is gone and each card is only its type icon. */
-  function isIconZoom() {
-    return view.s <= ICON_ZOOM;
   }
 
   /** True when an annotation is below its editing floor and drags as a whole. */
@@ -3246,7 +3240,7 @@ export function createWorldbuildPanel({ app, root }) {
       || isForgeZoom(view.s) !== stage.classList.contains('is-forge-zoom')
     ) syncZoomInteraction();
     const semantic = isSemanticZoom();
-    const icon = isIconZoom();
+    const icon = isIconZoom(view.s);
     stage.classList.toggle('is-semantic-zoom', semantic);
     stage.classList.toggle('is-icon-zoom', icon);
     // The semantic face is laid out in screen pixels: the canvas scale shrinks

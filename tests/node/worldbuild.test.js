@@ -12,7 +12,7 @@ import {
   splitMarkdownTableRow, markdownTableAt, markdownTables, tableFromMarkdown, markdownTableOnly, markdownFromTable, tableCaptionOf, replaceTableCaption, syncTableMarkdown,
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
   ZOOM_MIN, ZOOM_MAX, clampView, zoomViewAt, snapZoomView, anchorOfView, viewOfAnchor,
-  FORGE_ZOOM, isForgeZoom, syncForgeZoomClass,
+  FORGE_ZOOM, isForgeZoom, syncForgeZoomClass, ICON_ZOOM, isIconZoom,
   DROP_MIN_PX, dropMembershipKind,
   canvasSnapshot, pruneSnapshotAnchors, renameAnchorIn,
   DEFAULT_STEP_NAME, normalizeHistoryEntry, cleanHistoryStack, historyJump, historyKey,
@@ -1134,6 +1134,16 @@ test('forge zoom starts below 65% and toggles its stage class', () => {
   classes.add('is-forge-zoom');
   assert.equal(syncForgeZoomClass(classList, 0.7), false);
   assert.equal(classes.has('is-forge-zoom'), false);
+});
+
+test('icon zoom engages at the displayed 12.5% wheel step', () => {
+  assert.equal(ICON_ZOOM, 0.125);
+  // A wheel step that displays as 12.5% can land just above the nominal scale.
+  assert.equal(isIconZoom(0.12500006666670221), true);
+  assert.equal(isIconZoom(0.125), true);
+  assert.equal(isIconZoom(0.12), true);
+  assert.equal(isIconZoom(0.12501), false);
+  assert.equal(isIconZoom(0.13), false);
 });
 
 test('rectsOverlap leaves touching edges clear', () => {

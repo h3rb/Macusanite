@@ -2719,6 +2719,20 @@ export const ZOOM_MIN = 0.000001;
 export const ZOOM_MAX = 3;
 
 /**
+ * At or below this scale each card is only its type icon. A wheel step that
+ * displays as 12.5% can land a few millionths above the nominal scale
+ * (0.125000066), so the check allows a tiny tolerance rather than leaving
+ * that step in semantic mode.
+ */
+export const ICON_ZOOM = 0.125;
+const ICON_ZOOM_EPSILON = 1e-6;
+
+/** True when a view scale is at the icon handoff, within wheel precision. */
+export function isIconZoom(scale) {
+  return scale <= ICON_ZOOM + ICON_ZOOM_EPSILON;
+}
+
+/**
  * Below this scale the cards read as compact objects rather than editable
  * surfaces. Forging a relationship stays available there: the link dot is
  * redrawn at a constant screen size on the card's corner as long as the view
