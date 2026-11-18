@@ -51,9 +51,32 @@ export function createSidebar({ app, root }) {
     el('div', { class: 'spacer' }),
     el('button', { class: 'icon-btn ui-icon-only', type: 'button', title: 'New chamber', icon: 'folder-plus', iconLabel: 'New chamber', onclick: () => app.newChamber() }),
     el('button', { class: 'icon-btn ui-icon-only', type: 'button', title: 'New vein', icon: 'file-plus', iconLabel: 'New vein', onclick: () => app.newVein() }),
+    el('button', {
+      class: 'icon-btn ui-icon-only',
+      type: 'button',
+      title: 'Fold the vault sidebar — the centre pane takes its width',
+      icon: 'hide',
+      iconLabel: 'Hide',
+      onclick: () => app.toggleSidebar(false),
+    }),
   );
 
+  // The folded pane: one full-height tab on the left edge, the width of the
+  // graph's own rail, which unfolds the tree again.
+  const fold = el('button', {
+    class: 'sidebar-fold',
+    type: 'button',
+    title: 'Expand the vault sidebar',
+    'aria-label': 'Expand the vault sidebar',
+    icon: false,
+    onclick: () => app.toggleSidebar(true),
+  }, [
+    el('span', { class: 'sidebar-fold-arrow', text: '›', 'aria-hidden': 'true' }),
+    el('span', { class: 'sidebar-fold-label', text: 'Vault' }),
+  ]);
+
   host.append(filterInput, treeHost, footer);
+  root.append(fold);
 
   delegate(treeHost, 'click', '[data-toggle]', (event, node) => {
     event.stopPropagation();

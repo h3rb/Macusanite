@@ -17,8 +17,11 @@
  * results also land on `globalThis.wbMarqueeSmoke` and in the console, and the
  * page title reports the run.
  */
+import {
+  cardFor, fail, fire, fitAllCards, harnessPhase, intersects, record, reloadForRunPhase,
+  reportSmoke, sameSet, seedHarnessVault, selectedAnchors, wait,
+} from './kit.js';
 
-const STORAGE_KEY = 'macusanite.virtual-vault.v1';
 const HARNESS_PATH = 'Marquee Cancellation.md';
 
 /** The 2x2 block the box gathers. */
@@ -37,54 +40,8 @@ const TITLES = {
   six: 'Six',
 };
 
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function fail(message) {
-  throw new Error(message);
-}
-
 function list(anchors) {
   return anchors.length ? anchors.join(', ') : 'nothing';
-}
-
-function sameSet(a, b) {
-  const left = [...a].sort();
-  const right = [...b].sort();
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function fire(target, type, x, y, buttons, extra = {}) {
-  target.dispatchEvent(new PointerEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    composed: true,
-    button: 0,
-    buttons,
-    clientX: x,
-    clientY: y,
-    pointerId: 1,
-    pointerType: 'mouse',
-    isPrimary: true,
-    ...extra,
-  }));
-}
-
-async function waitFor(predicate, timeout = 2000) {
-  const until = performance.now() + timeout;
-  for (;;) {
-    const answer = predicate();
-    if (answer) return answer;
-    if (performance.now() >= until) return null;
-    await wait(25);
-  }
-}
-
-function cardOf(anchor) {
-  return document.querySelector(`.wb-card[data-anchor="${anchor}"]`);
-}
-
-function selectedAnchors() {
-  return [...document.querySelectorAll('.wb-card.is-selected')].map((card) => card.dataset.anchor);
 }
 
 /** The marquee's own chrome: the box the reader sees, and the count it shows. */
@@ -151,48 +108,6 @@ export function marqueeVaultFiles() {
   };
 }
 
-/** Write the fixture into the harness vault; returns an error message or null. */
-function seed() {
-  const raw = globalThis.localStorage?.getItem(STORAGE_KEY);
-  if (!raw) return 'the harness vault is not in localStorage';
-  const store = JSON.parse(raw);
-  if (!store?.files) return 'the harness vault has no files';
-  const state = JSON.parse(store.files['.macusanite/state.json'] ?? '{}');
-  state.world = state.world && typeof state.world === 'object' ? state.world : {};
-  const fixture = marqueeVaultFiles();
-  store.files[fixture.path] = fixture.body;
-  state.world[fixture.path] = fixture.record;
-  store.files['.macusanite/state.json'] = JSON.stringify(state, null, 2);
-  globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-  return null;
-}
-
-/** Frame every card of the fixture in the stage, so all of them are built. */
-async function fitAll(stage) {
-  const button = [...document.querySelectorAll('button')]
-    .find((candidate) => (candidate.title ?? '').startsWith('Zoom to fit every card'));
-  if (!button) fail('the canvas has no Fit button');
-  button.click();
-  const fitted = await waitFor(() => {
-    const bounds = stage.getBoundingClientRect();
-    const anchors = [TITLE_ANCHOR, ...SWEPT, ...OUTSIDE];
-    const cards = anchors.map((anchor) => cardOf(anchor));
-    if (cards.some((card) => !card)) return null;
-    const inside = cards.map((card) => card.getBoundingClientRect()).every((rect) => (
-      rect.width > 2 && rect.height > 2
-      && rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1
-      && rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1
-    ));
-    return inside ? true : null;
-  }, 3000);
-  if (!fitted) fail('the fixture cards could not all be brought into the stage');
-}
-
-/** Whether a screen rectangle would be picked by a marquee box. */
-function intersects(rect, box) {
-  return rect.right > box.left && rect.left < box.right && rect.bottom > box.top && rect.top < box.bottom;
-}
-
 /**
  * A box round the four swept cards that no other card touches. The rectangle
  * is drawn from the card rects the browser reports, so it is the same box the
@@ -200,7 +115,7 @@ function intersects(rect, box) {
  */
 function boxAround(stage) {
   const stageRect = stage.getBoundingClientRect();
-  const rects = SWEPT.map((anchor) => cardOf(anchor)?.getBoundingClientRect());
+  const rects = SWEPT.map((anchor) => cardFor(anchor)?.getBoundingClientRect());
   if (rects.some((rect) => !rect || rect.width < 2 || rect.height < 2)) {
     fail('a swept card is not on the canvas');
   }
@@ -210,7 +125,7 @@ function boxAround(stage) {
     right: Math.max(...rects.map((rect) => rect.right)),
     bottom: Math.max(...rects.map((rect) => rect.bottom)),
   };
-  const outsiderRects = [...OUTSIDE, TITLE_ANCHOR].map((anchor) => cardOf(anchor)?.getBoundingClientRect());
+  const outsiderRects = [...OUTSIDE, TITLE_ANCHOR].map((anchor) => cardFor(anchor)?.getBoundingClientRect());
   for (const margin of [12, 18, 26, 36, 48, 62, 78]) {
     const box = {
       left: union.left - margin,
@@ -245,16 +160,6 @@ async function clearSelection(stage) {
   fire(stage, 'pointerdown', box.left, box.top, 1, { shiftKey: true });
   fire(window, 'pointerup', box.left, box.top, 0);
   await wait(140);
-}
-
-async function record(results, name, run) {
-  try {
-    const detail = await run();
-    if (detail?.skip) results.push({ name, status: 'skip', detail: detail.skip });
-    else results.push({ name, status: 'pass', detail: detail?.detail ?? '' });
-  } catch (error) {
-    results.push({ name, status: 'fail', detail: error?.message ?? String(error) });
-  }
 }
 
 /** Clear, sweep, cancel through one path, and read the canvas back. */
@@ -322,9 +227,9 @@ async function runPaths(results) {
     return;
   }
   await record(results, 'the fixture is on the canvas', async () => {
-    await fitAll(stage);
+    await fitAllCards(stage, [TITLE_ANCHOR, ...SWEPT, ...OUTSIDE]);
     const anchors = [TITLE_ANCHOR, ...SWEPT, ...OUTSIDE];
-    const missing = anchors.filter((anchor) => !cardOf(anchor));
+    const missing = anchors.filter((anchor) => !cardFor(anchor));
     if (missing.length) fail(`the canvas is missing ${list(missing)}`);
     return { detail: `${anchors.length} cards in view` };
   });
@@ -345,12 +250,10 @@ export async function runMarqueeSmoke(search = globalThis.location?.search ?? ''
   const app = globalThis.macusanite;
   if (!app) return null;
 
-  if (params.get('phase') !== 'run') {
-    const error = seed();
-    if (error) return finish([{ name: 'setup', status: 'fail', detail: error }]);
-    const next = new URL(globalThis.location.href);
-    next.searchParams.set('phase', 'run');
-    globalThis.location.replace(next.href);
+  if (harnessPhase(search) === 'seed') {
+    const error = seedHarnessVault(marqueeVaultFiles());
+    if (error) return reportSmoke('marquee smoke', 'wbMarqueeSmoke', [{ name: 'setup', status: 'fail', detail: error }]);
+    reloadForRunPhase();
     return null;
   }
 
@@ -361,24 +264,8 @@ export async function runMarqueeSmoke(search = globalThis.location?.search ?? ''
     await wait(150);
   } catch (error) {
     results.push({ name: 'setup', status: 'fail', detail: `the fixture vein could not be opened: ${error?.message ?? error}` });
-    return finish(results);
+    return reportSmoke('marquee smoke', 'wbMarqueeSmoke', results);
   }
   await runPaths(results);
-  return finish(results);
-}
-
-function finish(results) {
-  const failures = results.filter((result) => result.status === 'fail');
-  const passes = results.filter((result) => result.status === 'pass');
-  const summary = {
-    ok: failures.length === 0 && passes.length > 0,
-    passed: passes.length,
-    failed: failures.length,
-    skipped: results.filter((result) => result.status === 'skip').length,
-    results,
-  };
-  globalThis.wbMarqueeSmoke = summary;
-  if (globalThis.console?.table) console.table(results);
-  document.title = `${summary.ok ? '✓' : '✗'} marquee smoke — ${summary.passed}/${results.length} passed`;
-  return summary;
+  return reportSmoke('marquee smoke', 'wbMarqueeSmoke', results);
 }

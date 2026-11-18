@@ -90,7 +90,7 @@ The index does not contain the text itself. Bodies are read when they are needed
 | --- | --- |
 | Top bar | burger menu (**New / Load / Save / Undo / Redo / Settings / Exit**), vault name and description, wiki breadcrumbs that fill in as you follow links |
 | Second bar | back and forward arrows, the current file location, chips for recently visited veins, undo/redo with the label of what would change |
-| Left | two panes behind tabs: the vault tree (chambers fold open, veins open in the centre, a filter box narrows the tree) and **search** |
+| Left | two panes behind tabs: the vault tree (chambers fold open, veins open in the centre, a filter box narrows the tree) and **search**; the pane folds to a vertical rail so the centre takes its width, and clicking that rail unfolds it |
 | Centre | the rendered vein: colour swatches beside the page title, every heading and every wiki link; edit mode with autosave; backlinks at the bottom |
 | Right | the concept graph — sections, linked veins, unwritten "ghost" pages and tags, with pan, zoom, drag and depth/toggle controls |
 

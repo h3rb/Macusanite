@@ -61,6 +61,9 @@ export const DEFAULT_SETTINGS = {
   layout: {
     sidebarWidth: 268,
     graphWidth: 340,
+    // Both side panes fold to a vertical tab, so the reading pane or the canvas
+    // can take their width. They are independent: the left one is the vault.
+    showSidebar: true,
     showGraph: true,
   },
   editor: {
@@ -78,6 +81,10 @@ export const DEFAULT_SETTINGS = {
     // The navigator: a minimap of the whole canvas with the viewport on it,
     // plus Fit selection and Fit group. On unless the reader turns it off.
     navigator: true,
+    // Where it sits: floating in a corner of the canvas, or docked as a drawer
+    // on its right edge. Closing it leaves the drawer's rail, so the drawer is
+    // the placement a closed navigator comes back from.
+    navigatorDock: 'float',
     // Whether the one-time note about the object map has been shown. It opens
     // the first time the canvas passes below 65%, where the link port becomes
     // a screen-sized corner ring and the rings are the whole way to bond.
@@ -171,6 +178,7 @@ export function validateSettings(settings) {
   s.worldbuild = { ...DEFAULT_SETTINGS.worldbuild, ...(isPlainObject(s.worldbuild) ? s.worldbuild : {}) };
   s.worldbuild.cardSize = s.worldbuild.cardSize === 'content' ? 'content' : DEFAULT_SETTINGS.worldbuild.cardSize;
   s.worldbuild.navigator = s.worldbuild.navigator !== false;
+  s.worldbuild.navigatorDock = s.worldbuild.navigatorDock === 'drawer' ? 'drawer' : 'float';
   s.worldbuild.lowZoomTipSeen = s.worldbuild.lowZoomTipSeen === true;
   s.worldbuild.touch = s.worldbuild.touch === true;
   s.worldbuild.units = (Array.isArray(s.worldbuild.units) ? s.worldbuild.units : [])

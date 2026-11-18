@@ -184,8 +184,10 @@ export function createWorldbuildPanel({ app, root }) {
   ]);
   // The navigator: the whole canvas at one scale with the stage's viewport
   // drawn on it, the drawing mode named beside it, and the two framings that
-  // answer “where did that card go?” and “what is this group?”. Settings can
-  // hide it; the × on it hides it at once.
+  // answer “where did that card go?” and “what is this group?”. It floats in a
+  // corner or docks as a drawer on the canvas's right edge, and closing it
+  // folds it to that drawer's rail instead of taking it away: the rail slides
+  // the drawer back out, and its pop-out button returns it to the corner.
   const navMode = el('span', { class: 'wb-nav-mode', text: 'Detail · 100%' });
   const navMap = svgNode('svg', {
     class: 'wb-nav-map',
@@ -207,21 +209,49 @@ export function createWorldbuildPanel({ app, root }) {
     title: 'Frame the group the selection belongs to',
     onclick: () => zoomToFitGroup(),
   });
+  // The drawer's edge tab: when the drawer is closed this is the whole of the
+  // navigator on screen, and pressing it slides the drawer back out.
+  const navRail = el('button', {
+    class: 'wb-nav-rail',
+    type: 'button',
+    title: 'Open or close the navigator drawer',
+    'aria-label': 'Open or close the navigator drawer',
+    onclick: () => {
+      // The rail is part of the drawer, so it always opens the drawer — never
+      // the floating panel, even when the drawer was reached by closing one.
+      const open = app.state.settings.worldbuild?.navigator !== false;
+      app.updateSettings({ worldbuild: { navigator: !open, navigatorDock: 'drawer' } });
+    },
+  }, [
+    el('span', { class: 'wb-nav-rail-arrow', text: '‹', 'aria-hidden': 'true' }),
+    el('span', { class: 'wb-nav-rail-label', text: 'Navigator' }),
+  ]);
   const navigator = el('div', { class: 'wb-navigator', role: 'group', 'aria-label': 'Navigator' }, [
-    el('div', { class: 'wb-nav-head' }, [
-      el('span', { class: 'wb-nav-kicker', text: 'Navigator' }),
-      navMode,
-      el('button', {
-        class: 'icon-btn btn-mini ui-icon-only wb-nav-hide',
-        type: 'button',
-        icon: 'close',
-        iconLabel: 'Hide navigator',
-        title: 'Hide the navigator — Settings → Worldbuilding brings it back',
-        onclick: () => app.updateSettings({ worldbuild: { navigator: false } }),
-      }),
+    navRail,
+    el('div', { class: 'wb-nav-body' }, [
+      el('div', { class: 'wb-nav-head' }, [
+        el('span', { class: 'wb-nav-kicker', text: 'Navigator' }),
+        navMode,
+        el('button', {
+          class: 'icon-btn btn-mini ui-icon-only wb-nav-popout',
+          type: 'button',
+          icon: 'fit',
+          iconLabel: 'Pop out',
+          title: 'Pop the navigator out of the drawer into a floating panel',
+          onclick: () => app.updateSettings({ worldbuild: { navigator: true, navigatorDock: 'float' } }),
+        }),
+        el('button', {
+          class: 'icon-btn btn-mini ui-icon-only wb-nav-hide',
+          type: 'button',
+          icon: 'hide',
+          iconLabel: 'Close',
+          title: 'Close the navigator to its drawer on the right edge of the canvas',
+          onclick: () => app.updateSettings({ worldbuild: { navigator: false, navigatorDock: 'drawer' } }),
+        }),
+      ]),
+      navMap,
+      el('div', { class: 'wb-nav-actions' }, [navFitSelection, navFitGroup]),
     ]),
-    navMap,
-    el('div', { class: 'wb-nav-actions' }, [navFitSelection, navFitGroup]),
   ]);
   // The map's geometry as last drawn, so a pan or zoom only moves the
   // viewport rectangle instead of re-measuring every card.
@@ -4188,6 +4218,16 @@ export function createWorldbuildPanel({ app, root }) {
     showZoomHud();
   }
 
+  /** Put the camera back at one scale, keeping the middle of the view still. */
+  function zoomToScale(scale) {
+    const factor = scale / view.s;
+    if (!Number.isFinite(factor) || factor <= 0) return;
+    view = snapZoomView(view, stage.clientWidth / 2, stage.clientHeight / 2, factor);
+    persistView();
+    applyView();
+    showZoomHud();
+  }
+
   /**
    * What Fit selection can frame: the selected cards that are on screen, plus
    * the summary of any collapsed group holding one of the selected cards. A
@@ -6844,9 +6884,10 @@ export function createWorldbuildPanel({ app, root }) {
           }
         }
       } else if (originGroup) {
-        // A group action redraws its tab, so focus the replacement rather
-        // than the disconnected element that opened the menu.
-        const tab = [...document.querySelectorAll('.wb-group-tab')]
+        // A group action redraws its tab (or, zoomed out, its caption), so
+        // focus the visible replacement rather than the disconnected element
+        // that opened the menu.
+        const tab = [...document.querySelectorAll('.wb-group-tab, .wb-group-caption')]
           .find((element) => element.dataset.groupId === originGroup);
         if (tab?.offsetParent !== null) tab.focus();
       } else if (origin?.isConnected && origin !== document.body) origin.focus();
@@ -7013,7 +7054,7 @@ export function createWorldbuildPanel({ app, root }) {
       || event.code === 'ContextMenu'
       || (event.key === 'F10' && event.shiftKey);
     if (!menuKey) return;
-    const target = event.target.closest?.('.wb-card, .wb-group-tab');
+    const target = event.target.closest?.('.wb-card, .wb-group-tab, .wb-group-caption');
     if (!target) return;
     if (event.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
     event.preventDefault();
@@ -9366,12 +9407,13 @@ export function createWorldbuildPanel({ app, root }) {
    * The keyboard's side of the canvas. A card is a focus stop of its own, so
    * Enter or Space picks it and Shift+R starts a relationship from it — at
    * every zoom, including the overview where the pointer's port is a small
-   * ring. A group tab does the same for its members.
+   * ring. A group tab does the same for its members — and below the semantic
+   * handoff, its caption, which is what the reader can see and reach there.
    */
   function canvasKeyboard(event) {
     if (!model) return;
     const card = event.target.closest?.('.wb-card');
-    const tab = event.target.closest?.('.wb-group-tab');
+    const tab = event.target.closest?.('.wb-group-tab, .wb-group-caption');
     const target = card ?? tab;
     if (!target) return;
     // A control inside the card keeps its own keys; only the card itself acts.
@@ -10176,6 +10218,85 @@ export function createWorldbuildPanel({ app, root }) {
   }, true);
 
   /**
+   * The canvas's own menu, for a right-click on empty canvas with nothing under
+   * the pointer and nothing selected. Cards, groups, wires and annotations all
+   * have their own menus, so what is left is the vein as a whole: something to
+   * add at the pointer, a selection, the camera framings that answer “where is
+   * everything?”, and the two history steps. Each one closes the menu first, so
+   * a command never leaves a panel floating over the result it changed.
+   */
+  function canvasMenuItems(event) {
+    const rect = stage.getBoundingClientRect();
+    const point = {
+      x: (event.clientX - rect.left - view.x) / view.s,
+      y: (event.clientY - rect.top - view.y) / view.s,
+    };
+    const notes = model?.notes ?? [];
+    const stack = historyFor(currentPath);
+    const undoName = stack.past[stack.past.length - 1]?.name;
+    const redoName = stack.future[stack.future.length - 1]?.name;
+    const atDetail = Math.abs(view.s - 1) < 0.005;
+    return [
+      el('span', { class: 'wb-menu-label', text: 'Canvas' }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'New note',
+        title: 'Add a note to this vein — a card per heading, written into the markdown for you',
+        onclick: () => { closeMenu(); addNewNote(); },
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'New annotation here',
+        title: 'Drop a margin note at this point, free of every heading',
+        onclick: () => {
+          closeMenu();
+          addAnnotation({ x: point.x - ANNOTATION_W / 2, y: point.y - ANNOTATION_H / 2 });
+        },
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button',
+        text: notes.length ? `Select all ${notes.length} cards` : 'Select all cards',
+        title: 'Select every card on this canvas',
+        disabled: notes.length === 0,
+        onclick: () => { closeMenu(); setSelection(notes.map((note) => note.anchor)); },
+      }),
+      el('span', { class: 'wb-menu-label', text: 'Camera' }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Fit every card',
+        title: 'Zoom to fit every card on screen — no more hunting for edges off-screen',
+        onclick: () => { closeMenu(); zoomToFit(); },
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: atDetail ? 'Already at 100%' : 'Back to 100%',
+        title: 'Return the camera to full size, keeping the middle of the view still',
+        disabled: atDetail,
+        onclick: () => { closeMenu(); zoomToScale(1); },
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button',
+        text: overviewFolded ? 'Restore the folds from before Overview' : 'Overview — fold every card, then fit',
+        title: overviewFolded
+          ? 'Restore the folding state from before Overview'
+          : 'Fold every card and link section, then zoom to fit',
+        onclick: () => { closeMenu(); overview(); },
+      }),
+      el('span', { class: 'wb-menu-label', text: 'History' }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button',
+        text: undoName ? `Undo ${undoName}` : 'Nothing to undo',
+        title: undoName ? `Undo: ${undoName} (Ctrl+Z)` : 'Nothing to undo on this canvas',
+        disabled: !undoName,
+        onclick: () => { closeMenu(); undoCanvas(); },
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button',
+        text: redoName ? `Redo ${redoName}` : 'Nothing to redo',
+        title: redoName ? `Redo: ${redoName} (Ctrl+Shift+Z)` : 'Nothing to redo on this canvas',
+        disabled: !redoName,
+        onclick: () => { closeMenu(); redoCanvas(); },
+      }),
+    ];
+  }
+
+  /**
    * The right-click menu: a selection groups, a grouped node recolors, and
    * every node relates itself. A field the writer was already editing keeps
    * its browser menu — cut, copy, paste and the spellchecker's menu belong to
@@ -10211,7 +10332,13 @@ export function createWorldbuildPanel({ app, root }) {
     const marked = event.target.closest?.('[data-group-id]')?.getAttribute('data-group-id');
     const group = (anchor ? groupOf(anchor) : null) ?? (marked ? groups[marked] ?? null : null);
     // A lone card still has membership to offer, so a card is worth a menu.
-    if (!selected.size && !group && !anchor) return;
+    // With nothing under the pointer and nothing selected, the canvas itself
+    // is the target: its own menu acts on the whole vein.
+    if (!selected.size && !group && !anchor) {
+      event.preventDefault();
+      showMenu(event, canvasMenuItems(event));
+      return;
+    }
     event.preventDefault();
     const items = [];
     // One relationship block: a card's own bonds beside its group's when it
@@ -10611,7 +10738,8 @@ export function createWorldbuildPanel({ app, root }) {
   /**
    * The surfaces a connector word must not cover: every visible card, a
    * collapsed group's summary, a group's border stroke (its fill is only a
-   * backdrop, so a word may sit inside the box), and a group's title tab.
+   * backdrop, so a word may sit inside the box), and a group's title — its tab
+   * or, zoomed out, its caption.
    * Built once per draw and shared by every label.
    */
   function labelSurfaceRects() {
@@ -10643,7 +10771,7 @@ export function createWorldbuildPanel({ app, root }) {
         { x: x + width - stroke, y, width: stroke * 2, height },
       );
     }
-    cards.querySelectorAll('.wb-group-tab').forEach((tab) => {
+    cards.querySelectorAll('.wb-group-tab, .wb-group-caption').forEach((tab) => {
       const rect = canvasRectOf(tab);
       if (rect) rects.push(rect);
     });
@@ -10850,9 +10978,10 @@ export function createWorldbuildPanel({ app, root }) {
 
   /** The coloured box around a group: the tightest rect over its cards. */
   function drawGroupBoxes() {
-    // Tabs live in the DOM cards layer, not the SVG that drawEdges clears —
-    // remove them first or every draw (every drag frame!) stacks another.
-    cards.querySelectorAll('.wb-group-tab, .wb-group-summary').forEach((tab) => tab.remove());
+    // Tabs and their low-zoom captions live in the DOM cards layer, not the SVG
+    // that drawEdges clears — remove them first or every draw (every drag
+    // frame!) stacks another.
+    cards.querySelectorAll('.wb-group-tab, .wb-group-caption, .wb-group-summary').forEach((tab) => tab.remove());
     // Parents first, so nested boxes draw over the fill of their parents.
     const depths = groupDepths();
     const ordered = Object.values(groups ?? {}).sort((a, b) => depths.get(a.id) - depths.get(b.id));
@@ -10986,7 +11115,9 @@ export function createWorldbuildPanel({ app, root }) {
       tab.style.left = `${boxX}px`;
       tab.style.top = `${boxY - 12}px`;
       tab.style.borderLeft = `3px solid ${color}`;
-      tab.addEventListener('pointerdown', (event) => {
+      /** A press on the tab — or on the low-zoom caption that stands in for
+       * it — moves the group, with the same refusals either way. */
+      const groupPress = (event) => {
         if (event.target.closest?.('.wb-group-lock')) return;
         event.stopPropagation();
         if (event.button !== 0) return;
@@ -11014,14 +11145,34 @@ export function createWorldbuildPanel({ app, root }) {
           return;
         }
         dragMembers(movable, event, cardEls[indexes[0]], { groupId: group.id });
-      });
+      };
+      tab.addEventListener('pointerdown', groupPress);
       // Double-clicking the name edits it in place, like a card's title.
       const nameEl = tab.querySelector('.wb-card-title');
       nameEl.addEventListener('dblclick', (event) => {
         event.stopPropagation();
         inlineGroupRename(nameEl, group);
       });
-      cards.append(tab);
+      // The tab shrinks with the canvas until, at the semantic handoff, it is a
+      // speck on a map. That is where the group's name becomes a caption: it
+      // spans the box, centres over the box's top edge, and is drawn at a fixed
+      // screen size — about a compact card's title — so every group stays named
+      // however far the camera pulls back. The caption carries the tab's press,
+      // keys and menu, because the tab is hidden while the caption shows.
+      const caption = el('div', {
+        class: `wb-group-caption${groupLocked ? ' is-locked' : ''}${groupFrozen ? ' is-frozen' : ''}${group.pinned ? ' is-pinned' : ''}${lensKeepsGroup(group.id) ? '' : ' is-dimmed'}`,
+        dataset: { groupId: group.id },
+        tabindex: '0',
+        role: 'button',
+        'aria-haspopup': 'menu',
+        'aria-keyshortcuts': 'Shift+F10 Shift+R',
+        title: groupFrozen
+          ? frozenTitle
+          : groupLocked ? groupLockTitle : group.pinned ? `${name} — pinned frame; Arrange works around it, and its cards still move` : `${name} — drag to move the group`,
+        style: `left:${boxX}px;top:${boxY}px;width:${box.width + pad * 2}px;--wb-group-accent:${color}`,
+      }, [el('span', { class: 'wb-group-caption-text', text: name })]);
+      caption.addEventListener('pointerdown', groupPress);
+      cards.append(tab, caption);
       // The tab straddles the box's top-left corner, exactly where Tier 1
       // would sit: nudge that one word right of the tab (in canvas units)
       // so the first header is not covered by the group's own title.

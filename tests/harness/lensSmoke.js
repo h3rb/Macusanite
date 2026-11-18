@@ -16,188 +16,20 @@
  * the page title reports the run. It needs a vein open as Worldbuilding with
  * at least one card carrying an authored bond and an unrelated card.
  */
+import {
+  blankPoint, bringCentreIntoView, bringIntoView, cardFor, centreOf, clickAt, fail, fire,
+  overlaps, record, reportSmoke, sameSet, scaleOf, selectedAnchors, wait, zoomTo,
+} from './kit.js';
+
 const ZOOM_TOLERANCE = 1e-4;
-
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function fail(message) {
-  throw new Error(message);
-}
-
-function sameSet(a, b) {
-  const left = [...a].sort();
-  const right = [...b].sort();
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function describe(element) {
-  if (!element) return 'nothing';
-  const raw = element.className;
-  const cls = typeof raw === 'string' ? raw : raw?.baseVal ?? '';
-  const name = element.tagName ? element.tagName.toLowerCase() : 'node';
-  return `<${name}${cls ? `.${cls.trim().split(/\s+/).filter(Boolean).join('.')}` : ''}>`;
-}
-
-function fire(target, type, x, y, buttons, extra = {}) {
-  target.dispatchEvent(new PointerEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    composed: true,
-    button: 0,
-    buttons,
-    clientX: x,
-    clientY: y,
-    pointerId: 1,
-    pointerType: 'mouse',
-    isPrimary: true,
-    ...extra,
-  }));
-}
-
-/** A press and release in place, with the click a browser would add. */
-function clickAt(target, x, y, extra = {}) {
-  fire(target, 'pointerdown', x, y, 1, extra);
-  fire(window, 'pointerup', x, y, 0, extra);
-  target.dispatchEvent(new MouseEvent('click', {
-    bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, ...extra,
-  }));
-}
-
-function centreOf(rect) {
-  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-}
-
-function overlaps(outer, rect) {
-  return rect.width > 1 && rect.height > 1
-    && rect.right > outer.left && rect.left < outer.right
-    && rect.bottom > outer.top && rect.top < outer.bottom;
-}
-
-function scaleOf(canvas) {
-  return Number.parseFloat(canvas.style.getPropertyValue('--wb-zoom'));
-}
-
-function selectedAnchors() {
-  return [...document.querySelectorAll('.wb-card.is-selected')].map((card) => card.dataset.anchor);
-}
 
 function menuOpen() {
   return Boolean(document.querySelector('.wb-menu'));
 }
 
-function cardFor(stage, anchor) {
-  return [...stage.querySelectorAll('.wb-card')]
-    .find((card) => card.dataset.anchor === anchor) ?? null;
-}
-
 function cardTitle(card) {
   const title = card?.querySelector('.wb-card-title');
   return (title?.value ?? title?.textContent ?? '').trim();
-}
-
-/** A point on the stage where the background, not a card, takes the press. */
-function blankPoint(stage) {
-  const s = stage.getBoundingClientRect();
-  const blocked = '.wb-card, .wb-group-tab, .wb-group-summary, .wb-annotation, .wb-menu, '
-    + 'button, input, select, textarea, .wb-edge-label, [data-edge-key], .wb-zoom-hud, .wb-overlap-hud';
-  for (let gy = 0.06; gy <= 0.94; gy += 0.055) {
-    for (let gx = 0.03; gx <= 0.97; gx += 0.05) {
-      const x = s.left + s.width * gx;
-      const y = s.top + s.height * gy;
-      const hit = document.elementFromPoint(x, y);
-      if (!hit || !stage.contains(hit)) continue;
-      if (hit.closest(blocked)) continue;
-      return { x, y };
-    }
-  }
-  return null;
-}
-
-/** Drag the background by a screen-space delta; returns whether it started. */
-async function panBy(stage, dx, dy) {
-  const from = blankPoint(stage);
-  if (!from) return false;
-  fire(stage, 'pointerdown', from.x, from.y, 1);
-  fire(window, 'pointermove', from.x + dx / 2, from.y + dy / 2, 1);
-  fire(window, 'pointermove', from.x + dx, from.y + dy, 1);
-  fire(window, 'pointerup', from.x + dx, from.y + dy, 0);
-  await wait(30);
-  return true;
-}
-
-/** Pan just far enough for an element's centre to be clickable on stage. */
-async function bringCentreIntoView(stage, element, margin = 12) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const s = stage.getBoundingClientRect();
-    const r = element.getBoundingClientRect();
-    if (r.width <= 1 || r.height <= 1) return false;
-    const point = centreOf(r);
-    const dx = point.x < s.left + margin ? (s.left + margin) - point.x
-      : point.x > s.right - margin ? (s.right - margin) - point.x : 0;
-    const dy = point.y < s.top + margin ? (s.top + margin) - point.y
-      : point.y > s.bottom - margin ? (s.bottom - margin) - point.y : 0;
-    if (!dx && !dy) return true;
-    if (!(await panBy(stage, dx, dy))) return false;
-  }
-  const s = stage.getBoundingClientRect();
-  const point = centreOf(element.getBoundingClientRect());
-  return point.x >= s.left && point.x <= s.right && point.y >= s.top && point.y <= s.bottom;
-}
-
-/** Pan just far enough for an element to sit wholly inside the stage. */
-async function bringIntoView(stage, element, margin = 10) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const s = stage.getBoundingClientRect();
-    const r = element.getBoundingClientRect();
-    if (r.width <= 1 || r.height <= 1) return false;
-    const dx = r.left < s.left + margin ? (s.left + margin) - r.left
-      : r.right > s.right - margin ? (s.right - margin) - r.right : 0;
-    const dy = r.top < s.top + margin ? (s.top + margin) - r.top
-      : r.bottom > s.bottom - margin ? (s.bottom - margin) - r.bottom : 0;
-    if (!dx && !dy) return true;
-    if (!(await panBy(stage, dx, dy))) return false;
-  }
-  const s = stage.getBoundingClientRect();
-  const r = element.getBoundingClientRect();
-  return r.left >= s.left && r.right <= s.right && r.top >= s.top && r.bottom <= s.bottom;
-}
-
-/** Wheel the canvas to a scale, keeping one screen point still. */
-/**
- * Wait until the canvas shows the zoom the last wheel asked for. The panel
- * applies a wheel on the next frame, so on a heavy canvas a fixed wait would
- * read the previous scale and send another full step on top of it.
- */
-async function settleZoom(canvas, from, timeout = 1500) {
-  const until = performance.now() + timeout;
-  while (performance.now() < until) {
-    const now = scaleOf(canvas);
-    if (Number.isFinite(now) && now !== from) return now;
-    await wait(10);
-  }
-  return scaleOf(canvas);
-}
-
-async function zoomTo(stage, canvas, target, anchor) {
-  const point = anchor ?? blankPoint(stage) ?? centreOf(stage.getBoundingClientRect());
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const current = scaleOf(canvas);
-    if (!Number.isFinite(current)) return current;
-    if (Math.abs(current - target) <= ZOOM_TOLERANCE) return current;
-    // One event is one step, so ask only for a ratio a single step can land:
-    // a vast delta clamps at ZOOM_MIN or ZOOM_MAX instead of arriving.
-    const ratio = Math.min(4, Math.max(0.25, target / current));
-    stage.dispatchEvent(new WheelEvent('wheel', {
-      bubbles: true,
-      cancelable: true,
-      deltaMode: 0,
-      deltaY: -Math.log(ratio) / 0.002,
-      clientX: point.x,
-      clientY: point.y,
-    }));
-    if ((await settleZoom(canvas, current)) === current) break;
-  }
-  return scaleOf(canvas);
 }
 
 function clearSelection(stage) {
@@ -253,16 +85,6 @@ async function selectFocus(stage, candidates) {
   return null;
 }
 
-async function record(results, name, run) {
-  try {
-    const detail = await run();
-    if (detail?.skip) results.push({ name, status: 'skip', detail: detail.skip });
-    else results.push({ name, status: 'pass', detail: detail?.detail ?? '' });
-  } catch (error) {
-    results.push({ name, status: 'fail', detail: error?.message ?? String(error) });
-  }
-}
-
 function focusedEdgesFor(stage, anchor) {
   return [...stage.querySelectorAll('.wb-edge.is-lens')]
     .filter((edge) => edge.dataset.from === anchor || edge.dataset.to === anchor);
@@ -278,7 +100,7 @@ function neighbourEndpoints(stage, anchor) {
 }
 
 async function checkDimming(stage, anchor) {
-  const card = cardFor(stage, anchor);
+  const card = cardFor(anchor);
   if (!card) fail(`the selected card ${anchor} is no longer on the canvas`);
   if (card.classList.contains('is-dimmed')) fail(`the selected card ${anchor} is dimmed`);
 
@@ -344,13 +166,13 @@ async function checkJump(stage) {
   const row = rows[0];
   if (!row) return { skip: 'the inspector has no card neighbour row to jump to' };
   const target = row.dataset.endpoint;
-  if (!cardFor(stage, target)) fail(`the neighbour ${target} has no card to jump to`);
+  if (!cardFor(target)) fail(`the neighbour ${target} has no card to jump to`);
 
   row.click();
   await wait(150);
   // A jump can reveal a collapsed group and rebuild the card layer, so read
   // the card again after the click rather than holding the old element.
-  const targetCard = cardFor(stage, target);
+  const targetCard = cardFor(target);
   if (!targetCard) fail(`the neighbour ${target} disappeared while jumping`);
   const picked = selectedAnchors();
   if (!sameSet(picked, [target])) {
@@ -382,9 +204,12 @@ function lensChipState() {
 }
 
 async function checkChips(stage, canvas, anchor, scale) {
-  const card = cardFor(stage, anchor);
+  const card = cardFor(anchor);
   if (!card) fail(`the focused card ${anchor} is no longer on the canvas`);
-  const landed = await zoomTo(stage, canvas, scale, centreOf(card.getBoundingClientRect()));
+  // Anchor the wheel on the card's head, not its body: the body is prose that
+  // scrolls, and a wheel over it scrolls the card instead of the canvas.
+  const head = card.querySelector('.wb-card-head') ?? card;
+  const landed = await zoomTo(stage, canvas, scale, centreOf(head.getBoundingClientRect()));
   if (Math.abs(landed - scale) > ZOOM_TOLERANCE) fail(`the wheel landed at ${landed} instead of ${scale}`);
   await wait(180);
   const { layer, chips, hidden } = lensChipState();
@@ -412,7 +237,7 @@ export async function runLensSmoke() {
   const canvas = document.querySelector('.wb-canvas');
   if (!app || !stage || !canvas) {
     results.push({ name: 'setup', status: 'fail', detail: 'the worldbuilding panel is not on the page' });
-    return finish(results);
+    return reportSmoke('lens smoke', 'wbLensSmoke', results);
   }
 
   /** Open the sample vault's fixture vein, whichever vein was open before. */
@@ -429,13 +254,13 @@ export async function runLensSmoke() {
 
   if (!app.state?.current && !(await openFixture())) {
     results.push({ name: 'setup', status: 'fail', detail: 'no vein is open and Home.md could not be opened' });
-    return finish(results);
+    return reportSmoke('lens smoke', 'wbLensSmoke', results);
   }
   if (app.state.ui.mode !== 'world') app.setMode('world');
   await wait(200);
   if (!stage.offsetWidth) {
     results.push({ name: 'setup', status: 'fail', detail: 'the canvas is not visible' });
-    return finish(results);
+    return reportSmoke('lens smoke', 'wbLensSmoke', results);
   }
 
   // Another harness run (the perf budget, say) can leave its own vein open;
@@ -449,7 +274,7 @@ export async function runLensSmoke() {
   }
   if (!candidates.length) {
     results.push({ name: 'setup', status: 'fail', detail: 'no card with an authored bond could be selected' });
-    return finish(results);
+    return reportSmoke('lens smoke', 'wbLensSmoke', results);
   }
   const original = scaleOf(canvas);
 
@@ -462,7 +287,7 @@ export async function runLensSmoke() {
       if (!focus) fail('no candidate card could be selected through its port');
       return { detail: focus.dataset.anchor };
     });
-    if (!focus) return finish(results);
+    if (!focus) return reportSmoke('lens smoke', 'wbLensSmoke', results);
     const anchor = focus.dataset.anchor;
 
     await record(results, 'unrelated cards and wires dim', () => checkDimming(stage, anchor));
@@ -473,9 +298,12 @@ export async function runLensSmoke() {
     // The jump may have moved the lens to another card; the chips belong to
     // whichever card is focused now.
     const chipAnchor = selectedAnchors()[0] ?? anchor;
-    const chipCard = cardFor(stage, chipAnchor);
+    const chipCard = cardFor(chipAnchor);
+    // The wheel is anchored on the head for the same reason as in checkChips:
+    // over the card's prose it scrolls the card instead of the canvas.
+    const chipHead = chipCard?.querySelector('.wb-card-head') ?? chipCard;
     await record(results, 'kind chips stay hidden above 20%', async () => {
-      await zoomTo(stage, canvas, 1, chipCard ? centreOf(chipCard.getBoundingClientRect()) : undefined);
+      await zoomTo(stage, canvas, 1, chipHead ? centreOf(chipHead.getBoundingClientRect()) : undefined);
       await wait(100);
       const { hidden } = lensChipState();
       if (!hidden) fail('kind chips are visible above the semantic zoom');
@@ -487,21 +315,5 @@ export async function runLensSmoke() {
     clearSelection(stage);
     await zoomTo(stage, canvas, original);
   }
-  return finish(results);
-}
-
-function finish(results) {
-  const failures = results.filter((result) => result.status === 'fail');
-  const passes = results.filter((result) => result.status === 'pass');
-  const summary = {
-    ok: failures.length === 0 && passes.length > 0,
-    passed: passes.length,
-    failed: failures.length,
-    skipped: results.filter((result) => result.status === 'skip').length,
-    results,
-  };
-  globalThis.wbLensSmoke = summary;
-  if (globalThis.console?.table) console.table(results);
-  document.title = `${summary.ok ? '✓' : '✗'} lens smoke — ${summary.passed}/${results.length} passed`;
-  return summary;
+  return reportSmoke('lens smoke', 'wbLensSmoke', results);
 }

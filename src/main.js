@@ -2527,6 +2527,19 @@ const app = {
     app.persistSettings({ record: false });
   },
 
+  /**
+   * Fold the vault sidebar to its edge rail, or unfold it.
+   *
+   * It is the same fold the concept graph has, on the other side: the pane's
+   * column narrows to a tab, the reader or the canvas takes the width, and the
+   * state is saved in `settings.json` so the window reopens the way it was left.
+   */
+  toggleSidebar(force) {
+    state.settings.layout.showSidebar = typeof force === 'boolean' ? force : !state.settings.layout.showSidebar;
+    applyLayout();
+    app.persistSettings({ record: false });
+  },
+
   scheduleGraphRefresh() {
     clearTimeout(graphTimer);
     graphTimer = setTimeout(() => graphPanel.render(), 140);
@@ -3062,9 +3075,16 @@ function applyIcons() {
 
 function applyLayout() {
   resizers?.apply();
-  // The canvas navigator is chrome, not canvas state: hiding it in Settings
-  // (or from its own ×) takes effect at once, with no rebuild of the vein.
-  document.body.classList.toggle('hide-canvas-navigator', state.settings.worldbuild?.navigator === false);
+  // The canvas navigator is chrome, not canvas state: where it sits takes
+  // effect at once, with no rebuild of the vein. It floats in a corner or
+  // docks as a drawer on the canvas's right edge, and a closed navigator is
+  // that drawer's rail — closing it folds it to the edge rather than taking it
+  // off the canvas, so `navigator: false` always docks it.
+  const navSettings = state.settings.worldbuild ?? {};
+  const navOpen = navSettings.navigator !== false;
+  const navDocked = !navOpen || navSettings.navigatorDock === 'drawer';
+  document.body.classList.toggle('nav-dock-drawer', navDocked);
+  document.body.classList.toggle('nav-drawer-closed', navDocked && !navOpen);
   // Touch gestures are a way of operating the canvas, not canvas state: the
   // panel reads this class on every pointer event, so the setting takes
   // effect at once and never needs a rebuild of the vein.
@@ -3078,6 +3098,12 @@ function applyLayout() {
   qs('#graph-panel').classList.remove('hidden');
   qs('#graph-panel').classList.toggle('is-folded', !show);
   qs('#graph-resizer').classList.toggle('hidden', !show);
+  // The vault sidebar folds the same way, to a vertical tab on the left edge;
+  // the two folds are independent, and either alone widens the centre pane.
+  const sidebarShown = state.settings.layout.showSidebar !== false;
+  qs('#workspace').classList.toggle('is-sidebar-folded', !sidebarShown);
+  qs('#sidebar').classList.toggle('is-folded', !sidebarShown);
+  qs('#sidebar-resizer').classList.toggle('hidden', !sidebarShown);
   document.documentElement.style.setProperty('--sidebar-width', `${state.settings.layout.sidebarWidth}px`);
   document.documentElement.style.setProperty('--graph-width', `${state.settings.layout.graphWidth}px`);
   const graphButton = qs('#graph-btn');
@@ -3515,7 +3541,7 @@ async function runRequestedSmoke() {
   const params = new URLSearchParams(location.search);
   if (params.get('wb-smoke') === 'zoom') {
     const { runZoomSmoke } = await import('../tests/harness/zoomSmoke.js');
-    await runZoomSmoke();
+    await runZoomSmoke(location.search);
   }
   if (params.get('wb-smoke') === 'lens') {
     const { runLensSmoke } = await import('../tests/harness/lensSmoke.js');

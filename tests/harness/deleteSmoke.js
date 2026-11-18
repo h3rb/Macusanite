@@ -17,10 +17,22 @@
  * results also land on `globalThis.wbDeleteSmoke` and in the console, and the
  * page title reports the run. The smoke covers both marquee-set Delete and a
  * card's own ✕, undoing each and leaving the fixture whole again.
+ *
+ * A deletion that is still undoable is recorded first as pending: every later
+ * snapshot in that vein carries the removed notes again, so a redo can take
+ * their prose away. That bookkeeping belongs to the vein, so the smoke also
+ * deletes here, pushes a step in a second fixture vein, and reads that step
+ * back — it must carry neither `notes` nor `noteOrder` — before returning to
+ * the first vein and finding the deletion still pending there.
  */
+import {
+  cardAnchors, cardFor, centreOf, fail, fire, fitAllCards, harnessPhase, intersects, record,
+  reloadForRunPhase, reportSmoke, sameSet, seedHarnessVault, selectedAnchors, wait, waitFor,
+} from './kit.js';
 
-const STORAGE_KEY = 'macusanite.virtual-vault.v1';
 const HARNESS_PATH = 'Deleting Set.md';
+/** The second vein: a step pushed here must not remember the first's delete. */
+const NEIGHBOUR_PATH = 'Deleting Set Neighbour.md';
 
 /** The four the sweep picks: a 2x2 block on the left of the fixture. */
 const VICTIMS = ['alpha', 'beta', 'gamma', 'delta'];
@@ -28,6 +40,17 @@ const VICTIMS = ['alpha', 'beta', 'gamma', 'delta'];
 const BYSTANDERS = ['echo', 'foxtrot'];
 const TITLE_ANCHOR = 'deleting-set';
 const ALL = [...VICTIMS, ...BYSTANDERS, TITLE_ANCHOR];
+
+/** The other vein: its own title card and three cards in a column. */
+const NEIGHBOUR_TITLE = 'deleting-set-neighbour';
+const NEIGHBOUR_CARDS = ['north', 'east', 'west'];
+const NEIGHBOUR_ALL = [NEIGHBOUR_TITLE, ...NEIGHBOUR_CARDS];
+const NEIGHBOUR_TITLES = {
+  [NEIGHBOUR_TITLE]: 'Deleting Set Neighbour',
+  north: 'North',
+  east: 'East',
+  west: 'West',
+};
 
 const TITLES = {
   'deleting-set': 'Deleting Set',
@@ -57,20 +80,8 @@ const RECORD_SLICES = [
   'cardDims', 'stack', 'collapsedGroups', 'annotations',
 ];
 
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function fail(message) {
-  throw new Error(message);
-}
-
 function list(anchors) {
   return anchors.length ? anchors.join(', ') : 'nothing';
-}
-
-function sameSet(a, b) {
-  const left = [...a].sort();
-  const right = [...b].sort();
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 /** A key-sorted serialisation, so two records compare without key order. */
@@ -83,49 +94,23 @@ function stable(value) {
   return JSON.stringify(value ?? null);
 }
 
-function fire(target, type, x, y, buttons, extra = {}) {
-  target.dispatchEvent(new PointerEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    composed: true,
-    button: 0,
-    buttons,
-    clientX: x,
-    clientY: y,
-    pointerId: 1,
-    pointerType: 'mouse',
-    isPrimary: true,
-    ...extra,
-  }));
-}
-
-/** Poll until `predicate` answers something truthy, or the time runs out. */
-async function waitFor(predicate, timeout = 2000) {
-  const until = performance.now() + timeout;
-  for (;;) {
-    const answer = predicate();
-    if (answer) return answer;
-    if (performance.now() >= until) return null;
-    await wait(25);
-  }
-}
-
-function cardOf(anchor) {
-  return document.querySelector(`.wb-card[data-anchor="${anchor}"]`);
-}
-
-function cardAnchors() {
-  return [...document.querySelectorAll('.wb-card')]
-    .sort((left, right) => Number(left.dataset.note) - Number(right.dataset.note))
-    .map((card) => card.dataset.anchor);
-}
-
-function selectedAnchors() {
-  return [...document.querySelectorAll('.wb-card.is-selected')].map((card) => card.dataset.anchor);
-}
-
 function canvasRecord(app, path) {
   return app?.state?.world?.[path] ?? {};
+}
+
+/**
+ * What the card layer holds this instant: the anchors in note order, and the
+ * same anchors in the order the document paints them. A restore that comes
+ * back in the wrong order shows up here as the two disagreeing.
+ */
+function canvasOrder() {
+  const cards = [...document.querySelectorAll('.wb-card')];
+  const painted = cards.map((card) => `${card.dataset.anchor ?? '?'}#${card.dataset.note ?? '?'}`);
+  const headings = String(globalThis.macusanite?.state?.draft ?? '')
+    .split('\n')
+    .filter((line) => /^#{1,6}\s+/.test(line))
+    .map((line) => line.replace(/^#{1,6}\s+/, '').trim());
+  return `painted ${painted.join(' | ') || 'nothing'}; markdown ${headings.join(' > ') || 'nothing'}`;
 }
 
 /**
@@ -215,45 +200,70 @@ export function deleteVaultFiles() {
   };
 }
 
-/** Write the fixture into the harness vault; returns an error message or null. */
-function seed() {
-  const raw = globalThis.localStorage?.getItem(STORAGE_KEY);
-  if (!raw) return 'the harness vault is not in localStorage';
-  const store = JSON.parse(raw);
-  if (!store?.files) return 'the harness vault has no files';
-  const state = JSON.parse(store.files['.macusanite/state.json'] ?? '{}');
-  state.world = state.world && typeof state.world === 'object' ? state.world : {};
-  const fixture = deleteVaultFiles();
-  store.files[fixture.path] = fixture.body;
-  state.world[fixture.path] = fixture.record;
-  store.files['.macusanite/state.json'] = JSON.stringify(state, null, 2);
-  globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-  return null;
+/**
+ * The second vein the smoke switches to: four cards and no groups, so the
+ * only thing a step there could carry is its own layout.
+ */
+export function neighbourVaultFiles() {
+  const order = [NEIGHBOUR_TITLE, ...NEIGHBOUR_CARDS];
+  const lines = [];
+  for (const anchor of order) {
+    lines.push(`${anchor === NEIGHBOUR_TITLE ? '#' : '##'} ${NEIGHBOUR_TITLES[anchor]}`, '',
+      `${NEIGHBOUR_TITLES[anchor]} is a card in the other vein.`, '');
+  }
+  return {
+    path: NEIGHBOUR_PATH,
+    body: lines.join('\n'),
+    record: {
+      marked: true,
+      positions: {
+        [NEIGHBOUR_TITLE]: { x: 1040, y: 640 },
+        north: { x: 40, y: 40 },
+        east: { x: 480, y: 40 },
+        west: { x: 40, y: 440 },
+      },
+      groups: {},
+      relations: {},
+      bondNotes: {},
+      folded: {},
+      types: {},
+      fields: {},
+      colors: {},
+      images: {},
+      resources: {},
+      pinned: {},
+      locked: {},
+      cardModes: {},
+      cardSizes: {},
+      cardDims: {},
+      stack: [],
+      collapsedGroups: {},
+      annotations: {},
+      view: { x: 0, y: 0, s: 1 },
+    },
+  };
 }
 
-/** Frame every card of the fixture in the stage, so all of them are built. */
-async function fitAll(stage) {
-  const button = [...document.querySelectorAll('button')]
-    .find((candidate) => (candidate.title ?? '').startsWith('Zoom to fit every card'));
-  if (!button) fail('the canvas has no Fit button');
-  button.click();
-  const fitted = await waitFor(() => {
-    const bounds = stage.getBoundingClientRect();
-    const cards = ALL.map((anchor) => cardOf(anchor));
-    if (cards.some((card) => !card)) return null;
-    const inside = cards.map((card) => card.getBoundingClientRect()).every((rect) => (
-      rect.width > 2 && rect.height > 2
-      && rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1
-      && rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1
-    ));
-    return inside ? true : null;
-  }, 3000);
-  if (!fitted) fail('the fixture cards could not all be brought into the stage');
-}
-
-/** Whether a screen rectangle would be picked by a marquee box. */
-function intersects(rect, box) {
-  return rect.right > box.left && rect.left < box.right && rect.bottom > box.top && rect.top < box.bottom;
+/**
+ * Drag one card by a screen-space delta from its own grab handle — the head's
+ * grip at detail zoom, the whole icon card when the camera is further out — so
+ * the panel records one move step, exactly as a reader's drag would.
+ */
+async function dragCardBy(anchor, dx, dy) {
+  const card = cardFor(anchor);
+  if (!card) fail(`${anchor} is not on the canvas`);
+  const handle = card.querySelector('.wb-card-head .wb-grip')
+    ?? card.querySelector('.wb-card-head')
+    ?? card.querySelector('.wb-icon')
+    ?? card;
+  const rect = handle.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) fail(`${anchor} has nothing to drag it by`);
+  const from = centreOf(rect);
+  fire(handle, 'pointerdown', from.x, from.y, 1);
+  fire(window, 'pointermove', from.x + dx / 2, from.y + dy / 2, 1);
+  fire(window, 'pointermove', from.x + dx, from.y + dy, 1);
+  fire(window, 'pointerup', from.x + dx, from.y + dy, 0);
+  await wait(120);
 }
 
 /**
@@ -264,7 +274,7 @@ function intersects(rect, box) {
  */
 async function sweepVictims(stage) {
   const stageRect = stage.getBoundingClientRect();
-  const rects = VICTIMS.map((anchor) => cardOf(anchor)?.getBoundingClientRect());
+  const rects = VICTIMS.map((anchor) => cardFor(anchor)?.getBoundingClientRect());
   if (rects.some((rect) => !rect || rect.width < 2 || rect.height < 2)) {
     fail('a victim card is not on the canvas');
   }
@@ -274,7 +284,7 @@ async function sweepVictims(stage) {
     right: Math.max(...rects.map((rect) => rect.right)),
     bottom: Math.max(...rects.map((rect) => rect.bottom)),
   };
-  const outsiderRects = [...BYSTANDERS, TITLE_ANCHOR].map((anchor) => cardOf(anchor)?.getBoundingClientRect());
+  const outsiderRects = [...BYSTANDERS, TITLE_ANCHOR].map((anchor) => cardFor(anchor)?.getBoundingClientRect());
   for (const margin of [12, 18, 26, 36, 48, 62, 78]) {
     const box = {
       left: union.left - margin,
@@ -307,16 +317,6 @@ function toolbarButton(label) {
     .find((button) => (button.getAttribute('aria-label') ?? '').startsWith(label)) ?? null;
 }
 
-async function record(results, name, run) {
-  try {
-    const detail = await run();
-    if (detail?.skip) results.push({ name, status: 'skip', detail: detail.skip });
-    else results.push({ name, status: 'pass', detail: detail?.detail ?? '' });
-  } catch (error) {
-    results.push({ name, status: 'fail', detail: error?.message ?? String(error) });
-  }
-}
-
 /** The whole run, one check at a time, against the fixture vein. */
 async function sweepDeleteUndoRedo(app, results) {
   const path = HARNESS_PATH;
@@ -328,7 +328,7 @@ async function sweepDeleteUndoRedo(app, results) {
   const ctx = {};
 
   await record(results, 'marquee selects exactly the four cards', async () => {
-    await fitAll(stage);
+    await fitAllCards(stage, ALL);
     ctx.before = snapshotOf(app, path);
     if (ctx.before.cards.length < ALL.length) {
       fail(`the canvas shows ${ctx.before.cards.length} cards, expected ${ALL.length}`);
@@ -363,13 +363,13 @@ async function sweepDeleteUndoRedo(app, results) {
     if (title !== `Delete ${VICTIMS.length} notes?`) fail(`the confirmation asks “${title}”`);
     dialog.querySelector('button[type="submit"]')?.click();
 
-    const cleared = await waitFor(() => VICTIMS.every((anchor) => !cardOf(anchor)), 2000);
-    if (!cleared) fail(`the canvas still shows ${list(VICTIMS.filter(cardOf))}`);
+    const cleared = await waitFor(() => VICTIMS.every((anchor) => !cardFor(anchor)), 2000);
+    if (!cleared) fail(`the canvas still shows ${list(VICTIMS.filter((anchor) => cardFor(anchor)))}`);
     if (document.querySelector('dialog.md-dialog')) fail('the confirmation stayed open');
     ctx.after = snapshotOf(app, path);
 
-    const staying = BYSTANDERS.filter(cardOf);
-    if (!sameSet(staying, BYSTANDERS)) fail(`the delete took bystanders ${list(BYSTANDERS.filter((a) => !cardOf(a)))}`);
+    const staying = BYSTANDERS.filter((anchor) => cardFor(anchor));
+    if (!sameSet(staying, BYSTANDERS)) fail(`the delete took bystanders ${list(BYSTANDERS.filter((a) => !cardFor(a)))}`);
     if (!ctx.after.cards.includes(TITLE_ANCHOR)) fail('the delete took the vein’s own title card');
     for (const anchor of VICTIMS) {
       if (ctx.after.text.includes(`## ${TITLES[anchor]}`)) fail(`the markdown still has ## ${TITLES[anchor]}`);
@@ -402,20 +402,99 @@ async function sweepDeleteUndoRedo(app, results) {
     return { detail: `${VICTIMS.length} cards and ${VICTIMS.length} prose sections gone, ${BYSTANDERS.length} bystanders kept` };
   });
 
+  await record(results, 'a step in another vein carries no pending deletion', async () => {
+    if (!ctx.after) fail('the delete did not run');
+    const recorded = historyStep(app, path);
+    if (!recorded || recorded.name !== `Delete ${VICTIMS.length} notes`) {
+      fail(`the first vein’s last step is “${recorded?.name ?? 'none'}”`);
+    }
+
+    // Away to a vein that has nothing to do with the deletion, and one drag
+    // there: its step is the next snapshot the canvas writes. The canvas edit
+    // sits in the draft until autosave writes it, so save it here first — this
+    // check is about the history bookkeeping, not about when a save lands, and
+    // the vein must reopen with the deletion already in its markdown.
+    await app.saveCurrent({ silent: true });
+    if ((app.state.draft ?? '').includes(PROSE.alpha)) fail('the delete did not reach the saved markdown');
+    await app.openPath(NEIGHBOUR_PATH);
+    if (app.state.ui.mode !== 'world') app.setMode('world');
+    await wait(200);
+    if (app.state.current?.path !== NEIGHBOUR_PATH) {
+      fail(`the canvas is showing ${app.state.current?.path ?? 'nothing'}`);
+    }
+    const otherStage = document.querySelector('.wb-stage');
+    if (!otherStage?.offsetWidth) fail('the canvas is not visible in the other vein');
+    await fitAllCards(otherStage, NEIGHBOUR_ALL);
+    const missing = NEIGHBOUR_ALL.filter((anchor) => !cardFor(anchor));
+    if (missing.length) fail(`the other vein is missing ${list(missing)}`);
+    const start = canvasRecord(app, NEIGHBOUR_PATH).positions?.north;
+    if (!start) fail('North has no saved position in the other vein');
+    const beforeCount = (app.worldRecord(NEIGHBOUR_PATH)?.history?.past ?? []).length;
+    await dragCardBy('north', 120, 90);
+    const past = app.worldRecord(NEIGHBOUR_PATH)?.history?.past ?? [];
+    if (past.length !== beforeCount + 1) {
+      fail(`the drag recorded ${past.length - beforeCount} steps on the other vein`);
+    }
+    const step = past[past.length - 1];
+    if (!step.name.startsWith('Moved “North”')) fail(`the other vein’s step is named “${step.name}”`);
+    if (stable(canvasRecord(app, NEIGHBOUR_PATH).positions?.north) === stable(start)) {
+      fail('North did not move, so the step is not a real one');
+    }
+    const snap = JSON.parse(step.snap);
+    if ('notes' in snap) {
+      fail(`the other vein’s step carries notes for ${list(Object.keys(snap.notes ?? {}))}`);
+    }
+    if ('noteOrder' in snap) fail('the other vein’s step carries a noteOrder');
+    const leaked = [...VICTIMS, TITLE_ANCHOR].filter((anchor) => step.snap.includes(`"${anchor}"`));
+    if (leaked.length) fail(`the other vein’s step names ${list(leaked)}`);
+
+    // Back again: the deletion is still the step this vein would undo.
+    await app.openPath(path);
+    if (app.state.ui.mode !== 'world') app.setMode('world');
+    await wait(200);
+    const back = VICTIMS.filter((anchor) => cardFor(anchor));
+    if (back.length) fail(`switching back brought back ${list(back)}`);
+    const staying = BYSTANDERS.filter((anchor) => cardFor(anchor));
+    if (!sameSet(staying, BYSTANDERS)) {
+      fail(`switching back lost ${list(BYSTANDERS.filter((anchor) => !cardFor(anchor)))}`);
+    }
+    const undo = toolbarButton('Undo');
+    if (!undo || undo.disabled) fail('switching back lost the delete step');
+    if (!undo.title.startsWith(`Undo: Delete ${VICTIMS.length} notes`)) fail(`undo now names “${undo.title}”`);
+    const pending = historyStep(app, path);
+    if (!pending || pending.name !== recorded.name || pending.snap !== recorded.snap) {
+      fail(`the first vein’s last step is now “${pending?.name ?? 'none'}”`);
+    }
+    const pendingSnap = JSON.parse(pending.snap);
+    const notes = pendingSnap.notes ?? {};
+    for (const anchor of VICTIMS) {
+      if (!notes[anchor]) fail(`the delete step no longer carries ${anchor}’s prose`);
+    }
+    if (!Array.isArray(pendingSnap.noteOrder) || !sameSet(pendingSnap.noteOrder, ALL)) {
+      fail(`the delete step’s noteOrder is ${list(pendingSnap.noteOrder ?? [])}`);
+    }
+    return { detail: `no notes or noteOrder in the other vein’s step; “${pending.name}” is still pending here` };
+  });
+
   await record(results, 'undo restores the cards and their prose exactly', async () => {
     if (!ctx.after) fail('the delete did not run');
     const undo = toolbarButton('Undo');
     if (!undo || undo.disabled) fail('undo is not offered after the delete');
     if (!undo.title.startsWith(`Undo: Delete ${VICTIMS.length} notes`)) fail(`undo names “${undo.title}”`);
     undo.click();
-    const back = await waitFor(() => VICTIMS.every(cardOf), 2000);
-    if (!back) fail(`undo left ${list(VICTIMS.filter((anchor) => !cardOf(anchor)))} off the canvas`);
+    const back = await waitFor(() => VICTIMS.every((anchor) => cardFor(anchor)), 2000);
+    if (!back) fail(`undo left ${list(VICTIMS.filter((anchor) => !cardFor(anchor)))} off the canvas`);
+    // Presence is not order: the restore mounts cards as the rebuild reaches
+    // them, so wait for the painted order to settle before it is read. The
+    // exact-order assertion below is untouched — a wrong order that stays
+    // wrong still fails it.
+    await waitFor(() => cardAnchors().join('|') === ctx.before.cards.join('|'), 1000);
     const now = snapshotOf(app, path);
     if (now.text !== ctx.before.text) fail(`the markdown came back different:\n${diffSummary(ctx.before.text, now.text)}`);
     if (now.codes !== ctx.before.codes) fail(`the canvas record came back different (${diffKeys(ctx.before.codes, now.codes)})`);
     if (!sameSet(now.cards, ctx.before.cards)) fail(`the cards are ${list(now.cards)}, were ${list(ctx.before.cards)}`);
     if (now.cards.join('|') !== ctx.before.cards.join('|')) {
-      fail(`the cards came back in a different order: ${list(now.cards)}; expected ${list(ctx.before.cards)}`);
+      fail(`the cards came back in a different order: ${list(now.cards)}; expected ${list(ctx.before.cards)} — ${canvasOrder()}`);
     }
     if (undo.disabled !== true) fail('undo is still offered with nothing left to undo');
     const redo = toolbarButton('Redo');
@@ -430,8 +509,8 @@ async function sweepDeleteUndoRedo(app, results) {
     const redo = toolbarButton('Redo');
     if (!redo || redo.disabled) fail('redo is not offered');
     redo.click();
-    const cleared = await waitFor(() => VICTIMS.every((anchor) => !cardOf(anchor)), 2000);
-    if (!cleared) fail(`redo left ${list(VICTIMS.filter(cardOf))} on the canvas`);
+    const cleared = await waitFor(() => VICTIMS.every((anchor) => !cardFor(anchor)), 2000);
+    if (!cleared) fail(`redo left ${list(VICTIMS.filter((anchor) => cardFor(anchor)))} on the canvas`);
     const now = snapshotOf(app, path);
     if (now.text !== ctx.after.text) fail(`redo left different markdown:\n${diffSummary(ctx.after.text, now.text)}`);
     if (now.codes !== ctx.after.codes) fail(`redo left a different record (${diffKeys(ctx.after.codes, now.codes)})`);
@@ -447,7 +526,7 @@ async function sweepDeleteUndoRedo(app, results) {
     const undo = toolbarButton('Undo');
     if (!undo || undo.disabled) fail('undo is not offered after the redo');
     undo.click();
-    const back = await waitFor(() => VICTIMS.every(cardOf), 2000);
+    const back = await waitFor(() => VICTIMS.every((anchor) => cardFor(anchor)), 2000);
     if (!back) fail('the second undo did not put the cards back');
     const now = snapshotOf(app, path);
     if (now.text !== ctx.before.text) fail(`the markdown differs after the second undo:\n${diffSummary(ctx.before.text, now.text)}`);
@@ -462,13 +541,13 @@ async function sweepDeleteUndoRedo(app, results) {
     if (canvasRecord(app, path).relations?.['alpha->beta'] !== 'ally') fail('Alpha has no fixture bond to Beta');
     if (canvasRecord(app, path).relations?.['alpha->echo'] !== 'mentor') fail('Alpha has no fixture bond to Echo');
 
-    const remove = cardOf('alpha')?.querySelector('.wb-card-del');
+    const remove = cardFor('alpha')?.querySelector('.wb-card-del');
     if (!remove) fail('Alpha has no card ✕ control');
     remove.click();
     if (!(await waitFor(() => remove.classList.contains('is-armed'), 500))) fail('the first ✕ click did not arm deletion');
     remove.click();
 
-    const gone = await waitFor(() => !cardOf('alpha'), 2000);
+    const gone = await waitFor(() => !cardFor('alpha'), 2000);
     if (!gone) fail('the ✕ did not remove Alpha from the canvas');
     if ((app.state.draft ?? '').includes(PROSE.alpha)) fail('the ✕ left Alpha’s prose in the markdown');
     const deleted = canvasRecord(app, path);
@@ -480,8 +559,9 @@ async function sweepDeleteUndoRedo(app, results) {
     if (!undo || undo.disabled || !undo.title.startsWith('Undo: Delete “Alpha”')) fail(`the ✕ produced an unexpected step: ${undo?.title ?? 'none'}`);
 
     undo.click();
-    const restored = await waitFor(() => cardOf('alpha'), 2000);
+    const restored = await waitFor(() => cardFor('alpha'), 2000);
     if (!restored) fail('undo did not restore Alpha’s card');
+    await waitFor(() => cardAnchors().join('|') === before.cards.join('|'), 1000);
     const now = snapshotOf(app, path);
     if (now.text !== before.text) fail(`undo did not restore Alpha’s prose exactly: ${diffSummary(before.text, now.text)}`);
     if (now.codes !== before.codes) fail(`undo did not restore Alpha’s bonds and canvas state exactly (${diffKeys(before.codes, now.codes)})`);
@@ -490,7 +570,7 @@ async function sweepDeleteUndoRedo(app, results) {
     }
     if (!sameSet(now.cards, before.cards)) fail(`undo restored ${list(now.cards)}, expected ${list(before.cards)}`);
     if (now.cards.join('|') !== before.cards.join('|')) {
-      fail(`undo restored Alpha in a different card order: ${list(now.cards)}; expected ${list(before.cards)}`);
+      fail(`undo restored Alpha in a different card order: ${list(now.cards)}; expected ${list(before.cards)} — ${canvasOrder()}`);
     }
     return { detail: 'Alpha’s prose, both bonds, saved position and card order restored exactly' };
   });
@@ -541,15 +621,10 @@ export async function runDeleteSmoke(search = globalThis.location?.search ?? '')
   const app = globalThis.macusanite;
   if (!app) return null;
 
-  if (params.get('phase') !== 'run') {
-    const error = seed();
-    if (error) {
-      const summary = finish([{ name: 'setup', status: 'fail', detail: error }]);
-      return summary;
-    }
-    const next = new URL(globalThis.location.href);
-    next.searchParams.set('phase', 'run');
-    globalThis.location.replace(next.href);
+  if (harnessPhase(search) === 'seed') {
+    const error = seedHarnessVault([deleteVaultFiles(), neighbourVaultFiles()]);
+    if (error) return reportSmoke('delete smoke', 'wbDeleteSmoke', [{ name: 'setup', status: 'fail', detail: error }]);
+    reloadForRunPhase();
     return null;
   }
 
@@ -560,24 +635,8 @@ export async function runDeleteSmoke(search = globalThis.location?.search ?? '')
     await wait(150);
   } catch (error) {
     results.push({ name: 'setup', status: 'fail', detail: `the fixture vein could not be opened: ${error?.message ?? error}` });
-    return finish(results);
+    return reportSmoke('delete smoke', 'wbDeleteSmoke', results);
   }
   await sweepDeleteUndoRedo(app, results);
-  return finish(results);
-}
-
-function finish(results) {
-  const failures = results.filter((result) => result.status === 'fail');
-  const passes = results.filter((result) => result.status === 'pass');
-  const summary = {
-    ok: failures.length === 0 && passes.length > 0,
-    passed: passes.length,
-    failed: failures.length,
-    skipped: results.filter((result) => result.status === 'skip').length,
-    results,
-  };
-  globalThis.wbDeleteSmoke = summary;
-  if (globalThis.console?.table) console.table(results);
-  document.title = `${summary.ok ? '✓' : '✗'} delete smoke — ${summary.passed}/${results.length} passed`;
-  return summary;
+  return reportSmoke('delete smoke', 'wbDeleteSmoke', results);
 }

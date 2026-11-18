@@ -13,11 +13,23 @@
  *   npm run harness
  *   open http://127.0.0.1:1421/?wb-smoke=zoom
  *
+ * The first visit seeds a compact fixture vein and reloads; the second runs
+ * it. The fixture is three narrow cards — two of them a group — laid out for a
+ * phone-width stage: at 100% a full 300px card's port sits further from its
+ * centre than half a 288px stage, so on the sample vault the 100% port checks
+ * could only skip. Here the card port and the group port both land on stage
+ * without a pan, and tablet gestures (Settings → Worldbuilding) only enlarge
+ * the targets they hit.
+ *
  * The results also land on `globalThis.wbZoomSmoke` and in the console, and
- * the page title reports the run. It needs a vein open as Worldbuilding with
- * at least one card and one group that has a port.
+ * the page title reports the run.
  */
 import { zoomMode } from '../../src/lib/worldbuild.js';
+import {
+  blankPoint, bringCentreIntoView, bringIntoView, cardFor, centreOf, clickAt, fail, fire,
+  harnessPhase, overlaps, record, reloadForRunPhase, reportSmoke, sameSet, scaleOf,
+  seedHarnessVault, selectedAnchors, wait, zoomTo,
+} from './kit.js';
 
 const ZOOMS = [1, 0.6, 0.2, 0.125];
 // The view is driven by wheel events whose result is recomputed by the panel;
@@ -31,7 +43,79 @@ const STAGE_CLASSES = [
   'is-icon-zoom',
 ];
 
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const FIXTURE_PATH = 'Zoom Targets.md';
+/** The three cards the checks press, top to bottom. */
+const FIXTURE_CARDS = ['kite', 'lamp', 'mast'];
+/** The group the group-port check selects, and the cards in it. */
+const FIXTURE_GROUP = 'g-pair';
+
+/**
+ * The fixture the zoom checks aim at: narrow cards in one column near the
+ * canvas origin, and a group of two whose tab sits in the gap above them.
+ *
+ * The card dimensions are the point: narrower than a phone-width stage, so a
+ * card and the port at the far end of its head both fit at 100% — a default
+ * 300px card is wider than the 288px stage a 480px window leaves, which is why
+ * the sample vault's 100% port checks could only skip — and tall enough that
+ * the card's centre is clear of the fold toggle at 20%, which stays a screen
+ * size while the card shrinks. 220px also leaves the head room for the 24px
+ * tablet port, which a minimum-width card pushes past its own edge.
+ * The cards run down one column with a gap between them, so no two centres
+ * land on one another at any zoom, and the group tab sits in the gap above its
+ * cards rather than beside a port.
+ */
+export function zoomVaultFiles() {
+  const order = ['zoom-targets', ...FIXTURE_CARDS];
+  const titles = { 'zoom-targets': 'Zoom Targets', kite: 'Kite', lamp: 'Lamp', mast: 'Mast' };
+  const lines = [];
+  for (const anchor of order) {
+    lines.push(`${anchor === 'zoom-targets' ? '#' : '##'} ${titles[anchor]}`, '',
+      `${titles[anchor]} sits on the canvas for the zoom checks to press.`, '');
+  }
+  const dims = Object.fromEntries(order.map((anchor) => [anchor, { width: 220, height: 300 }]));
+  return {
+    path: FIXTURE_PATH,
+    body: lines.join('\n'),
+    record: {
+      marked: true,
+      positions: {
+        // One column with a 20px gap between cards, and the title below the
+        // fold: at 100% the first card and the group's tab share the stage.
+        'zoom-targets': { x: 24, y: 1000 },
+        kite: { x: 24, y: 8 },
+        lamp: { x: 24, y: 336 },
+        mast: { x: 24, y: 664 },
+      },
+      cardDims: dims,
+      groups: {
+        [FIXTURE_GROUP]: {
+          id: FIXTURE_GROUP,
+          name: 'Pair',
+          color: '#d29922',
+          members: ['lamp', 'mast'],
+          children: [],
+        },
+      },
+      relations: {},
+      bondNotes: {},
+      folded: {},
+      types: {},
+      fields: {},
+      colors: {},
+      images: {},
+      resources: {},
+      pinned: {},
+      locked: {},
+      cardModes: {},
+      cardSizes: {},
+      stack: [],
+      collapsedGroups: {},
+      annotations: {},
+      // A known camera at 100%: the canvas origin is the stage's top-left.
+      view: { x: 0, y: 0, s: 1 },
+    },
+  };
+}
 
 function describe(element) {
   if (!element) return 'nothing';
@@ -41,67 +125,8 @@ function describe(element) {
   return `<${name}${cls ? `.${cls.trim().split(/\s+/).filter(Boolean).join('.')}` : ''}>`;
 }
 
-function fail(message) {
-  throw new Error(message);
-}
-
-function sameSet(a, b) {
-  const left = [...a].sort();
-  const right = [...b].sort();
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function fire(target, type, x, y, buttons, extra = {}) {
-  target.dispatchEvent(new PointerEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    composed: true,
-    button: 0,
-    buttons,
-    clientX: x,
-    clientY: y,
-    pointerId: 1,
-    pointerType: 'mouse',
-    isPrimary: true,
-    ...extra,
-  }));
-}
-
-/** A press and release in place, with the click a browser would add. */
-function clickAt(target, x, y, extra = {}) {
-  fire(target, 'pointerdown', x, y, 1, extra);
-  fire(window, 'pointerup', x, y, 0, extra);
-  target.dispatchEvent(new MouseEvent('click', {
-    bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, ...extra,
-  }));
-}
-
-function centreOf(rect) {
-  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-}
-
-function inside(outer, rect, margin = 0) {
-  return rect.width > 1 && rect.height > 1
-    && rect.left >= outer.left + margin && rect.right <= outer.right - margin
-    && rect.top >= outer.top + margin && rect.bottom <= outer.bottom - margin;
-}
-
-function overlaps(outer, rect) {
-  return rect.width > 1 && rect.height > 1
-    && rect.right > outer.left && rect.left < outer.right
-    && rect.bottom > outer.top && rect.top < outer.bottom;
-}
-
-function scaleOf(canvas) {
-  return Number.parseFloat(canvas.style.getPropertyValue('--wb-zoom'));
-}
-
 function stageClassNames(stage) {
   return STAGE_CLASSES.filter((name) => stage.classList.contains(name));
-}
-
-function selectedAnchors() {
-  return [...document.querySelectorAll('.wb-card.is-selected')].map((card) => card.dataset.anchor);
 }
 
 function menuOpen() {
@@ -130,113 +155,6 @@ function groupMembers(app, path, groupId) {
   return members;
 }
 
-/** A point on the stage where the background, not a card, takes the press. */
-function blankPoint(stage) {
-  const s = stage.getBoundingClientRect();
-  const blocked = '.wb-card, .wb-group-tab, .wb-group-summary, .wb-annotation, .wb-menu, '
-    + '.wb-navigator, .wb-inspector, button, input, select, textarea, '
-    + '.wb-edge-label, [data-edge-key], .wb-zoom-hud, .wb-overlap-hud';
-  for (let gy = 0.06; gy <= 0.94; gy += 0.055) {
-    for (let gx = 0.03; gx <= 0.97; gx += 0.05) {
-      const x = s.left + s.width * gx;
-      const y = s.top + s.height * gy;
-      const hit = document.elementFromPoint(x, y);
-      if (!hit || !stage.contains(hit)) continue;
-      if (hit.closest(blocked)) continue;
-      return { x, y };
-    }
-  }
-  return null;
-}
-
-/** Drag the background by a screen-space delta; returns whether it started. */
-async function panBy(stage, dx, dy) {
-  const from = blankPoint(stage);
-  if (!from) return false;
-  fire(stage, 'pointerdown', from.x, from.y, 1);
-  fire(window, 'pointermove', from.x + dx / 2, from.y + dy / 2, 1);
-  fire(window, 'pointermove', from.x + dx, from.y + dy, 1);
-  fire(window, 'pointerup', from.x + dx, from.y + dy, 0);
-  await wait(30);
-  return true;
-}
-
-/** Pan just far enough for an element's centre to be clickable on stage. */
-async function bringCentreIntoView(stage, element, margin = 12) {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const s = stage.getBoundingClientRect();
-    const r = element.getBoundingClientRect();
-    if (r.width <= 1 || r.height <= 1) return false;
-    const point = centreOf(r);
-    const dx = point.x < s.left + margin ? (s.left + margin) - point.x
-      : point.x > s.right - margin ? (s.right - margin) - point.x : 0;
-    const dy = point.y < s.top + margin ? (s.top + margin) - point.y
-      : point.y > s.bottom - margin ? (s.bottom - margin) - point.y : 0;
-    if (!dx && !dy) return true;
-    if (!(await panBy(stage, dx, dy))) return false;
-  }
-  const s = stage.getBoundingClientRect();
-  const point = centreOf(element.getBoundingClientRect());
-  return point.x >= s.left && point.x <= s.right && point.y >= s.top && point.y <= s.bottom;
-}
-
-/** Pan just far enough for an element to sit wholly inside the stage. */
-async function bringIntoView(stage, element, margin = 10) {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const s = stage.getBoundingClientRect();
-    const r = element.getBoundingClientRect();
-    if (r.width <= 1 || r.height <= 1) return false;
-    if (inside(s, r, margin)) return true;
-    const dx = r.left < s.left + margin ? (s.left + margin) - r.left
-      : r.right > s.right - margin ? (s.right - margin) - r.right : 0;
-    const dy = r.top < s.top + margin ? (s.top + margin) - r.top
-      : r.bottom > s.bottom - margin ? (s.bottom - margin) - r.bottom : 0;
-    if (!dx && !dy) return false;
-    if (!(await panBy(stage, dx, dy))) return false;
-  }
-  const s = stage.getBoundingClientRect();
-  return inside(s, element.getBoundingClientRect(), 0);
-}
-
-/**
- * Wait until the canvas shows the zoom the last wheel asked for. The panel
- * applies a wheel on the next frame, so on a heavy canvas (a thousand cards)
- * a fixed wait would read the previous scale and send another full step on top
- * of it — several steps compounding into one runaway zoom past the limits.
- */
-async function settleZoom(canvas, from, timeout = 1500) {
-  const until = performance.now() + timeout;
-  while (performance.now() < until) {
-    const now = scaleOf(canvas);
-    if (Number.isFinite(now) && now !== from) return now;
-    await wait(10);
-  }
-  return scaleOf(canvas);
-}
-
-/** Wheel the canvas to a scale, keeping one screen point still. */
-async function zoomTo(stage, canvas, target, anchor) {
-  const point = anchor ?? blankPoint(stage) ?? centreOf(stage.getBoundingClientRect());
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const current = scaleOf(canvas);
-    if (!Number.isFinite(current)) return current;
-    if (Math.abs(current - target) <= ZOOM_TOLERANCE) return current;
-    // One event is one step, so ask only for a ratio a single step can land:
-    // a vast delta clamps at ZOOM_MIN or ZOOM_MAX instead of arriving.
-    const ratio = Math.min(4, Math.max(0.25, target / current));
-    stage.dispatchEvent(new WheelEvent('wheel', {
-      bubbles: true,
-      cancelable: true,
-      deltaMode: 0,
-      deltaY: -Math.log(ratio) / 0.002,
-      clientX: point.x,
-      clientY: point.y,
-    }));
-    if ((await settleZoom(canvas, current)) === current) break;
-  }
-  return scaleOf(canvas);
-}
-
 /** A card the checks may press: visible, and not one that refuses a grab. */
 function pressableCards(stage) {
   const s = stage.getBoundingClientRect();
@@ -258,16 +176,33 @@ async function pickCard(stage, target = '.wb-card') {
       return da - db;
     });
   for (const { card } of candidates) {
+    const anchor = card.dataset.anchor;
     if (!(await bringCentreIntoView(stage, card))) continue;
-    const targetEl = target === '.wb-card' ? card : card.querySelector(target);
+    // A pan rebuilds the card window, so read the card again rather than
+    // holding the element that was panned.
+    const fresh = cardFor(anchor, stage) ?? card;
+    const targetEl = target === '.wb-card' ? fresh : fresh.querySelector(target);
     if (!targetEl) continue;
     const point = centreOf(targetEl.getBoundingClientRect());
     const bounds = stage.getBoundingClientRect();
     if (point.x < bounds.left || point.x > bounds.right || point.y < bounds.top || point.y > bounds.bottom) continue;
     const hit = document.elementFromPoint(point.x, point.y);
-    if (hit && targetEl.contains(hit) && hit.closest('.wb-card') === card) return card;
+    if (hit && targetEl.contains(hit) && hit.closest('.wb-card') === fresh) return fresh;
   }
   return null;
+}
+
+/** The group a piece of chrome belongs to, by its tab or summary element. */
+function chromeGroupId(element) {
+  return element.dataset.groupId
+    ?? element.closest('[data-group-id]')?.getAttribute('data-group-id')
+    ?? null;
+}
+
+/** A group's chrome as it stands now, after a pan may have rebuilt the layer. */
+function groupChrome(stage, id) {
+  return [...stage.querySelectorAll('.wb-group-tab, .wb-group-summary')]
+    .find((element) => chromeGroupId(element) === id && element.querySelector('.wb-link-handle')) ?? null;
 }
 
 /** The first group chrome with a port that can be brought onto the screen. */
@@ -283,14 +218,20 @@ async function pickGroupChrome(stage) {
     return da - db;
   });
   for (const element of sorted) {
-    if (!(await bringIntoView(stage, element))) continue;
-    const handle = element.querySelector('.wb-link-handle');
+    const id = chromeGroupId(element);
+    // Group tabs are drawn again on every pan, so each pan is followed by a
+    // fresh look at the same group rather than at the element it panned.
+    const relook = () => groupChrome(stage, id);
+    if (!(await bringIntoView(stage, element, 10, id ? relook : null))) continue;
+    const fresh = id ? relook() : element;
+    if (!fresh) continue;
+    const handle = fresh.querySelector('.wb-link-handle');
     if (!handle) continue;
     const point = centreOf(handle.getBoundingClientRect());
     const bounds = stage.getBoundingClientRect();
     if (point.x < bounds.left || point.x > bounds.right || point.y < bounds.top || point.y > bounds.bottom) continue;
     const hit = document.elementFromPoint(point.x, point.y);
-    if (hit && handle.contains(hit)) return element;
+    if (hit && handle.contains(hit)) return fresh;
   }
   return null;
 }
@@ -306,16 +247,6 @@ function clearSelection(stage) {
   if (!point) return;
   fire(stage, 'pointerdown', point.x, point.y, 1, { shiftKey: true });
   fire(window, 'pointerup', point.x, point.y, 0);
-}
-
-async function record(results, name, run) {
-  try {
-    const detail = await run();
-    if (detail?.skip) results.push({ name, status: 'skip', detail: detail.skip });
-    else results.push({ name, status: 'pass', detail: detail?.detail ?? '' });
-  } catch (error) {
-    results.push({ name, status: 'fail', detail: error?.message ?? String(error) });
-  }
 }
 
 async function checkMode(stage, canvas, target) {
@@ -396,13 +327,16 @@ async function checkGroupPort(stage, app, path) {
   clearSelection(stage);
   const chrome = await pickGroupChrome(stage);
   if (!chrome) return { skip: 'no group port could be brought into view' };
-  const groupId = chrome.dataset.groupId ?? chrome.closest('[data-group-id]')?.dataset.groupId;
+  const groupId = chromeGroupId(chrome);
   if (!groupId) fail(`the group port on ${describe(chrome)} has no group id`);
+  const relookHandle = () => groupChrome(stage, groupId)?.querySelector('.wb-link-handle') ?? null;
   const handle = chrome.querySelector('.wb-link-handle');
-  if (!(await bringIntoView(stage, handle, 2))) fail('the group port is outside the stage');
-  const point = centreOf(handle.getBoundingClientRect());
+  if (!(await bringIntoView(stage, handle, 2, relookHandle))) fail('the group port is outside the stage');
+  // The pan may have drawn the tab again; measure the port on screen now.
+  const port = relookHandle() ?? handle;
+  const point = centreOf(port.getBoundingClientRect());
   const hit = document.elementFromPoint(point.x, point.y);
-  if (!hit || !handle.contains(hit)) fail(`the group port is covered by ${describe(hit)}`);
+  if (!hit || !port.contains(hit)) fail(`the group port is covered by ${describe(hit)}`);
   const expected = groupMembers(app, path, groupId);
   if (expected.size < 2) fail(`group ${groupId} has ${expected.size} members to select`);
   clearSelection(stage);
@@ -431,7 +365,16 @@ async function checkGroupPort(stage, app, path) {
  * Run every check and return `{ ok, results }`. Safe to call again: it reads
  * the live canvas each time and leaves the view at its original scale.
  */
-export async function runZoomSmoke() {
+export async function runZoomSmoke(search = globalThis.location?.search ?? '') {
+  if (!import.meta.env.DEV) return null;
+
+  if (harnessPhase(search) === 'seed') {
+    const error = seedHarnessVault(zoomVaultFiles());
+    if (error) return reportSmoke('zoom smoke', 'wbZoomSmoke', [{ name: 'setup', status: 'fail', detail: error }]);
+    reloadForRunPhase();
+    return null;
+  }
+
   const app = globalThis.macusanite;
   const results = [];
   const navigatorWasHidden = document.body.classList.contains('hide-canvas-navigator');
@@ -444,25 +387,34 @@ export async function runZoomSmoke() {
   if (!app || !stage || !canvas) {
     results.push({ name: 'setup', status: 'fail', detail: 'the worldbuilding panel is not on the page' });
     restoreNavigator();
-    return finish(results);
+    return reportSmoke('zoom smoke', 'wbZoomSmoke', results);
   }
 
-  if (!app.state?.current) {
-    try {
-      await app.openPath('Home.md');
-    } catch {
-      results.push({ name: 'setup', status: 'fail', detail: 'no vein is open and Home.md could not be opened' });
-      restoreNavigator();
-      return finish(results);
-    }
+  try {
+    await app.openPath(FIXTURE_PATH);
+  } catch (error) {
+    results.push({ name: 'setup', status: 'fail', detail: `the zoom fixture could not be opened: ${error?.message ?? error}` });
+    restoreNavigator();
+    return reportSmoke('zoom smoke', 'wbZoomSmoke', results);
   }
   if (app.state.ui.mode !== 'world') app.setMode('world');
-  await wait(150);
+  await wait(200);
   if (!stage.offsetWidth) {
     results.push({ name: 'setup', status: 'fail', detail: 'the canvas is not visible' });
     restoreNavigator();
-    return finish(results);
+    return reportSmoke('zoom smoke', 'wbZoomSmoke', results);
   }
+
+  // The checks below skip when a target cannot be brought into view on
+  // purpose; the fixture itself missing is a failure, so it is named here
+  // rather than showing up as four silent skips.
+  await record(results, 'the fixture is on the canvas', async () => {
+    const missing = FIXTURE_CARDS.filter((anchor) => !cardFor(anchor));
+    if (missing.length) fail(`the canvas is missing ${missing.join(', ')}`);
+    const tab = document.querySelector('.wb-group-tab, .wb-group-summary')?.querySelector('.wb-link-handle');
+    if (!tab) fail('the fixture’s group has no link port');
+    return { detail: `${FIXTURE_CARDS.length} cards and a group port at ${Math.round(scaleOf(canvas) * 100)}%` };
+  });
 
   const path = app.state.current.path;
   const original = scaleOf(canvas);
@@ -483,21 +435,5 @@ export async function runZoomSmoke() {
   clearSelection(stage);
   await zoomTo(stage, canvas, startView.s);
   restoreNavigator();
-  return finish(results);
-}
-
-function finish(results) {
-  const failures = results.filter((result) => result.status === 'fail');
-  const passes = results.filter((result) => result.status === 'pass');
-  const summary = {
-    ok: failures.length === 0 && passes.length > 0,
-    passed: passes.length,
-    failed: failures.length,
-    skipped: results.filter((result) => result.status === 'skip').length,
-    results,
-  };
-  globalThis.wbZoomSmoke = summary;
-  if (globalThis.console?.table) console.table(results);
-  document.title = `${summary.ok ? '✓' : '✗'} zoom smoke — ${summary.passed}/${results.length} passed`;
-  return summary;
+  return reportSmoke('zoom smoke', 'wbZoomSmoke', results);
 }

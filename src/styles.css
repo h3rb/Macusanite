@@ -25,6 +25,7 @@
   --mono: "Cascadia Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --sans: "Segoe UI", system-ui, -apple-system, "Inter", Roboto, sans-serif;
   --sidebar-width: 268px;
+  --sidebar-fold-width: 36px;
   --graph-width: 340px;
   --graph-fold-width: 36px;
 }
@@ -554,6 +555,21 @@ body.resizing {
   display: none;
 }
 
+/* The sidebar folds the same way, on the left: its column narrows to a tab and
+   the centre takes the width. Either fold stands alone, and both at once leave
+   the reader between two rails. */
+.workspace.is-sidebar-folded {
+  grid-template-columns: var(--sidebar-fold-width) minmax(0, 1fr) 5px var(--graph-width);
+}
+
+.workspace.is-sidebar-folded.is-graph-folded {
+  grid-template-columns: var(--sidebar-fold-width) minmax(0, 1fr) var(--graph-fold-width);
+}
+
+.workspace.is-sidebar-folded #sidebar-resizer {
+  display: none;
+}
+
 .resizer {
   background: var(--border);
   cursor: col-resize;
@@ -584,6 +600,11 @@ body.resizing {
 
 .graph-panel.is-folded {
   border-left-color: var(--border-strong);
+  background: linear-gradient(180deg, var(--panel), var(--bg-sunken));
+}
+
+.sidebar.is-folded {
+  border-right-color: var(--border-strong);
   background: linear-gradient(180deg, var(--panel), var(--bg-sunken));
 }
 
@@ -1587,6 +1608,60 @@ mark.search-hit {
 }
 
 .graph-fold-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* The folded vault sidebar: the same tab, mirrored onto the left edge. */
+.sidebar-fold {
+  display: none;
+}
+
+.sidebar.is-folded > .sidebar-head,
+.sidebar.is-folded > .pane {
+  display: none;
+}
+
+.sidebar.is-folded > .sidebar-fold {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 0;
+  padding: 12px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sidebar.is-folded > .sidebar-fold:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+}
+
+.sidebar.is-folded > .sidebar-fold:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.sidebar-fold-arrow {
+  color: var(--accent);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.sidebar-fold-label {
   writing-mode: vertical-rl;
   text-orientation: mixed;
   font-size: 10px;
@@ -2640,6 +2715,10 @@ dialog::backdrop {
   .workspace.is-graph-folded {
     grid-template-columns: var(--sidebar-width) 5px minmax(0, 1fr);
   }
+  .workspace.is-sidebar-folded,
+  .workspace.is-sidebar-folded.is-graph-folded {
+    grid-template-columns: var(--sidebar-fold-width) minmax(0, 1fr);
+  }
   .graph-panel,
   #graph-resizer,
   .graph-fold {
@@ -2666,6 +2745,11 @@ dialog::backdrop {
     width: 100%;
     min-width: 0;
     grid-template-columns: minmax(0, 34vw) 5px minmax(0, 1fr);
+  }
+
+  .workspace.is-sidebar-folded,
+  .workspace.is-sidebar-folded.is-graph-folded {
+    grid-template-columns: var(--sidebar-fold-width) minmax(0, 1fr);
   }
 
   .viewer {
@@ -3876,6 +3960,123 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   backdrop-filter: blur(8px);
 }
 
+/* Docked as a drawer on the canvas's right edge — a vertical tab rather than a
+   full-height panel: it takes the height of its own contents and sits centred
+   on the edge. The stage clips at its edge (`overflow: clip`), so the closed
+   drawer is pushed out of it and only its 30px rail is left showing, a tab on
+   the edge; opening slides the rest back in. The rail is a fixed 30px, so the
+   two positions are one translate apart — and both keep the -50% that centres
+   the tab vertically. */
+body.nav-dock-drawer .wb-navigator {
+  top: 50%;
+  right: 0;
+  bottom: auto;
+  width: 232px;
+  max-height: calc(100% - 24px);
+  padding: 0;
+  flex-direction: row;
+  gap: 0;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 8px 0 0 8px;
+  box-shadow: var(--shadow-lg);
+  transform: translate(0, -50%);
+  transition: transform 0.18s ease;
+}
+
+body.nav-dock-drawer.nav-drawer-closed .wb-navigator {
+  transform: translate(calc(100% - 30px), -50%);
+}
+
+body.nav-dock-drawer .wb-nav-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+/* The rail names the drawer in the same words, so the kicker would only cost
+   the head the room its two buttons need. */
+body.nav-dock-drawer .wb-nav-kicker {
+  display: none;
+}
+
+/* The edge tab of the drawer: hidden while the navigator floats. */
+.wb-nav-rail {
+  display: none;
+}
+
+body.nav-dock-drawer .wb-nav-rail {
+  display: flex;
+  flex: 0 0 30px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 30px;
+  /* Enough height for the arrow and the word, so the closed tab still reads as
+     a labelled tab on the edge. */
+  min-height: 112px;
+  padding: 10px 0;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+body.nav-dock-drawer .wb-nav-rail:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+}
+
+body.nav-dock-drawer .wb-nav-rail:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.wb-nav-rail-arrow {
+  color: var(--accent);
+  font-size: 17px;
+  line-height: 1;
+}
+
+/* The arrow points the way the drawer will move: right to close it, left to
+   pull it back out of the edge. */
+body.nav-dock-drawer .wb-nav-rail-arrow {
+  transform: rotate(180deg);
+}
+
+body.nav-dock-drawer.nav-drawer-closed .wb-nav-rail-arrow {
+  transform: none;
+}
+
+.wb-nav-rail-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Popping out only means something while the navigator is docked. */
+.wb-nav-popout {
+  display: none;
+}
+
+body.nav-dock-drawer .wb-nav-popout {
+  display: inline-flex;
+}
+
+/* A hard hide, used by the harness so the minimap cannot cover a hit target it
+   is testing. The navigator's own close button folds it to the drawer instead. */
 .hide-canvas-navigator .wb-navigator {
   display: none;
 }
@@ -5471,6 +5672,43 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   font-size: 12px;
 }
 
+/* A group's name at the map scales: a caption spanning the box, centred over
+ * its top edge and drawn at a fixed screen size like a card's semantic face,
+ * so a zoomed-out canvas still names its groups instead of leaving a speck
+ * where the tab was. It takes the tab's press, keys and menu from the semantic
+ * handoff on (see the zoom rules below); above that it is not rendered at all,
+ * so it is not a tab stop either. */
+.wb-group-caption {
+  display: none;
+  position: absolute;
+  height: 0;
+  justify-content: center;
+  align-items: flex-end;
+  pointer-events: none;
+  z-index: 99999;
+}
+
+.wb-group-caption-text {
+  max-width: 100%;
+  padding: calc(2px * var(--wb-inv-zoom, 1)) calc(7px * var(--wb-inv-zoom, 1));
+  border-left: calc(3px * var(--wb-inv-zoom, 1)) solid var(--wb-group-accent, var(--accent));
+  border-radius: calc(6px * var(--wb-inv-zoom, 1));
+  background: color-mix(in srgb, var(--bg-raised) 94%, transparent);
+  box-shadow: 0 calc(1px * var(--wb-inv-zoom, 1)) calc(8px * var(--wb-inv-zoom, 1)) rgba(0, 0, 0, 0.28);
+  color: var(--text);
+  font-size: calc(11.5px * var(--wb-inv-zoom, 1));
+  font-weight: 650;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateY(calc(-5px * var(--wb-inv-zoom, 1)));
+}
+
+.wb-group-caption.is-dimmed {
+  opacity: 0.28;
+}
+
 .wb-edge-label:hover {
   font-weight: 700;
 }
@@ -5761,6 +5999,24 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
+}
+
+/* The semantic handoff is where a group's title changes hands: its tab is a
+ * speck at this scale, so the caption over the box's top edge takes over —
+ * and with it the press that moves the group, its keys and its menu. */
+.wb-stage.is-semantic-zoom .wb-group-tab {
+  display: none;
+}
+
+.wb-stage.is-semantic-zoom .wb-group-caption {
+  display: flex;
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.wb-stage.is-semantic-zoom .wb-group-caption.is-locked,
+.wb-stage.is-semantic-zoom .wb-group-caption.is-frozen {
+  cursor: not-allowed;
 }
 
 /* Below 65% the nearest port is redrawn at a constant screen size on the

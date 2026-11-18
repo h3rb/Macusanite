@@ -24,6 +24,9 @@
  * rot silently: a new per-card node, a per-wire path, a full rebuild per tick.
  */
 import { zoomMode } from '../../src/lib/worldbuild.js';
+import {
+  fire, harnessPhase, nextFrame, reloadForRunPhase, seedHarnessVault,
+} from './kit.js';
 
 /** The sizes this budget is written for. */
 export const PERF_SIZES = [200, 500, 1000];
@@ -35,7 +38,6 @@ export const PERF_BUDGET = {
   1000: { nodesDetail: 12000, nodesIcon: 8000, edgePaths: 40, buildMs: 1500, panMs: 34 },
 };
 
-const STORAGE_KEY = 'macusanite.virtual-vault.v1';
 const HARNESS_PATH = (n) => `Perf ${n}.md`;
 
 /**
@@ -67,41 +69,23 @@ export function perfVaultFiles(n) {
   };
 }
 
-/** Put the vein and its record into the harness vault, then reload to load it. */
-function seed(n) {
-  const store = JSON.parse(globalThis.localStorage.getItem(STORAGE_KEY));
-  const state = JSON.parse(store.files['.macusanite/state.json']);
-  const files = perfVaultFiles(n);
-  store.files[files.path] = files.body;
-  state.world[files.path] = files.record;
-  store.files['.macusanite/state.json'] = JSON.stringify(state, null, 2);
-  globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-  return files.path;
-}
-
-const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-
 /** The stage's own frame rate while dragging the background, in milliseconds. */
 async function panFrames(stage) {
   const rect = stage.getBoundingClientRect();
-  stage.dispatchEvent(new PointerEvent('pointerdown', {
-    pointerId: 1, isPrimary: true, button: 0, clientX: rect.left + 450, clientY: rect.top + 700, bubbles: true, cancelable: true,
-  }));
+  fire(stage, 'pointerdown', rect.left + 450, rect.top + 700, 1);
   const times = [];
   let i = 0;
   await new Promise((done) => {
     const step = () => {
       times.push(performance.now());
-      window.dispatchEvent(new PointerEvent('pointermove', {
-        pointerId: 1, clientX: rect.left + 450 - i * 6, clientY: rect.top + 700 - i * 4, bubbles: true,
-      }));
+      fire(window, 'pointermove', rect.left + 450 - i * 6, rect.top + 700 - i * 4, 1);
       i += 1;
       if (i < 30) requestAnimationFrame(step);
       else done();
     };
     requestAnimationFrame(step);
   });
-  window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: rect.left + 280, clientY: rect.top + 580, bubbles: true }));
+  fire(window, 'pointerup', rect.left + 280, rect.top + 580, 0);
   const deltas = [];
   for (let k = 1; k < times.length; k += 1) deltas.push(times[k] - times[k - 1]);
   deltas.sort((a, b) => a - b);
@@ -137,11 +121,9 @@ export async function runPerfBudget(search = globalThis.location?.search ?? '') 
   const app = globalThis.macusanite;
   if (!app) return null;
 
-  if (params.get('phase') !== 'run') {
-    seed(size);
-    const next = new URL(globalThis.location.href);
-    next.searchParams.set('phase', 'run');
-    globalThis.location.replace(next.href);
+  if (harnessPhase(search) === 'seed') {
+    seedHarnessVault(perfVaultFiles(size));
+    reloadForRunPhase();
     return null;
   }
   // The vein has to be there already: if the seed was lost, say so rather than
