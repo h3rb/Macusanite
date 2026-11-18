@@ -6,6 +6,7 @@
  * is still what documents use for their own diagrams.
  */
 import { el, clear, qs, appendAll } from './dom.js';
+import { createDock } from './dock.js';
 import { buildGraph, layoutGraph, graphStats, neighbours, NODE, EDGE } from '../lib/graph.js';
 import { contrastColor, withAlpha } from '../lib/colors.js';
 import { titleFromPath } from '../lib/path.js';
@@ -34,20 +35,19 @@ export function createGraphPanel({ app, root }) {
   const statsBar = el('div', { class: 'graph-stats' });
   const tooltip = el('div', { class: 'graph-tooltip hidden' });
   const footer = el('div', { class: 'graph-foot' });
-  const fold = el('button', {
-    class: 'graph-fold',
-    type: 'button',
-    title: 'Expand the concept graph',
-    'aria-label': 'Expand the concept graph',
-    icon: false,
-    onclick: () => app.toggleGraph(true),
-  }, [
-    el('span', { class: 'graph-fold-arrow', text: '‹', 'aria-hidden': 'true' }),
-    el('span', { class: 'graph-fold-label', text: 'Concept graph' }),
-  ]);
-
-  root.append(fold, header, stage, statsBar, footer);
+  root.append(header, stage, statsBar, footer);
   stage.append(tooltip);
+
+  // The pane folds to a tab on its inner edge, the same dock the sidebar and
+  // the canvas use: the tab is the whole pane while it is folded.
+  const dock = createDock({
+    root,
+    labels: [{ id: 'graph', label: 'Concept graph', title: 'Expand the concept graph' }],
+    edge: 'right',
+    variant: 'column',
+    railSide: 'start',
+    onChoose: () => app.toggleGraph(!graphShown()),
+  });
 
   let svg = null;
   let layer = null;
@@ -130,15 +130,11 @@ export function createGraphPanel({ app, root }) {
   /* ------------------------------------------------------------ rendering */
 
   function render() {
-    root.classList.toggle('is-folded', !app.state.settings.layout.showGraph);
     renderHeader();
-    if (!app.state.settings.layout.showGraph) {
-      stage.classList.add('hidden');
-      statsBar.classList.add('hidden');
-      return;
-    }
-    stage.classList.remove('hidden');
-    statsBar.classList.remove('hidden');
+    // Folded, the dock's slot is hidden and the tab is the whole pane, so there
+    // is nothing to lay out: skip the graph and draw it again when it opens.
+    sync();
+    if (!graphShown()) return;
 
     graph = buildGraph({
       index: app.state.index,
@@ -525,8 +521,19 @@ export function createGraphPanel({ app, root }) {
     : null;
   observer?.observe(stage);
 
+  function graphShown() {
+    return app.state.settings.layout.showGraph !== false;
+  }
+
+
+  /** Reflect the fold setting: the tab alone when folded, the graph when not. */
+  function sync() {
+    dock.show(graphShown() ? 'graph' : null);
+  }
+
   return {
     render,
+    sync,
     refresh: render,
     get tooltip() {
       return tooltip;

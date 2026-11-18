@@ -7,6 +7,7 @@
  * only builds the tree and reflects the active tab.
  */
 import { el, clear, delegate, on, qs } from './dom.js';
+import { createDock } from './dock.js';
 import { filterTree, countVeins, VEIN, CHAMBER } from '../lib/tree.js';
 import { basename, dirname, join, titleFromPath } from '../lib/path.js';
 
@@ -61,22 +62,18 @@ export function createSidebar({ app, root }) {
     }),
   );
 
-  // The folded pane: one full-height tab on the left edge, the width of the
-  // graph's own rail, which unfolds the tree again.
-  const fold = el('button', {
-    class: 'sidebar-fold',
-    type: 'button',
-    title: 'Expand the vault sidebar',
-    'aria-label': 'Expand the vault sidebar',
-    icon: false,
-    onclick: () => app.toggleSidebar(true),
-  }, [
-    el('span', { class: 'sidebar-fold-arrow', text: '›', 'aria-hidden': 'true' }),
-    el('span', { class: 'sidebar-fold-label', text: 'Vault' }),
-  ]);
-
   host.append(filterInput, treeHost, footer);
-  root.append(fold);
+
+  // The pane folds to a tab on its inner edge: the dock wraps what the sidebar
+  // already built, so folding is one state rather than a second set of nodes.
+  const dock = createDock({
+    root,
+    labels: [{ id: 'vault', label: 'Vault', title: 'Expand the vault sidebar' }],
+    edge: 'left',
+    variant: 'column',
+    railSide: 'end',
+    onChoose: () => app.toggleSidebar(!sidebarShown()),
+  });
 
   delegate(treeHost, 'click', '[data-toggle]', (event, node) => {
     event.stopPropagation();
@@ -257,5 +254,14 @@ export function createSidebar({ app, root }) {
     return el('div', { class: `tree-node ${isOpen ? 'open' : ''}`, 'data-drop': node.path }, [row, children]);
   }
 
-  return { render };
+  function sidebarShown() {
+    return app.state.settings.layout.showSidebar !== false;
+  }
+
+  /** Reflect the fold setting: the tab alone when folded, the tree when not. */
+  function sync() {
+    dock.show(sidebarShown() ? 'vault' : null);
+  }
+
+  return { render, sync };
 }

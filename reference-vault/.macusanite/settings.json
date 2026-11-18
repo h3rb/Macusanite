@@ -80,6 +80,7 @@
   "layout": {
     "sidebarWidth": 268,
     "graphWidth": 340,
+    "showSidebar": true,
     "showGraph": true
   },
   "editor": {
@@ -90,6 +91,8 @@
     "cardSize": "fixed",
     "units": [],
     "navigator": true,
+    "navigatorDock": "float",
+    "navigatorWidth": 202,
     "lowZoomTipSeen": false,
     "touch": false
   },

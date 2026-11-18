@@ -9,6 +9,7 @@
  * dotted spine, which is what makes it a map of the vein rather than a list.
  */
 import { el, clear, appendAll, askText, askConfirm } from './dom.js';
+import { createDock } from './dock.js';
 import { renderMarkdown, renderMermaidIn } from './markdown.js';
 import { searchIcons } from '../lib/iconSet.js';
 import {
@@ -58,6 +59,9 @@ const INTRO_H = 150;
 // enough to sit in a corner of the stage, large enough to read a split.
 const NAV_W = 196;
 const NAV_H = 118;
+// One id per panel instance, so the rail's aria-controls names the drawer body
+// it actually opens.
+let navBodySeq = 0;
 // A press on a link port becomes a forge drag only after this much movement;
 // a click in place selects the port's card or group instead.
 const LINK_DRAG_THRESHOLD = 4;
@@ -209,54 +213,71 @@ export function createWorldbuildPanel({ app, root }) {
     title: 'Frame the group the selection belongs to',
     onclick: () => zoomToFitGroup(),
   });
-  // The drawer's edge tab: when the drawer is closed this is the whole of the
-  // navigator on screen, and pressing it slides the drawer back out.
-  const navRail = el('button', {
-    class: 'wb-nav-rail',
-    type: 'button',
-    title: 'Open or close the navigator drawer',
-    'aria-label': 'Open or close the navigator drawer',
-    onclick: () => {
-      // The rail is part of the drawer, so it always opens the drawer — never
-      // the floating panel, even when the drawer was reached by closing one.
-      const open = app.state.settings.worldbuild?.navigator !== false;
-      app.updateSettings({ worldbuild: { navigator: !open, navigatorDock: 'drawer' } });
-    },
-  }, [
-    el('span', { class: 'wb-nav-rail-arrow', text: '‹', 'aria-hidden': 'true' }),
-    el('span', { class: 'wb-nav-rail-label', text: 'Navigator' }),
-  ]);
-  const navigator = el('div', { class: 'wb-navigator', role: 'group', 'aria-label': 'Navigator' }, [
-    navRail,
-    el('div', { class: 'wb-nav-body' }, [
-      el('div', { class: 'wb-nav-head' }, [
-        el('span', { class: 'wb-nav-kicker', text: 'Navigator' }),
-        navMode,
-        el('button', {
-          class: 'icon-btn btn-mini ui-icon-only wb-nav-popout',
-          type: 'button',
-          icon: 'fit',
-          iconLabel: 'Pop out',
-          title: 'Pop the navigator out of the drawer into a floating panel',
-          onclick: () => app.updateSettings({ worldbuild: { navigator: true, navigatorDock: 'float' } }),
-        }),
-        el('button', {
-          class: 'icon-btn btn-mini ui-icon-only wb-nav-hide',
-          type: 'button',
-          icon: 'hide',
-          iconLabel: 'Close',
-          title: 'Close the navigator to its drawer on the right edge of the canvas',
-          onclick: () => app.updateSettings({ worldbuild: { navigator: false, navigatorDock: 'drawer' } }),
-        }),
-      ]),
-      navMap,
-      el('div', { class: 'wb-nav-actions' }, [navFitSelection, navFitGroup]),
+  const navBodyId = `wb-dock-navigator-${++navBodySeq}`;
+  // The navigator's panel: the map, its mode and its two framings. The tab that
+  // names it and opens it lives on the dock's rail, beside the inspector's, so
+  // the panel itself carries no tab.
+  const navBody = el('div', { class: 'wb-nav-body', id: navBodyId, tabindex: '-1' }, [
+    el('div', { class: 'wb-nav-head' }, [
+      el('span', { class: 'wb-nav-kicker', text: 'Navigator' }),
+      navMode,
+      el('button', {
+        class: 'icon-btn btn-mini ui-icon-only wb-nav-popout',
+        type: 'button',
+        icon: 'fit',
+        iconLabel: 'Pop out',
+        title: 'Pop the navigator out of the dock into a floating panel',
+        onclick: () => {
+          app.updateSettings({ worldbuild: { navigator: true, navigatorDock: 'float' } });
+          syncDock();
+          navBody.focus({ preventScroll: true });
+        },
+      }),
+      el('button', {
+        class: 'icon-btn btn-mini ui-icon-only wb-nav-hide',
+        type: 'button',
+        icon: 'hide',
+        iconLabel: 'Close',
+        title: 'Close the navigator — its tab on the edge opens it again',
+        onclick: () => {
+          app.updateSettings({ worldbuild: { navigator: false, navigatorDock: 'drawer' } });
+          // The panel goes with it, so focus returns to the tab that reopens it.
+          syncDock();
+          dock.tab('navigator')?.focus({ preventScroll: true });
+        },
+      }),
     ]),
+    navMap,
+    el('div', { class: 'wb-nav-actions' }, [navFitSelection, navFitGroup]),
   ]);
+  // The drawer's grip: docked, the map is resized from its inner edge, and the
+  // width it is dragged to is kept as `worldbuild.navigatorWidth`, the way the
+  // workspace splitters keep `layout.sidebarWidth`. Floating, it is not shown —
+  // the card keeps the width it always had.
+  const navGrip = el('div', {
+    class: 'wb-nav-grip',
+    role: 'separator',
+    'aria-orientation': 'vertical',
+    'aria-label': 'Navigator width',
+    'aria-valuemin': '160',
+    title: 'Drag to resize the navigator, or press ← and →',
+    tabindex: '0',
+  });
+  // The body takes focus programmatically when its panel opens, so the panel's
+  // own controls come next in the tab order rather than a second press of the
+  // tab. `-1` keeps it out of the order otherwise.
+  const navigator = el('div', {
+    class: 'wb-navigator', role: 'group', 'aria-label': 'Navigator',
+  }, [navGrip, navBody]);
   // The map's geometry as last drawn, so a pan or zoom only moves the
   // viewport rectangle instead of re-measuring every card.
   let navGeometry = null;
   const navCards = new Map();
+  // What the map says on top of the cards: the selection's group framed, and a
+  // dot per selected card that keeps it findable when its own rectangle is a
+  // pixel wide.
+  let navMarkerLayer = null;
+  let navMarkerKey = '';
   // What screen readers hear from the canvas: the selection, each step of the
   // relate flow, and each bond forged. It is off-screen and politely
   // announced, so a pointer user never sees it and a fast sequence replaces
@@ -279,9 +300,11 @@ export function createWorldbuildPanel({ app, root }) {
   // card is, what it points at, and how it is grouped without opening its
   // in-place editor. It holds no state of its own, so undo, saved views and
   // the canvas camera keep treating it as chrome.
-  const inspectorBody = el('div', { class: 'wb-inspector-body' });
+  const inspectorId = `wb-dock-inspector-${++navBodySeq}`;
+  const inspectorBody = el('div', { class: 'wb-inspector-body', tabindex: '-1' });
   const inspector = el('aside', {
     class: 'wb-inspector hidden',
+    id: inspectorId,
     'aria-label': 'Selected card inspector',
   }, [
     el('div', { class: 'wb-inspector-head' }, [
@@ -297,12 +320,175 @@ export function createWorldbuildPanel({ app, root }) {
     ]),
     inspectorBody,
   ]);
-  const workbench = el('div', { class: 'wb-workbench' }, [stage, inspector]);
+  /* ── the right-edge dock ────────────────────────────────────────────────
+   * The navigator and the inspector both want the canvas's right edge, so they
+   * take turns in one dock: a rail of vertical tabs on the edge, and the panel
+   * of whichever tab was chosen. One panel at a time, the dock as tall as its
+   * content and centred on the edge, and the rail always there — which is how a
+   * closed navigator stays one press away. The dock sits over the canvas rather
+   * than beside it, so panning never costs a panel's width.
+   */
+  let dockChoice = null;      // 'navigator' | 'inspector', when picked by hand
+  let inspectorShown = false; // there is a selection to read
+  const navOpenInSettings = () => app.state.settings.worldbuild?.navigator !== false;
+  const navigatorDocked = () => document.body.classList.contains('nav-dock-drawer');
+
+  /**
+   * Which panel the dock is showing: the inspector whenever a selection is
+   * there to read and the map was not asked for instead, otherwise the
+   * navigator while it is docked and open.
+   */
+  function panelNow() {
+    const docked = navigatorDocked();
+    if (inspectorShown && (dockChoice !== 'navigator' || !docked)) return 'inspector';
+    if (docked && navOpenInSettings() && !document.body.classList.contains('hide-canvas-navigator')) return 'navigator';
+    return null;
+  }
+
+  // The canvas's edge dock: the navigator and the inspector, one at a time,
+  // over the canvas's right edge. The rail, its tabs and their state are the
+  // shared dock's; only the sizes and the clip are the canvas's own.
+  const dockHost = el('div', { class: 'wb-dock hidden' });
+  const dock = createDock({
+    root: dockHost,
+    labels: [
+      { id: 'navigator', label: 'Navigator', title: 'Navigator — the whole canvas, with the part it is showing' },
+      { id: 'inspector', label: 'Inspector', title: 'Inspector — the selected cards, their fields and their bonds' },
+    ],
+    panels: [navigator, inspector],
+    variant: 'overlay',
+    railSide: 'end',
+    edge: 'right',
+    railLabel: 'Canvas panels',
+    onChoose: (id, showing) => {
+      if (id === 'navigator') {
+        // The map's own tab always opens the dock, never the floating card.
+        dockChoice = showing ? null : 'navigator';
+        app.updateSettings({ worldbuild: { navigator: !showing, navigatorDock: 'drawer' } });
+        syncDock();
+        if (showing) dock.tab('navigator')?.focus({ preventScroll: true });
+        else navBody.focus({ preventScroll: true });
+        return;
+      }
+      // Pressing the open inspector tab shuts the panel, exactly as its × does.
+      if (showing) {
+        closeInspector();
+        return;
+      }
+      dockChoice = 'inspector';
+      syncDock();
+      inspectorBody.focus({ preventScroll: true });
+    },
+  });
+
+  /* ── the drawer's width ─────────────────────────────────────────────────
+   * The drawer is dragged by the grip on its inner edge and the width is
+   * remembered in `worldbuild.navigatorWidth`: live while the pointer moves,
+   * written once on release, and out of the undo stack — a width is not an edit
+   * to the vault. The ceiling follows the window, because a narrow one has to
+   * keep canvas beside the drawer.
+   */
+  const NAV_WIDTH_MIN = 160;
+  const NAV_WIDTH_MAX = 420;
+  const navWidth = () => {
+    const width = Number(app.state.settings.worldbuild?.navigatorWidth);
+    return Number.isFinite(width) && width > 0 ? width : 202;
+  };
+  /** Apply a drawer width where the CSS reads it, and say what it became. */
+  function applyNavWidth(px) {
+    const cap = Math.min(NAV_WIDTH_MAX, Math.max(NAV_WIDTH_MIN, Math.round(window.innerWidth * 0.6)));
+    const width = Math.max(NAV_WIDTH_MIN, Math.min(cap, Math.round(px)));
+    dockHost.style.setProperty('--wb-nav-w', `${width}px`);
+    navGrip.setAttribute('aria-valuenow', String(width));
+    navGrip.setAttribute('aria-valuemax', String(cap));
+    return width;
+  }
+  let navResize = null;
+  navGrip.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    navResize = { x: event.clientX, width: Math.round(navigator.getBoundingClientRect().width) || navWidth() };
+    navGrip.setPointerCapture?.(event.pointerId);
+    navGrip.classList.add('dragging');
+    document.body.classList.add('resizing');
+  });
+  navGrip.addEventListener('pointermove', (event) => {
+    if (!navResize) return;
+    // The grip is on the panel's inner edge, so dragging left widens it.
+    app.state.settings.worldbuild.navigatorWidth = applyNavWidth(navResize.width + (navResize.x - event.clientX));
+  });
+  const endNavResize = () => {
+    if (!navResize) return;
+    navResize = null;
+    navGrip.classList.remove('dragging');
+    document.body.classList.remove('resizing');
+    app.persistSettings({ record: false });
+  };
+  navGrip.addEventListener('pointerup', endNavResize);
+  navGrip.addEventListener('pointercancel', endNavResize);
+  // Pointer capture keeps the drag on the grip, but a release outside the
+  // window would otherwise leave it stuck, exactly as the splitters do.
+  window.addEventListener('mouseup', endNavResize);
+  // The ceiling follows the window, so a resize re-reads both the vault's width
+  // and the room this window has for it.
+  window.addEventListener('resize', () => applyNavWidth(navWidth()));
+  // The same width from the keyboard, for a grip that cannot be dragged.
+  navGrip.addEventListener('keydown', (event) => {
+    const step = event.shiftKey ? 48 : 16;
+    const delta = event.key === 'ArrowLeft' ? step : event.key === 'ArrowRight' ? -step : 0;
+    if (!delta) return;
+    event.preventDefault();
+    app.state.settings.worldbuild.navigatorWidth = applyNavWidth(navWidth() + delta);
+    app.persistSettings({ record: false });
+  });
+  applyNavWidth(navWidth());
+
+  // Whether the map was open when the dock last settled: turning it on is an
+  // ask for the map, so it shows rather than sitting under the inspector.
+  let navWasOpen = false;
+
+  /** Put the dock in the state `panelNow` names, and the navigator in its home. */
+  function syncDock() {
+    // The width lives in this vault's settings, which finish loading after the
+    // canvas is built: the dock re-reads it whenever the layout settles.
+    applyNavWidth(navWidth());
+    const mapOpen = navigatorDocked() && navOpenInSettings();
+    if (mapOpen && !navWasOpen) dockChoice = 'navigator';
+    navWasOpen = mapOpen;
+    const panel = panelNow();
+    const docked = navigatorDocked();
+    // One element, two homes: a panel in the dock, a card over the canvas when
+    // it floats. Moving it keeps the map, its camera and its listeners.
+    if (navigator.parentElement !== (docked ? dock.slot : stage)) {
+      if (docked) dock.slot.insertBefore(navigator, inspector);
+      else stage.append(navigator);
+    }
+    navigator.classList.toggle('hidden', docked ? panel !== 'navigator' : false);
+    inspector.classList.toggle('hidden', panel !== 'inspector');
+    // The rail's navigator tab is how a closed navigator comes back, so it only
+    // goes away when the map floats instead; the inspector's tab exists only
+    // while there is a selection to read.
+    dock.tab('navigator')?.classList.toggle('hidden', !docked);
+    dock.tab('inspector')?.classList.toggle('hidden', !inspectorShown);
+    dock.show(panel);
+    // Floating, the rail has nothing to offer until a card is selected.
+    dockHost.classList.toggle('hidden', !docked && !inspectorShown);
+  }
+
+  const workbench = el('div', { class: 'wb-workbench' }, [stage, dockHost]);
+  // Docking is chrome, not canvas state: where a panel sits takes effect at
+  // once, with no rebuild of the vein. The open state lives on <body>
+  // (applyLayout), so the panel watches it rather than every caller having to
+  // remember to tell it.
+  new MutationObserver(syncDock).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  syncDock();
 
   // The icon layer sits under the cards layer: at icon scale the cards layer
   // holds only group tabs, and a tab must stay clickable over an icon box.
   canvas.append(edgeSvg, iconLayer, cards, annotationsLayer, guides);
-  stage.append(canvas, marqueeBox, linkOverlay, lensLayer, overlapHud, zoomHud, navigator, zoomTip, liveRegion);
+  // The navigator is not appended here: `syncDock` puts it in the dock or on the
+  // stage, whichever its setting asks for.
+  stage.append(canvas, marqueeBox, linkOverlay, lensLayer, overlapHud, zoomHud, zoomTip, liveRegion);
   // Canvas search: titles, types, fields, colours and group names in this
   // vein, with jump-to, highlight, select-all-matches and isolate.
   const searchInput = el('input', {
@@ -646,7 +832,7 @@ export function createWorldbuildPanel({ app, root }) {
       zoomHudTimer = 0;
       clearTimeout(inspectorTimer);
       inspectorTimer = 0;
-      inspector.classList.add('hidden');
+      showInspector(false);
       clear(inspectorBody);
       zoomHud.classList.remove('is-visible');
       clearOverlapUi();
@@ -4315,6 +4501,8 @@ export function createWorldbuildPanel({ app, root }) {
     navCards.clear();
     navMap.replaceChildren();
     navGeometry = null;
+    navMarkerLayer = null;
+    navMarkerKey = '';
     if (!model || !(model.notes ?? []).length) {
       syncNavigatorViewport();
       return;
@@ -4345,12 +4533,14 @@ export function createWorldbuildPanel({ app, root }) {
         width: Math.max(1.5, box.width),
         height: Math.max(1.5, box.height),
         rx: 1.5,
-        fill: inspectorColor(note.anchor),
+        fill: cardTint(note.anchor),
       });
       navCards.set(note.anchor, rect);
       shapes.append(rect);
     });
-    navMap.append(shapes, navViewport);
+    navMarkerLayer = svgNode('g', { class: 'wb-nav-markers', 'aria-hidden': 'true' });
+    navMarkerKey = '';
+    navMap.append(shapes, navMarkerLayer, navViewport);
     syncNavigatorViewport();
   }
 
@@ -4410,6 +4600,8 @@ export function createWorldbuildPanel({ app, root }) {
     if (!navGeometry) {
       navViewport.setAttribute('width', '0');
       navViewport.setAttribute('height', '0');
+      navMarkerLayer?.replaceChildren();
+      navMarkerKey = '';
       return;
     }
     const box = navigatorViewport(
@@ -4421,11 +4613,54 @@ export function createWorldbuildPanel({ app, root }) {
     // A viewport that holds the whole canvas still gets a frame to read.
     navViewport.setAttribute('width', String(Math.max(2, box.width)));
     navViewport.setAttribute('height', String(Math.max(2, box.height)));
+    syncNavigatorMarkers(box);
+  }
+
+  /**
+   * The map's reading, not just its shapes: the group the selection stands in
+   * is framed, every selected card keeps a dot of its own size, and a dot the
+   * camera has left outside the frame is ringed — which is what “where did that
+   * card go?” looks like on the map.
+   *
+   * The frame moves with every pan, so this runs from the viewport sync; the
+   * dots are only rebuilt when what they would say has changed, which keeps a
+   * whole-vein selection off the pan path.
+   */
+  function syncNavigatorMarkers(box) {
+    if (!navMarkerLayer || !navGeometry) return;
+    const width = box ? Math.max(2, box.width) : 0;
+    const height = box ? Math.max(2, box.height) : 0;
+    const dots = [];
+    for (const [anchor, rect] of navCards) {
+      if (!selected.has(anchor)) continue;
+      const x = Number(rect.getAttribute('x')) + Number(rect.getAttribute('width')) / 2;
+      const y = Number(rect.getAttribute('y')) + Number(rect.getAttribute('height')) / 2;
+      const away = !box || x < box.x || x > box.x + width || y < box.y || y > box.y + height;
+      dots.push({ x, y, away });
+    }
+    const group = navigatorGroup();
+    const key = `${group?.id ?? ''}|${dots.map((dot) => `${Math.round(dot.x)},${Math.round(dot.y)}${dot.away ? '!' : ''}`).join(';')}`;
+    if (key === navMarkerKey) return;
+    navMarkerKey = key;
+    navMarkerLayer.replaceChildren();
+    const groupRect = group ? groupDisplayRect(group) : null;
+    const groupBox = groupRect ? navigatorProject(navGeometry, groupRect) : null;
+    if (groupBox) {
+      navMarkerLayer.append(svgNode('rect', {
+        class: 'wb-nav-focus-group',
+        x: groupBox.x, y: groupBox.y, width: groupBox.width, height: groupBox.height, rx: 2,
+      }));
+    }
+    for (const dot of dots) {
+      if (dot.away) navMarkerLayer.append(svgNode('circle', { class: 'wb-nav-away', cx: dot.x, cy: dot.y, r: 4.2 }));
+      navMarkerLayer.append(svgNode('circle', { class: 'wb-nav-dot', cx: dot.x, cy: dot.y, r: 2 }));
+    }
   }
 
   /** Ring the selected cards on the map without re-measuring it. */
   function syncNavigatorSelection() {
     for (const [anchor, rect] of navCards) rect.classList.toggle('is-selected', selected.has(anchor));
+    syncNavigatorViewport();
   }
 
   /** Offer only the framings that can do something. */
@@ -5415,6 +5650,15 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
+   * The colour a card wears on the canvas — its own, else its type's — which is
+   * what the map paints it with: a vein of places and people reads at a glance,
+   * and a plain note stays neutral.
+   */
+  function cardTint(anchor) {
+    return nodeColors[anchor] ?? nodeTypeOf(nodeTypes, anchor).color ?? 'var(--text-faint)';
+  }
+
+  /**
    * One direction of the lens as inspector rows: each neighbour's title,
    * colour and the kind of wire that reaches it. Prose links, canvas bonds and
    * group bonds arrive through the lens; the outline spine stays a drawn
@@ -5545,16 +5789,28 @@ export function createWorldbuildPanel({ app, root }) {
     return el('p', { class: 'wb-inspector-empty', text });
   }
 
+  /*
+   * Show or hide the inspector — and tell the workbench, because the docked
+   * navigator takes its edge from what is beside it: with the panel open the
+   * drawer docks to the canvas's own edge instead of reaching over the panel to
+   * the splitter.
+   */
+  function showInspector(open) {
+    if (inspectorShown === open) return;
+    inspectorShown = open;
+    syncDock();
+  }
+
   function renderInspector() {
     if (!model || !selected.size) {
-      inspector.classList.add('hidden');
+      showInspector(false);
       clear(inspectorBody);
       return;
     }
     const notes = model.notes ?? [];
     const picked = notes.filter((note) => selected.has(note.anchor));
     if (!picked.length) {
-      inspector.classList.add('hidden');
+      showInspector(false);
       clear(inspectorBody);
       return;
     }
@@ -5609,7 +5865,7 @@ export function createWorldbuildPanel({ app, root }) {
         connectionsSection(),
         actions,
       );
-      inspector.classList.remove('hidden');
+      showInspector(true);
       return;
     }
 
@@ -5690,7 +5946,7 @@ export function createWorldbuildPanel({ app, root }) {
     pieces.push(connectionsSection(outgoing, incoming));
 
     inspectorBody.append(...pieces);
-    inspector.classList.remove('hidden');
+    showInspector(true);
   }
 
   /** Toggle the canvas search bar. */
@@ -5872,9 +6128,17 @@ export function createWorldbuildPanel({ app, root }) {
   /** Replace the selection with the given anchors that still exist. */
   function setSelection(anchors) {
     const live = new Set((model?.notes ?? []).map((note) => note.anchor));
-    selected = new Set([...(anchors ?? [])].filter((anchor) => live.has(anchor)));
+    const next = new Set([...(anchors ?? [])].filter((anchor) => live.has(anchor)));
+    // A new selection asks for the inspector, so a reader who was looking at
+    // the map gets handed back the panel that follows the cards.
+    if (next.size !== selected.size || [...next].some((anchor) => !selected.has(anchor))) dockChoice = null;
+    selected = next;
     syncSelectionUi();
     announceSelection();
+    // `showInspector` only syncs when the flag itself changes, so hand the dock
+    // the reset explicitly: a reader who was on the map gets the inspector back
+    // even though it was already the open panel a moment ago.
+    syncDock();
   }
 
   /**
@@ -7837,6 +8101,8 @@ export function createWorldbuildPanel({ app, root }) {
    * changed — the rest of the card (type, fields) stands as it was set.
    */
   function repaintNodeColor(anchor) {
+    // The map wears the same colour, so it is redrawn with the card.
+    drawNavigatorMap();
     const index = model?.notes.findIndex((note) => note.anchor === anchor) ?? -1;
     const card = cardEls[index];
     if (!card) return;

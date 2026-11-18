@@ -598,12 +598,14 @@ body.resizing {
   border-left: 1px solid var(--border);
 }
 
-.graph-panel.is-folded {
+/* Folded, the column is only its rail: a stronger edge and a sunken tone say
+   the pane is still there, waiting to be opened. */
+.graph-panel:not(.is-open) {
   border-left-color: var(--border-strong);
   background: linear-gradient(180deg, var(--panel), var(--bg-sunken));
 }
 
-.sidebar.is-folded {
+.sidebar:not(.is-open) {
   border-right-color: var(--border-strong);
   background: linear-gradient(180deg, var(--panel), var(--bg-sunken));
 }
@@ -943,8 +945,11 @@ mark.search-hit {
 /* ── viewer ─────────────────────────────────────────────────────────── */
 
 .viewer {
+  /* The pane's side padding, named so the canvas can grow across it: the
+     navigator's drawer docks in that margin, hard against the splitter. */
+  --viewer-pad-x: 26px;
   overflow: auto;
-  padding: 18px 26px 60px;
+  padding: 18px var(--viewer-pad-x) 60px;
   scroll-behavior: auto;
   min-width: 0;
 }
@@ -1562,28 +1567,82 @@ mark.search-hit {
   background: linear-gradient(135deg, #58a6ff, #da70d6);
 }
 
-/* The folded graph: one full-height vertical tab on the right edge. */
-.graph-fold {
+/* ── dock ─────────────────────────────────────────────────────────────────
+ * One edge pane, three users: the vault tree and the concept graph fold their
+ * whole grid column to a single tab, and the canvas keeps a rail of two tabs
+ * over its right edge. The rail, the tabs, their states and the arrow walk are
+ * shared; each host decides where its dock sits and how wide it is.
+ */
+.dock {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: row;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dock-slot {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The panel itself fills the slot: a host may wrap the nodes it already has. */
+.dock-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* A folded column gives its width up entirely: the tab is the whole pane, and
+   a hidden panel must not stay in the tab order. */
+.dock--column:not(.is-open) .dock-slot {
   display: none;
 }
 
-.graph-panel.is-folded > .graph-head,
-.graph-panel.is-folded > .graph-stage,
-.graph-panel.is-folded > .graph-stats,
-.graph-panel.is-folded > .graph-foot {
+/* Open, a column pane is its panel: the tab has done its job. */
+.dock--column.is-open .dock-rail {
   display: none;
 }
 
-.graph-panel.is-folded > .graph-fold {
+.dock-rail {
+  display: flex;
+  flex: 0 0 var(--dock-rail, 30px);
+  flex-direction: column;
+  /* Centred by auto margins rather than `justify-content`, so a rail shorter
+     than its tabs scrolls from the first tab instead of clipping it above the
+     scroll origin — the case on a short narrow window. */
+  justify-content: flex-start;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.dock-tab:first-child {
+  margin-top: auto;
+}
+
+.dock-tab:last-child {
+  margin-bottom: auto;
+}
+
+.dock-rail::-webkit-scrollbar {
+  width: 0;
+}
+
+.dock-tab {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  width: 100%;
-  min-height: 0;
-  padding: 12px 0;
+  gap: 10px;
+  min-height: 80px;
+  padding: 10px 0;
   border: 0;
   background: transparent;
   color: var(--text-dim);
@@ -1591,23 +1650,28 @@ mark.search-hit {
   cursor: pointer;
 }
 
-.graph-panel.is-folded > .graph-fold:hover {
+.dock-tab:hover {
   color: var(--text);
   background: var(--bg-raised);
 }
 
-.graph-panel.is-folded > .graph-fold:focus-visible {
+.dock-tab:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -3px;
 }
 
-.graph-fold-arrow {
+/* The open tab is the panel on screen; a shut one is still one press away. */
+.dock-tab[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.dock-tab-arrow {
   color: var(--accent);
   font-size: 18px;
   line-height: 1;
 }
 
-.graph-fold-label {
+.dock-tab-label {
   writing-mode: vertical-rl;
   text-orientation: mixed;
   font-size: 10px;
@@ -1618,58 +1682,13 @@ mark.search-hit {
   user-select: none;
 }
 
-/* The folded vault sidebar: the same tab, mirrored onto the left edge. */
-.sidebar-fold {
-  display: none;
+/* The two column folds get their rail width from the folded column they fill. */
+.sidebar {
+  --dock-rail: var(--sidebar-fold-width);
 }
 
-.sidebar.is-folded > .sidebar-head,
-.sidebar.is-folded > .pane {
-  display: none;
-}
-
-.sidebar.is-folded > .sidebar-fold {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  width: 100%;
-  min-height: 0;
-  padding: 12px 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  cursor: pointer;
-}
-
-.sidebar.is-folded > .sidebar-fold:hover {
-  color: var(--text);
-  background: var(--bg-raised);
-}
-
-.sidebar.is-folded > .sidebar-fold:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -3px;
-}
-
-.sidebar-fold-arrow {
-  color: var(--accent);
-  font-size: 18px;
-  line-height: 1;
-}
-
-.sidebar-fold-label {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  user-select: none;
+.graph-panel {
+  --dock-rail: var(--graph-fold-width);
 }
 
 .graph-stage {
@@ -2720,8 +2739,7 @@ dialog::backdrop {
     grid-template-columns: var(--sidebar-fold-width) minmax(0, 1fr);
   }
   .graph-panel,
-  #graph-resizer,
-  .graph-fold {
+  #graph-resizer {
     display: none;
   }
 }
@@ -2753,8 +2771,9 @@ dialog::backdrop {
   }
 
   .viewer {
+    --viewer-pad-x: 12px;
     min-width: 0;
-    padding: 12px 12px 48px;
+    padding: 12px var(--viewer-pad-x) 48px;
   }
 }
 
@@ -3291,10 +3310,11 @@ dialog::backdrop {
   min-height: 0;
 }
 
+/* The workbench frames the canvas and the dock that hangs over its right edge. */
 .wb-workbench {
+  position: relative;
   display: flex;
   min-height: 0;
-  gap: 12px;
 }
 
 .wb-workbench > .wb-stage {
@@ -3302,17 +3322,16 @@ dialog::backdrop {
   min-width: 0;
 }
 
+/* A dock panel, not a column of the workbench: the dock draws the card's edge,
+   the shadow and the backdrop, and the inspector only fills its slot. */
 .wb-inspector {
   display: flex;
-  flex: 0 0 284px;
+  flex: 1 1 auto;
   flex-direction: column;
-  width: 284px;
+  width: 100%;
   min-height: 0;
   overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
+  background: transparent;
 }
 
 .wb-inspector.hidden {
@@ -3645,22 +3664,6 @@ dialog::backdrop {
   outline-offset: 1px;
 }
 
-@media (max-width: 1100px) {
-  .wb-inspector {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 8;
-    width: min(300px, calc(100% - 24px));
-    box-shadow: var(--shadow-lg);
-  }
-
-  .wb-workbench {
-    position: relative;
-  }
-}
-
 .viewer.is-world .wb-stage {
   flex: 1 1 auto;
   height: auto;
@@ -3960,35 +3963,121 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   backdrop-filter: blur(8px);
 }
 
-/* Docked as a drawer on the canvas's right edge — a vertical tab rather than a
-   full-height panel: it takes the height of its own contents and sits centred
-   on the edge. The stage clips at its edge (`overflow: clip`), so the closed
-   drawer is pushed out of it and only its 30px rail is left showing, a tab on
-   the edge; opening slides the rest back in. The rail is a fixed 30px, so the
-   two positions are one translate apart — and both keep the -50% that centres
-   the tab vertically. */
-body.nav-dock-drawer .wb-navigator {
+/* Opening a panel by hand puts focus on its body, so its own controls are one
+   Tab away; the ring sits inside the panel so the dock's clip never cuts it. */
+.wb-nav-body:focus-visible,
+.wb-inspector-body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── the right-edge dock ──────────────────────────────────────────────────
+ * One card on the canvas's right edge, holding a rail of vertical tabs and the
+ * panel of whichever tab was chosen: the navigator and the inspector take
+ * turns instead of competing for the edge. It takes the height of its content
+ * and sits centred, reaching across the viewer's margin so the rail is hard
+ * against the splitter; the canvas keeps its full width either way. */
+.wb-dock {
+  --wb-dock-w: 202px;
+  position: absolute;
   top: 50%;
-  right: 0;
-  bottom: auto;
-  width: 232px;
+  right: calc(var(--viewer-pad-x) * -1);
+  z-index: 9;
+  display: flex;
+  /* The rail and its one border: shut, this is the whole dock. */
+  width: 31px;
   max-height: calc(100% - 24px);
-  padding: 0;
-  flex-direction: row;
-  gap: 0;
-  border: 0;
+  overflow: hidden;
   border-left: 1px solid var(--border);
   border-radius: 8px 0 0 8px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
   box-shadow: var(--shadow-lg);
-  transform: translate(0, -50%);
-  transition: transform 0.18s ease;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  transform: translateY(-50%);
+  transition: width 0.18s ease;
 }
 
-body.nav-dock-drawer.nav-drawer-closed .wb-navigator {
-  transform: translate(calc(100% - 30px), -50%);
+.wb-dock.is-open {
+  width: calc(var(--wb-dock-w) + 31px);
 }
 
-body.nav-dock-drawer .wb-nav-body {
+/* The drawer's width is the one the grip remembers, capped by its own limit. */
+.wb-dock[data-panel='navigator'] {
+  --wb-dock-w: var(--wb-nav-w, 202px);
+}
+
+/* The inspector reads best at its own width; a narrow pane caps it short of the
+   whole canvas rather than losing the map underneath. */
+.wb-dock[data-panel='inspector'] {
+  --wb-dock-w: min(284px, calc(100vw - 96px));
+}
+
+/* A narrow window cannot spare half the canvas for one panel, so both panels
+   cap to a share of it — the drawer's dragged width included — and a floating
+   map moves to the corner the dock never reaches, rather than being left under
+   the panel that overlays the canvas's edge. */
+@media (max-width: 1100px) {
+  .wb-dock {
+    --wb-dock-w: min(202px, 44vw);
+  }
+
+  .wb-dock[data-panel='navigator'] {
+    --wb-dock-w: min(var(--wb-nav-w, 202px), 44vw);
+  }
+
+  .wb-dock[data-panel='inspector'] {
+    --wb-dock-w: min(284px, 46vw);
+  }
+
+  .wb-stage > .wb-navigator {
+    right: auto;
+    left: 12px;
+  }
+}
+
+/* The shared dock fills the card. Pinned right, so shutting the panel slides it
+   away under the rail rather than dragging the rail off the edge with it. */
+.wb-dock .dock {
+  justify-content: flex-end;
+  height: 100%;
+}
+
+/* The panel's slot: always the panel's own width, and clipped by the dock when
+   the dock is shut. A shut panel is `hidden`, so nothing in it stays reachable. */
+.wb-dock .dock-slot {
+  flex: 0 0 var(--wb-dock-w);
+}
+
+.wb-dock .dock-rail {
+  flex: 0 0 30px;
+  border-left: 1px solid var(--border);
+}
+
+.wb-dock .dock-tab {
+  color: var(--text-faint);
+}
+
+.wb-dock .dock-tab[aria-pressed='true'] {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.wb-dock .wb-navigator {
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transform: none;
+  transition: none;
+}
+
+.wb-dock .wb-nav-body {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -3998,85 +4087,74 @@ body.nav-dock-drawer .wb-nav-body {
   overflow-y: auto;
 }
 
-/* The rail names the drawer in the same words, so the kicker would only cost
-   the head the room its two buttons need. */
-body.nav-dock-drawer .wb-nav-kicker {
+/* The tab beside the panel names it, so its kicker would only cost the head the
+   room its two buttons need. */
+.wb-dock .wb-nav-kicker,
+.wb-dock .wb-inspector-kicker {
   display: none;
 }
 
-/* The edge tab of the drawer: hidden while the navigator floats. */
-.wb-nav-rail {
+/* The rail keeps the tabs always there, so a shut navigator is one press away;
+   on a pane too short for both it scrolls rather than cutting one off. */
+
+/* The drawer's grip: a hairline on the map's inner edge that widens it. Only a
+   docked drawer is resizable; the floating card keeps its own width. */
+.wb-nav-grip {
   display: none;
 }
 
-body.nav-dock-drawer .wb-nav-rail {
-  display: flex;
-  flex: 0 0 30px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 30px;
-  /* Enough height for the arrow and the word, so the closed tab still reads as
-     a labelled tab on the edge. */
-  min-height: 112px;
-  padding: 10px 0;
-  border: 0;
-  border-right: 1px solid var(--border);
+.wb-dock .wb-nav-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
+  display: block;
+  width: 7px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.wb-dock .wb-nav-grip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
   background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  cursor: pointer;
+  transition: background 0.12s ease;
 }
 
-body.nav-dock-drawer .wb-nav-rail:hover {
-  color: var(--text);
-  background: var(--bg-raised);
+.wb-dock .wb-nav-grip:hover::after,
+.wb-dock .wb-nav-grip:focus-visible::after,
+.wb-dock .wb-nav-grip.dragging::after {
+  background: var(--accent);
 }
 
-body.nav-dock-drawer .wb-nav-rail:focus-visible {
+.wb-dock .wb-nav-grip:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: -3px;
+  outline-offset: -2px;
 }
 
-.wb-nav-rail-arrow {
-  color: var(--accent);
-  font-size: 17px;
-  line-height: 1;
-}
-
-/* The arrow points the way the drawer will move: right to close it, left to
-   pull it back out of the edge. */
-body.nav-dock-drawer .wb-nav-rail-arrow {
-  transform: rotate(180deg);
-}
-
-body.nav-dock-drawer.nav-drawer-closed .wb-nav-rail-arrow {
-  transform: none;
-}
-
-.wb-nav-rail-label {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  user-select: none;
-}
-
-/* Popping out only means something while the navigator is docked. */
+/* Popping out only means something while the navigator is in the dock. */
 .wb-nav-popout {
   display: none;
 }
 
-body.nav-dock-drawer .wb-nav-popout {
+.wb-dock .wb-nav-popout {
   display: inline-flex;
 }
 
+/* The slide is decoration; the panel still opens and closes at once. */
+@media (prefers-reduced-motion: reduce) {
+  .wb-dock {
+    transition: none;
+  }
+}
+
 /* A hard hide, used by the harness so the minimap cannot cover a hit target it
-   is testing. The navigator's own close button folds it to the drawer instead. */
+   is testing. The navigator's own close button closes it to its tab instead. */
 .hide-canvas-navigator .wb-navigator {
   display: none;
 }
@@ -4130,14 +4208,44 @@ body.nav-dock-drawer .wb-nav-popout {
   opacity: 0.8;
 }
 
+/* Cards keep their section's colour, at enough strength to read as the vein's
+   own map rather than a grey silhouette; a hairline of background keeps two
+   touching cards of one colour apart. */
 .wb-nav-card {
-  opacity: 0.5;
+  opacity: 0.72;
+  stroke: var(--bg);
+  stroke-width: 0.4;
 }
 
 .wb-nav-card.is-selected {
   opacity: 1;
   stroke: var(--accent);
   stroke-width: 1.2;
+}
+
+/* The group the selection stands in, framed over the cards: the map answers
+   which box the cards in hand belong to, not only where they are. */
+.wb-nav-focus-group {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.1;
+  stroke-dasharray: 3 2;
+  opacity: 0.9;
+}
+
+/* A selected card keeps a dot of its own size, so it is findable when its
+   rectangle is only a pixel wide; one the camera has left behind is ringed. */
+.wb-nav-dot {
+  fill: var(--accent);
+  stroke: var(--bg);
+  stroke-width: 0.8;
+}
+
+.wb-nav-away {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 0.9;
+  stroke-dasharray: 1.6 1.6;
 }
 
 .wb-nav-viewport {

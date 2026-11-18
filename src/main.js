@@ -3096,14 +3096,16 @@ function applyLayout() {
   const show = state.settings.layout.showGraph;
   qs('#workspace').classList.toggle('is-graph-folded', !show);
   qs('#graph-panel').classList.remove('hidden');
-  qs('#graph-panel').classList.toggle('is-folded', !show);
   qs('#graph-resizer').classList.toggle('hidden', !show);
   // The vault sidebar folds the same way, to a vertical tab on the left edge;
   // the two folds are independent, and either alone widens the centre pane.
+  // Each pane's dock owns its tab and its panel; the layout only says which
+  // columns the workspace gives up.
   const sidebarShown = state.settings.layout.showSidebar !== false;
   qs('#workspace').classList.toggle('is-sidebar-folded', !sidebarShown);
-  qs('#sidebar').classList.toggle('is-folded', !sidebarShown);
   qs('#sidebar-resizer').classList.toggle('hidden', !sidebarShown);
+  sidebar?.sync?.();
+  graphPanel?.sync?.();
   document.documentElement.style.setProperty('--sidebar-width', `${state.settings.layout.sidebarWidth}px`);
   document.documentElement.style.setProperty('--graph-width', `${state.settings.layout.graphWidth}px`);
   const graphButton = qs('#graph-btn');

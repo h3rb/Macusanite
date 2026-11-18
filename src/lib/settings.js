@@ -83,8 +83,12 @@ export const DEFAULT_SETTINGS = {
     navigator: true,
     // Where it sits: floating in a corner of the canvas, or docked as a drawer
     // on its right edge. Closing it leaves the drawer's rail, so the drawer is
-    // the placement a closed navigator comes back from.
+    // the placement a closed navigator comes back from. Settings → Worldbuilding
+    // → Navigator placement switches between the two.
     navigatorDock: 'float',
+    // How wide the drawer's panel is, in pixels, remembered from the grip on
+    // its inner edge. The rail that opens it is a fixed 30px either way.
+    navigatorWidth: 202,
     // Whether the one-time note about the object map has been shown. It opens
     // the first time the canvas passes below 65%, where the link port becomes
     // a screen-sized corner ring and the rings are the whole way to bond.
@@ -179,6 +183,7 @@ export function validateSettings(settings) {
   s.worldbuild.cardSize = s.worldbuild.cardSize === 'content' ? 'content' : DEFAULT_SETTINGS.worldbuild.cardSize;
   s.worldbuild.navigator = s.worldbuild.navigator !== false;
   s.worldbuild.navigatorDock = s.worldbuild.navigatorDock === 'drawer' ? 'drawer' : 'float';
+  s.worldbuild.navigatorWidth = clamp(Number(s.worldbuild.navigatorWidth), 160, 420, DEFAULT_SETTINGS.worldbuild.navigatorWidth);
   s.worldbuild.lowZoomTipSeen = s.worldbuild.lowZoomTipSeen === true;
   s.worldbuild.touch = s.worldbuild.touch === true;
   s.worldbuild.units = (Array.isArray(s.worldbuild.units) ? s.worldbuild.units : [])
