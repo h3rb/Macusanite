@@ -1187,7 +1187,7 @@ const app = {
     return relations;
   },
 
-  /** Set a note's type (note, stat, skill, …); returns the vein's type record. */
+  /** Set a note's type (note, stat, skill, …), or clear it with null; returns the vein's type record. */
   setWorldNodeType(path, anchor, type) {
     const types = setNodeType(state.world[path]?.types ?? {}, anchor, type);
     state.world[path] = { ...state.world[path], types };
@@ -3504,10 +3504,11 @@ function pickBrowserArchive() {
 globalThis.macusanite = app;
 
 /**
- * `?wb-smoke=zoom` and `?wb-smoke=lens` run the canvas smoke tests against the
- * harness, and `?wb-perf=1000` runs the canvas performance budget at that many
- * cards; all report through the console and the page title. Development only:
- * the dynamic imports are dropped from a production build.
+ * `?wb-smoke=zoom`, `?wb-smoke=lens`, `?wb-smoke=delete` and
+ * `?wb-smoke=marquee` run the canvas smoke tests against the harness, and
+ * `?wb-perf=1000` runs the canvas performance budget at that many cards; all
+ * report through the console and the page title. Development only: the dynamic
+ * imports are dropped from a production build.
  */
 async function runRequestedSmoke() {
   if (!import.meta.env.DEV) return;
@@ -3519,6 +3520,14 @@ async function runRequestedSmoke() {
   if (params.get('wb-smoke') === 'lens') {
     const { runLensSmoke } = await import('../tests/harness/lensSmoke.js');
     await runLensSmoke();
+  }
+  if (params.get('wb-smoke') === 'delete') {
+    const { runDeleteSmoke } = await import('../tests/harness/deleteSmoke.js');
+    await runDeleteSmoke(location.search);
+  }
+  if (params.get('wb-smoke') === 'marquee') {
+    const { runMarqueeSmoke } = await import('../tests/harness/marqueeSmoke.js');
+    await runMarqueeSmoke(location.search);
   }
   if (params.get('wb-perf')) {
     const { runPerfBudget } = await import('../tests/harness/perfBudget.js');

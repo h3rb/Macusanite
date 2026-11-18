@@ -134,7 +134,8 @@ function groupMembers(app, path, groupId) {
 function blankPoint(stage) {
   const s = stage.getBoundingClientRect();
   const blocked = '.wb-card, .wb-group-tab, .wb-group-summary, .wb-annotation, .wb-menu, '
-    + 'button, input, select, textarea, .wb-edge-label, [data-edge-key], .wb-zoom-hud, .wb-overlap-hud';
+    + '.wb-navigator, .wb-inspector, button, input, select, textarea, '
+    + '.wb-edge-label, [data-edge-key], .wb-zoom-hud, .wb-overlap-hud';
   for (let gy = 0.06; gy <= 0.94; gy += 0.055) {
     for (let gx = 0.03; gx <= 0.97; gx += 0.05) {
       const x = s.left + s.width * gx;
@@ -248,17 +249,23 @@ function pressableCards(stage) {
 }
 
 /** The pressable card nearest the middle of the stage, its centre on stage. */
-async function pickCard(stage) {
+async function pickCard(stage, target = '.wb-card') {
   const centre = centreOf(stage.getBoundingClientRect());
   const candidates = pressableCards(stage)
     .sort((a, b) => {
       const da = Math.hypot(centreOf(a.rect).x - centre.x, centreOf(a.rect).y - centre.y);
       const db = Math.hypot(centreOf(b.rect).x - centre.x, centreOf(b.rect).y - centre.y);
       return da - db;
-    })
-    .slice(0, 5);
+    });
   for (const { card } of candidates) {
-    if (await bringCentreIntoView(stage, card)) return card;
+    if (!(await bringCentreIntoView(stage, card))) continue;
+    const targetEl = target === '.wb-card' ? card : card.querySelector(target);
+    if (!targetEl) continue;
+    const point = centreOf(targetEl.getBoundingClientRect());
+    const bounds = stage.getBoundingClientRect();
+    if (point.x < bounds.left || point.x > bounds.right || point.y < bounds.top || point.y > bounds.bottom) continue;
+    const hit = document.elementFromPoint(point.x, point.y);
+    if (hit && targetEl.contains(hit) && hit.closest('.wb-card') === card) return card;
   }
   return null;
 }
@@ -275,16 +282,30 @@ async function pickGroupChrome(stage) {
     const db = Math.hypot(centreOf(rb).x - centre.x, centreOf(rb).y - centre.y);
     return da - db;
   });
-  for (const element of sorted.slice(0, 4)) {
-    if (await bringIntoView(stage, element)) return element;
+  for (const element of sorted) {
+    if (!(await bringIntoView(stage, element))) continue;
+    const handle = element.querySelector('.wb-link-handle');
+    if (!handle) continue;
+    const point = centreOf(handle.getBoundingClientRect());
+    const bounds = stage.getBoundingClientRect();
+    if (point.x < bounds.left || point.x > bounds.right || point.y < bounds.top || point.y > bounds.bottom) continue;
+    const hit = document.elementFromPoint(point.x, point.y);
+    if (hit && handle.contains(hit)) return element;
   }
   return null;
 }
 
 function clearSelection(stage) {
-  const s = stage.getBoundingClientRect();
-  fire(stage, 'pointerdown', s.right - 6, s.top + 6, 1, { shiftKey: true });
-  fire(window, 'pointerup', s.right - 6, s.top + 6, 0);
+  const inspectorClear = [...document.querySelectorAll('.wb-inspector button')]
+    .find((button) => button.title === 'Clear the selection and close the inspector');
+  if (inspectorClear) {
+    inspectorClear.click();
+    return;
+  }
+  const point = blankPoint(stage);
+  if (!point) return;
+  fire(stage, 'pointerdown', point.x, point.y, 1, { shiftKey: true });
+  fire(window, 'pointerup', point.x, point.y, 0);
 }
 
 async function record(results, name, run) {
@@ -314,8 +335,9 @@ async function checkMode(stage, canvas, target) {
 }
 
 async function checkRing(stage, app, path) {
-  const card = await pickCard(stage);
-  if (!card) return { skip: 'no pressable card could be brought into view' };
+  clearSelection(stage);
+  const card = await pickCard(stage, '.wb-link-handle');
+  if (!card) return { skip: 'no exposed card port could be brought into view' };
   const handle = card.querySelector('.wb-link-handle');
   if (!handle) fail(`${card.dataset.anchor} has no link port`);
   if (!(await bringIntoView(stage, handle, 2))) fail('the link port is outside the stage');
@@ -337,8 +359,9 @@ async function checkRing(stage, app, path) {
 }
 
 async function checkCentre(stage, mode) {
+  clearSelection(stage);
   const card = await pickCard(stage);
-  if (!card) return { skip: 'no pressable card could be brought into view' };
+  if (!card) return { skip: 'no exposed card centre could be brought into view' };
   const anchor = card.dataset.anchor;
   const point = centreOf(card.getBoundingClientRect());
   const bounds = stage.getBoundingClientRect();
@@ -370,6 +393,7 @@ async function checkCentre(stage, mode) {
 }
 
 async function checkGroupPort(stage, app, path) {
+  clearSelection(stage);
   const chrome = await pickGroupChrome(stage);
   if (!chrome) return { skip: 'no group port could be brought into view' };
   const groupId = chrome.dataset.groupId ?? chrome.closest('[data-group-id]')?.dataset.groupId;
@@ -387,11 +411,20 @@ async function checkGroupPort(stage, app, path) {
   await wait(30);
   if (menuOpen()) fail('the group port click opened the relationship chooser');
   if (relationCount(app, path) !== relations) fail('the group port click changed the canvas relationships');
-  const picked = selectedAnchors();
-  if (!sameSet(picked, expected)) {
-    fail(`the group port selected ${picked.join(', ') || 'nothing'}, expected ${[...expected].join(', ')}`);
+  // The canvas virtualises offscreen cards, so only a subset of a large
+  // group's selected cards may have DOM nodes. The inspector summarizes the
+  // whole model selection and identifies an exact group selection by name.
+  const summary = document.querySelector('.wb-inspector-summary');
+  const heading = summary?.querySelector('strong')?.textContent ?? '';
+  const details = summary?.querySelector('span')?.textContent ?? '';
+  const groupName = worldRecord(app, path)?.groups?.[groupId]?.name || 'Group';
+  if (heading !== `Group “${groupName}”`) {
+    fail(`the group port opened “${heading || 'no inspector summary'}”, expected Group “${groupName}”`);
   }
-  return { detail: `group port selected ${picked.length} cards` };
+  if (!details.startsWith(`${expected.size} card`)) {
+    fail(`the group inspector counts “${details}”, expected ${expected.size} cards`);
+  }
+  return { detail: `group port selected all ${expected.size} cards` };
 }
 
 /**
@@ -401,10 +434,16 @@ async function checkGroupPort(stage, app, path) {
 export async function runZoomSmoke() {
   const app = globalThis.macusanite;
   const results = [];
+  const navigatorWasHidden = document.body.classList.contains('hide-canvas-navigator');
+  document.body.classList.add('hide-canvas-navigator');
+  const restoreNavigator = () => {
+    document.body.classList.toggle('hide-canvas-navigator', navigatorWasHidden);
+  };
   const stage = document.querySelector('.wb-stage');
   const canvas = document.querySelector('.wb-canvas');
   if (!app || !stage || !canvas) {
     results.push({ name: 'setup', status: 'fail', detail: 'the worldbuilding panel is not on the page' });
+    restoreNavigator();
     return finish(results);
   }
 
@@ -413,6 +452,7 @@ export async function runZoomSmoke() {
       await app.openPath('Home.md');
     } catch {
       results.push({ name: 'setup', status: 'fail', detail: 'no vein is open and Home.md could not be opened' });
+      restoreNavigator();
       return finish(results);
     }
   }
@@ -420,6 +460,7 @@ export async function runZoomSmoke() {
   await wait(150);
   if (!stage.offsetWidth) {
     results.push({ name: 'setup', status: 'fail', detail: 'the canvas is not visible' });
+    restoreNavigator();
     return finish(results);
   }
 
@@ -441,6 +482,7 @@ export async function runZoomSmoke() {
 
   clearSelection(stage);
   await zoomTo(stage, canvas, startView.s);
+  restoreNavigator();
   return finish(results);
 }
 

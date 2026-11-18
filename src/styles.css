@@ -2647,6 +2647,33 @@ dialog::backdrop {
   }
 }
 
+@media (max-width: 620px) {
+  .vault-desc {
+    display: none;
+  }
+
+  /* Let the app and its workspace shrink to the phone viewport instead of
+   * inheriting the desktop sidebar or viewer's intrinsic width. */
+  .app {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Keep the reading/canvas pane in the viewport; the desktop sidebar width
+   * would otherwise push its start point beyond a phone-sized window. */
+  .workspace,
+  .workspace.is-graph-folded {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: minmax(0, 34vw) 5px minmax(0, 1fr);
+  }
+
+  .viewer {
+    min-width: 0;
+    padding: 12px 12px 48px;
+  }
+}
+
 /* ─────────────────────────────────────────────────────── help window ─── */
 /*
  * The manual lives in its own window (help.html) and reuses the whole markdown
