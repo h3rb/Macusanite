@@ -172,6 +172,82 @@ test('a session: create a sample vault, read it, write it, undo it', () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('the CLI reads and edits a worldbuilding canvas, and its checkpoints', () => {
+  const root = tempDir('world');
+  assert.equal(run(['vault', 'create', root, '--sample']).code, 0);
+
+  const shown = run(['--vault', root, 'world', 'show', 'Home.md', '--json']);
+  assert.equal(shown.code, 0, shown.stderr);
+  const canvas = shown.json();
+  assert.equal(canvas.marked, true);
+  assert.ok(canvas.cards.length > 5, 'the seeded board has its cards');
+  assert.ok(canvas.groups.length > 0 && canvas.bonds.length > 0);
+  assert.ok(canvas.checkpoints.undo >= 3, 'the seeded board keeps its tour checkpoints');
+  const [first, second] = canvas.cards;
+
+  const moved = run(['--vault', root, 'world', 'set', 'Home.md', '--patch', JSON.stringify({
+    positions: {
+      [first.anchor]: { x: 40, y: 20 },
+      [second.anchor]: { x: 300, y: 20 },
+    },
+  })]);
+  assert.equal(moved.code, 0, moved.stderr);
+  assert.match(moved.stdout, /Moved 2 cards/);
+
+  const after = run(['--vault', root, 'world', 'show', 'Home.md', '--json']).json();
+  assert.deepEqual(after.cards.find((card) => card.anchor === first.anchor).position, { x: 40, y: 20 });
+  // A patch merges: the cards it did not name keep the places they had.
+  const untouched = after.cards.find((card) => (
+    card.anchor !== first.anchor && card.anchor !== second.anchor && card.position
+  ));
+  assert.deepEqual(untouched.position, canvas.cards.find((card) => card.anchor === untouched.anchor).position);
+
+  const checkpoints = run(['--vault', root, 'world', 'checkpoints', 'Home.md', '--json']).json();
+  assert.deepEqual(checkpoints.past[0], { name: 'Moved 2 cards', stepsBack: 1 });
+
+  const back = run(['--vault', root, 'world', 'jump', 'Home.md', '--back', '1', '--json']);
+  assert.equal(back.code, 0, back.stderr);
+  assert.equal(back.json().checkpoint, 'Moved 2 cards');
+  const undone = run(['--vault', root, 'world', 'show', 'Home.md', '--json']).json();
+  assert.notDeepEqual(undone.cards.find((card) => card.anchor === first.anchor).position, { x: 40, y: 20 });
+  assert.equal(undone.checkpoints.redo, 1);
+
+  assert.equal(run(['--vault', root, 'world', 'jump', 'Home.md', '--forward', '1']).code, 0);
+  const redone = run(['--vault', root, 'world', 'show', 'Home.md', '--json']).json();
+  assert.deepEqual(redone.cards.find((card) => card.anchor === first.anchor).position, { x: 40, y: 20 });
+
+  // A patch is validated before anything is written.
+  const badAnchor = run(['--vault', root, 'world', 'set', 'Home.md', '--patch', '{"positions":{"nope":{"x":0,"y":0}}}']);
+  assert.equal(badAnchor.code, 1);
+  assert.match(badAnchor.stderr, /no heading for: nope/);
+  const badKind = run(['--vault', root, 'world', 'set', 'Home.md', '--patch', JSON.stringify({
+    relations: { [`${first.anchor}->${second.anchor}`]: 'friendly' },
+  })]);
+  assert.equal(badKind.code, 1);
+  assert.match(badKind.stderr, /unknown relationship kind/);
+  const beyond = run(['--vault', root, 'world', 'jump', 'Home.md', '--back', '999']);
+  assert.equal(beyond.code, 1);
+  assert.match(beyond.stderr, /only 4 steps behind/);
+
+  const list = run(['--vault', root, 'world', 'list', '--json']).json();
+  assert.equal(list.boards.length, 1);
+  assert.equal(list.boards[0].path, 'Home.md');
+
+  // Viewer state is a merge, so setting lastPath cannot erase the canvases.
+  assert.equal(run(['--vault', root, 'vault', 'state', 'set', '{"lastPath":"Home.md"}']).code, 0);
+  const merged = run(['--vault', root, 'world', 'show', 'Home.md', '--json']).json();
+  assert.equal(merged.cards.length, canvas.cards.length);
+  assert.equal(run(['--vault', root, 'vault', 'state', '--json']).json().lastPath, 'Home.md');
+
+  // Unmarking keeps the canvas, so marking it again restores the graph.
+  assert.equal(run(['--vault', root, 'world', 'mark', 'Home.md', '--off', '--json']).json().marked, false);
+  const kept = run(['--vault', root, 'world', 'show', 'Home.md', '--json']).json();
+  assert.equal(kept.cards.length, canvas.cards.length);
+  assert.equal(kept.marked, false);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('the index cache is inspectable, rebuildable and droppable', () => {
   const root = tempDir('index');
   assert.equal(run(['vault', 'create', root, '--sample']).code, 0);

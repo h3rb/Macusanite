@@ -30,6 +30,19 @@ import {
   parseAutoBackup,
   triggersAutoBackup,
 } from './autoBackup.js';
+import { parseNotes, serializeNotes, updateNote } from './worldbuild.js';
+import {
+  anchorsOf,
+  applyCanvasPatch,
+  canvasCheckpoints,
+  canvasDetail,
+  canvasRecordFrom,
+  canvasStepName,
+  canvasSummary,
+  hasCanvasWork,
+  jumpCanvas,
+  recordCanvasStep,
+} from './worldRecord.js';
 
 /** An error a caller can show a user or an agent as-is. */
 export class ApiError extends Error {
@@ -400,7 +413,11 @@ export function createVaultApi({
 
     async 'vault.state.set'(args) {
       const vault = inVault();
-      const state = typeof args.state === 'object' && args.state !== null ? args.state : {};
+      const patch = typeof args.state === 'object' && args.state !== null ? args.state : {};
+      // A merge, not a replacement: the file also holds every worldbuilding
+      // canvas under `world`, and a caller setting `lastPath` must not erase
+      // them. Naming `world` explicitly still replaces that slice.
+      const state = { ...(await vault.readState()), ...patch };
       await vault.writeState(state);
       return { path: '.macusanite/state.json', state };
     },
@@ -560,6 +577,142 @@ export function createVaultApi({
         candidates: resolved.candidates ?? [],
         ghost: resolved.ok !== true,
         suggestedPath: resolved.suggestedPath ?? null,
+      };
+    },
+
+    /* ── worldbuilding ───────────────────────────────────────────────── */
+
+    async 'world.list'(args) {
+      const vault = inVault();
+      const state = await vault.readState();
+      const world = state?.world && typeof state.world === 'object' && !Array.isArray(state.world) ? state.world : {};
+      const boards = [];
+      const listed = new Set();
+      for (const path of await vault.veins()) {
+        const raw = world[path];
+        if (!raw && !args.all) continue;
+        // `--all` describes every vein's potential canvas, so its card count is
+        // its headings even before anything has been arranged on one.
+        const model = parseNotes(await vault.readVein(path).catch(() => ''));
+        boards.push(canvasSummary(path, model, canvasRecordFrom(state, path), true));
+        listed.add(path);
+      }
+      // A record can outlive its vein (a file deleted outside the window); it is
+      // still worth reporting, because its layout is the only trace left.
+      for (const path of Object.keys(world)) {
+        if (listed.has(path)) continue;
+        boards.push(canvasSummary(path, null, canvasRecordFrom(state, path), false));
+      }
+      boards.sort((a, b) => a.path.localeCompare(b.path));
+      return { boards };
+    },
+
+    async 'world.show'(args) {
+      const vault = inVault();
+      const path = await veinPath(args.path);
+      const model = parseNotes(await vault.readVein(path));
+      return canvasDetail(path, model, canvasRecordFrom(await vault.readState(), path));
+    },
+
+    async 'world.mark'(args) {
+      const vault = inVault();
+      const path = await veinPath(args.path);
+      if (args.on === true && args.off === true) {
+        throw new ApiError('pass --on or --off, not both', { code: 'bad-args' });
+      }
+      const state = await vault.readState();
+      const existing = state?.world?.[path];
+      const record = existing ? canvasRecordFrom(state, path) : {};
+      const marked = args.off !== true;
+      const next = { ...record, marked };
+      if (!marked) delete next.marked;
+      const world = { ...(state.world ?? {}) };
+      // Unmarking is not a loss: a record that still holds work stays, and one
+      // that held nothing but the mark goes.
+      if (marked || hasCanvasWork(next)) world[path] = next;
+      else delete world[path];
+      await vault.writeState({ ...state, world });
+      return { path, marked };
+    },
+
+    async 'world.set'(args) {
+      const vault = inVault();
+      const path = await veinPath(args.path);
+      const model = parseNotes(await vault.readVein(path));
+      const state = await vault.readState();
+      const record = canvasRecordFrom(state, path);
+      let next;
+      try {
+        next = applyCanvasPatch(record, args.patch, anchorsOf(model));
+      } catch (error) {
+        throw new ApiError(error.message, { code: 'bad-args' });
+      }
+      const label = args.label ?? canvasStepName(args.patch, record, next);
+      const committed = args['no-history'] ? next : recordCanvasStep(record, next, label).record;
+      const changed = JSON.stringify(committed) !== JSON.stringify(record);
+      if (changed) {
+        await vault.writeState({ ...state, world: { ...(state.world ?? {}), [path]: committed } });
+      }
+      const detail = canvasDetail(path, model, committed);
+      return {
+        path,
+        changed,
+        label,
+        cards: detail.cards.length,
+        groups: detail.groups.length,
+        bonds: detail.bonds.length,
+        annotations: detail.annotations.length,
+        checkpoints: { undo: detail.checkpoints.undo, redo: detail.checkpoints.redo },
+      };
+    },
+
+    async 'world.checkpoints'(args) {
+      const vault = inVault();
+      const path = await veinPath(args.path);
+      return { path, ...canvasCheckpoints(canvasRecordFrom(await vault.readState(), path)) };
+    },
+
+    async 'world.jump'(args) {
+      const vault = inVault();
+      const path = await veinPath(args.path);
+      const back = args.back !== undefined;
+      const forward = args.forward !== undefined;
+      if (back === forward) {
+        throw new ApiError('pass exactly one of --back or --forward', { code: 'bad-args' });
+      }
+      const model = parseNotes(await vault.readVein(path));
+      const state = await vault.readState();
+      const record = canvasRecordFrom(state, path);
+      let jumped;
+      try {
+        jumped = jumpCanvas(record, anchorsOf(model), back ? 'back' : 'forward', back ? args.back : args.forward);
+      } catch (error) {
+        throw new ApiError(error.message, { code: 'bad-args' });
+      }
+      // A step that changed a markdown table carries the prose it changed. The
+      // canvas stack owns that restore, so the write stays out of the vein's
+      // markdown undo and cannot be undone twice.
+      let tables = 0;
+      if (jumped.tables) {
+        let edited = model;
+        for (const [anchor, body] of Object.entries(jumped.tables)) {
+          const index = edited.notes.findIndex((note) => note.anchor === anchor);
+          if (index < 0 || edited.notes[index].body === body) continue;
+          edited = updateNote(edited, index, { body: String(body ?? '') });
+          tables += 1;
+        }
+        if (tables) {
+          await vault.writeVein(path, serializeNotes(edited), { label: 'restore a canvas checkpoint', record: false });
+        }
+      }
+      await vault.writeState({ ...state, world: { ...(state.world ?? {}), [path]: jumped.record } });
+      return {
+        path,
+        direction: back ? 'back' : 'forward',
+        steps: back ? args.back : args.forward,
+        checkpoint: jumped.checkpoint,
+        tables,
+        checkpoints: canvasCheckpoints(jumped.record),
       };
     },
 

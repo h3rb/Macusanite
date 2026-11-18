@@ -70,6 +70,17 @@ export const DEFAULT_SETTINGS = {
     // Units typed by hand into attribute cards. Kept outside the cards so
     // clearing a unit or deleting its card does not erase the suggestion.
     units: [],
+    // The navigator: a minimap of the whole canvas with the viewport on it,
+    // plus Fit selection and Fit group. On unless the reader turns it off.
+    navigator: true,
+    // Whether the one-time note about the object map has been shown. It opens
+    // the first time the canvas passes below 65%, where the link port becomes
+    // a screen-sized corner ring and the rings are the whole way to bond.
+    lowZoomTipSeen: false,
+    // Tablet and touch gestures: long-press a card or group to forge from it,
+    // larger hit targets on the canvas, and two-finger pinch and pan. Off
+    // unless the reader says they use touch, so a mouse never pays for it.
+    touch: false,
   },
   updates: {
     // Checked automatically shortly after the vault opens; the user can turn
@@ -153,6 +164,9 @@ export function validateSettings(settings) {
   s.editor = { ...DEFAULT_SETTINGS.editor, ...(isPlainObject(s.editor) ? s.editor : {}) };
   s.worldbuild = { ...DEFAULT_SETTINGS.worldbuild, ...(isPlainObject(s.worldbuild) ? s.worldbuild : {}) };
   s.worldbuild.cardSize = s.worldbuild.cardSize === 'content' ? 'content' : DEFAULT_SETTINGS.worldbuild.cardSize;
+  s.worldbuild.navigator = s.worldbuild.navigator !== false;
+  s.worldbuild.lowZoomTipSeen = s.worldbuild.lowZoomTipSeen === true;
+  s.worldbuild.touch = s.worldbuild.touch === true;
   s.worldbuild.units = (Array.isArray(s.worldbuild.units) ? s.worldbuild.units : [])
     .filter((unit) => typeof unit === 'string')
     .map((unit) => normalizeUnit(unit))

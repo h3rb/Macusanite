@@ -87,7 +87,10 @@
   },
   "worldbuild": {
     "cardSize": "fixed",
-    "units": []
+    "units": [],
+    "navigator": true,
+    "lowZoomTipSeen": false,
+    "touch": false
   },
   "updates": {
     "autoCheck": true

@@ -126,6 +126,43 @@ test('a tool call answers with readable content and structured data', async () =
   cleanup();
 });
 
+test('the canvas tools read, edit and rewind a worldbuilding record', async () => {
+  const { server, cleanup } = await makeServer();
+
+  const shown = await call(server, 'tools/call', { name: 'world_show', arguments: { path: 'Home.md' } });
+  assert.equal(shown.result.isError, undefined);
+  const canvas = shown.result.structuredContent;
+  assert.equal(canvas.marked, true);
+  assert.ok(canvas.cards.length > 5);
+  const anchor = canvas.cards[0].anchor;
+
+  const listed = await call(server, 'tools/call', { name: 'world_list', arguments: {} });
+  assert.ok(listed.result.structuredContent.boards.some((board) => board.path === 'Home.md'));
+
+  const set = await call(server, 'tools/call', {
+    name: 'world_set',
+    arguments: { path: 'Home.md', patch: { positions: { [anchor]: { x: 12, y: 34 } } } },
+  });
+  assert.equal(set.result.structuredContent.changed, true);
+  assert.equal(set.result.structuredContent.label, 'Moved 1 card');
+
+  const checkpoints = await call(server, 'tools/call', { name: 'world_checkpoints', arguments: { path: 'Home.md' } });
+  assert.equal(checkpoints.result.structuredContent.past[0].name, 'Moved 1 card');
+
+  const jumped = await call(server, 'tools/call', { name: 'world_jump', arguments: { path: 'Home.md', back: 1 } });
+  assert.equal(jumped.result.isError, undefined);
+  assert.equal(jumped.result.structuredContent.checkpoint, 'Moved 1 card');
+
+  // A bad patch is a readable tool error, not a half-written canvas.
+  const bad = await call(server, 'tools/call', {
+    name: 'world_set',
+    arguments: { path: 'Home.md', patch: { positions: { missing: { x: 0, y: 0 } } } },
+  });
+  assert.equal(bad.result.isError, true);
+  assert.match(bad.result.content[0].text, /no heading for: missing/);
+  cleanup();
+});
+
 /* ── lifecycle ─────────────────────────────────────────────────────────── */
 
 test('initialize negotiates a version and reports what this server can do', async () => {

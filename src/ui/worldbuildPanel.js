@@ -8,7 +8,7 @@
  * text (`[[#Heading]]`, `[[Another note]]`), with the heading outline drawn as a
  * dotted spine, which is what makes it a map of the vein rather than a list.
  */
-import { el, clear, appendAll, askText } from './dom.js';
+import { el, clear, appendAll, askText, askConfirm } from './dom.js';
 import { renderMarkdown, renderMermaidIn } from './markdown.js';
 import { searchIcons } from '../lib/iconSet.js';
 import {
@@ -16,14 +16,15 @@ import {
   noteEdges, noteStats, countWords, DEFAULT_LEVEL,
   normalizeTag, addNoteTags, removeNoteTag, tagRecord, tagTarget,
   RELATION_KINDS, DEFAULT_RELATION, relationOf, relationKind, relationKey, groupEndpoint,
-  bondEdges,
+  bondEdges, cleanBondNotes, BOND_NOTE_MAX,
   NODE_TYPES, nodeType, nodeTypeOf, nodeFields, nodeFieldOf, fieldRangeHint, unitSuggestions,
   blankTable, normalizeTable, tableSummary,
   markdownTables, tableCaptionOf, replaceTableCaption, syncTableMarkdown,
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
   TABLE_ALIGNMENTS, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_HEADER_MAX_LENGTH, TABLE_CELL_MAX_LENGTH,
   dropMembershipKind,
-  clampView, snapZoomView, isForgeZoom, syncForgeZoomClass, ICON_ZOOM, isIconZoom, fitView, centreView, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, arrangeCandidateOrigins, findArrangeOrigin, anchorOfView, viewOfAnchor,
+  clampView, snapZoomView, zoomMode, applyZoomClasses, fitView, centreView, readingOrder, coveredGroups,
+  navigatorMap, navigatorProject, navigatorViewport, navigatorModeLabel, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, arrangeCandidateOrigins, arrangeSwapPairs, findArrangeOrigin, anchorOfView, viewOfAnchor,
   normalizeRouting, prepareConnectorGeometry, cleanAnnotations, makeAnnotationId,
   placeConnectorLabels,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
@@ -33,7 +34,8 @@ import {
   referencedNodeFileMetaNames, orphanedNodeFileMetaNames, NODE_FILE_MAX_BYTES, NODE_RESOURCE_LIMIT,
   canvasSnapshot as snapshotCanvas, renameHistoryAnchor, pruneHistoryStack,
   connectedAnchors, lineageAnchors, anchorsInRect, curvesInRect, relationshipDepths, canvasSearch,
-  connectorList, connectorKey, nextConnectorSelection, pathAnchors, effectiveRouting, spreadConnectorCurves, cleanCardModes, cleanCardSizes, cleanCardDims, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
+  connectorList, connectorKey, nextConnectorSelection, lensFocus, forgePalette, pathAnchors, effectiveRouting, spreadConnectorCurves, cleanCardModes, cleanCardSizes, cleanCardDims, cleanStackOrder, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
+  cleanGroupFrame, pinnedGroupFrame, capturePinnedGroupFrames,
   progressionColumns,
   DEFAULT_STEP_NAME, cleanHistoryStack, historyJump, historyKey,
   restoreSnapshot, pushHistoryStep,
@@ -52,20 +54,19 @@ const GAP_X = 96;
 const GAP_Y = 76;
 const PAD = 26;
 const INTRO_H = 150;
-// Below 1:1 controls and editable text become too small to aim at; the canvas
-// stays an object map (drag, resize, fold, selection and menus stay).
-const DETAIL_ZOOM = 1;
-// Full cards survive the first two wheel notches out of 1:1. A notch is
-// exp(-0.2) at the usual 100px delta, so three notches land near 0.549: 0.55
-// switches to the screen-readable summary on that third notch, not the first.
-const SUMMARY_ZOOM = 0.55;
-// Below this, semantic summaries shrink with the canvas instead of holding a
-// fixed screen size. Type keeps shrinking until ICON_ZOOM, where text stops
-// being useful and each card becomes its type icon.
-const COMPACT_ZOOM = 0.25;
-// Annotation text stays editable at 62% and above. Below that the note is a
-// single grab surface, so a drag cannot be swallowed by its textarea.
-const ANNOTATION_DRAG_ZOOM = 0.62;
+// The navigator's box, in CSS pixels and SVG viewBox units at once: small
+// enough to sit in a corner of the stage, large enough to read a split.
+const NAV_W = 196;
+const NAV_H = 118;
+// A press on a link port becomes a forge drag only after this much movement;
+// a click in place selects the port's card or group instead.
+const LINK_DRAG_THRESHOLD = 4;
+// Every zoom handoff (75/65/62/55/25/12.5) lives in `zoomMode` in the library,
+// which also produces the stage classes and the badge text. The panel only
+// reads that one record, so a mode and the number shown can never disagree.
+// A clicked card is lifted above its neighbours in its own z range, well clear
+// of the card ranks below and the group tabs' fixed layer above.
+const CARD_RAISE_Z = 1000;
 // A stacked pair leaves a short wire between them — tight enough that the
 // folded card and the card under it read as one stack, not two neighbours.
 const STACK_GAP = 8;
@@ -102,22 +103,44 @@ export function createWorldbuildPanel({ app, root }) {
   const redoBtn = el('button', {
     class: 'btn btn-ghost btn-mini ui-icon-only', type: 'button', icon: 'redo', iconLabel: 'Redo', title: 'Redo the last undone canvas change', onclick: () => redoCanvas(),
   });
+  // The caret beside the undo pair opens the canvas's checkpoints: every step
+  // this vein has, named, each one a state to return to. Undo undoes; this
+  // shows what there is to undo, so one click back never has to be blind.
+  const historyBtn = el('button', {
+    class: 'btn btn-ghost btn-mini wb-history-toggle',
+    type: 'button',
+    text: '▾',
+    'aria-haspopup': 'dialog',
+    'aria-expanded': 'false',
+    'aria-label': 'Canvas checkpoints',
+    title: 'Canvas checkpoints — every drag, resize and layout change is one named step you can return to',
+    onclick: (event) => toggleCheckpoints(event.currentTarget),
+  });
   const stage = el('div', { class: 'wb-stage' });
   const canvas = el('div', { class: 'wb-canvas' });
   const edgeSvg = svgNode('svg', { class: 'wb-edges', 'aria-hidden': 'true' });
   const cards = el('div', { class: 'wb-cards' });
+  // Below the icon handoff a card is one small box with its type icon rather
+  // than a head, a face and a page of prose. Those boxes share one layer, so a
+  // thousand-card overview keeps a few hundred nodes instead of sixty thousand.
+  const iconLayer = el('div', { class: 'wb-icon-layer' });
   const annotationsLayer = el('div', { class: 'wb-annotations', 'aria-hidden': 'false' });
   // Smart guides, drawn over the cards while a drag aligns with them.
   const guideV = el('div', { class: 'wb-guide wb-guide-v' });
   const guideH = el('div', { class: 'wb-guide wb-guide-h' });
   const guides = el('div', { class: 'wb-guides', 'aria-hidden': 'true' }, [guideV, guideH]);
   // The marquee box, in stage coordinates: Shift+drag on the background.
-  const marqueeBox = el('div', { class: 'wb-marquee hidden', 'aria-hidden': 'true' });
+  const marqueeCount = el('span', { class: 'wb-marquee-count', text: '' });
+  const marqueeBox = el('div', { class: 'wb-marquee hidden', 'aria-hidden': 'true' }, [marqueeCount]);
   // A link drag lives in stage pixels, above the cards and their group boxes:
   // the dashed rubber-band and its endpoint dot read the same at every zoom.
   const linkOverlay = svgNode('svg', {
     class: 'wb-link-overlay hidden', width: '100%', height: '100%', 'aria-hidden': 'true',
   });
+  // The lens's kind words: screen-sized chips on the focused wires. They live
+  // in stage pixels rather than the canvas so they stay readable when the
+  // words the SVG draws on those same wires have shrunk to a few pixels.
+  const lensLayer = el('div', { class: 'wb-lens-labels hidden', 'aria-hidden': 'true' });
   const linkPreviewLine = svgNode('path', { class: 'wb-link-preview-line', fill: 'none' });
   const linkPreviewDot = svgNode('circle', { class: 'wb-link-preview-dot', r: 4 });
   linkOverlay.append(linkPreviewLine, linkPreviewDot);
@@ -129,6 +152,94 @@ export function createWorldbuildPanel({ app, root }) {
     el('span', { class: 'wb-zoom-hud-label', text: 'Zoom' }),
     zoomHudValue,
   ]);
+  // The one-time note about the object map. It opens the first time the canvas
+  // passes below 65%, where the link port becomes a screen-sized corner ring:
+  // the rings, the group ports and click-versus-drag are exactly what a first
+  // visit at that zoom misses, and nothing else on screen says them.
+  const zoomTip = el('aside', {
+    class: 'wb-zoom-tip hidden',
+    role: 'note',
+    'aria-label': 'Zoomed out: the rings still work',
+  }, [
+    el('div', { class: 'wb-zoom-tip-head' }, [
+      el('span', { class: 'wb-zoom-tip-title', text: 'Object map: the rings still work' }),
+      el('button', {
+        class: 'btn btn-ghost btn-mini', type: 'button', text: 'Got it',
+        title: 'Put this note away — it opens once, and Help keeps the same story',
+        onclick: () => dismissZoomTip(),
+      }),
+    ]),
+    el('p', { class: 'wb-zoom-tip-row' }, [
+      el('span', { class: 'wb-zoom-tip-mark', 'aria-hidden': 'true', text: '◯' }),
+      el('span', { text: 'Drag a card’s corner ring onto another card to forge a bond; a click on the ring picks the card instead of starting a wire.' }),
+    ]),
+    el('p', { class: 'wb-zoom-tip-row' }, [
+      el('span', { class: 'wb-zoom-tip-mark', 'aria-hidden': 'true', text: '▦' }),
+      el('span', { text: 'The same ring sits on a group’s tab and on a collapsed group’s summary, and bonds the whole group.' }),
+    ]),
+    el('p', { class: 'wb-zoom-tip-row' }, [
+      el('span', { class: 'wb-zoom-tip-mark', 'aria-hidden': 'true', text: '↔' }),
+      el('span', { text: 'Click picks a card, Ctrl+click adds one, dragging a card moves it, and Shift+dragging the background box-selects.' }),
+    ]),
+  ]);
+  // The navigator: the whole canvas at one scale with the stage's viewport
+  // drawn on it, the drawing mode named beside it, and the two framings that
+  // answer “where did that card go?” and “what is this group?”. Settings can
+  // hide it; the × on it hides it at once.
+  const navMode = el('span', { class: 'wb-nav-mode', text: 'Detail · 100%' });
+  const navMap = svgNode('svg', {
+    class: 'wb-nav-map',
+    viewBox: `0 0 ${NAV_W} ${NAV_H}`,
+    width: String(NAV_W),
+    height: String(NAV_H),
+    role: 'img',
+    'aria-label': 'Canvas overview with the viewport drawn on it',
+  });
+  const navViewport = svgNode('rect', { class: 'wb-nav-viewport', x: 0, y: 0, width: 0, height: 0, rx: 2 });
+  const navFitSelection = el('button', {
+    class: 'wb-nav-action', type: 'button', text: 'Fit selection',
+    title: 'Frame the selected cards',
+    onclick: () => zoomToFitSelection(),
+  });
+  const navFitGroup = el('button', {
+    class: 'wb-nav-action', type: 'button', text: 'Fit group',
+    title: 'Frame the group the selection belongs to',
+    onclick: () => zoomToFitGroup(),
+  });
+  const navigator = el('div', { class: 'wb-navigator', role: 'group', 'aria-label': 'Navigator' }, [
+    el('div', { class: 'wb-nav-head' }, [
+      el('span', { class: 'wb-nav-kicker', text: 'Navigator' }),
+      navMode,
+      el('button', {
+        class: 'icon-btn btn-mini ui-icon-only wb-nav-hide',
+        type: 'button',
+        icon: 'close',
+        iconLabel: 'Hide navigator',
+        title: 'Hide the navigator — Settings → Worldbuilding brings it back',
+        onclick: () => app.updateSettings({ worldbuild: { navigator: false } }),
+      }),
+    ]),
+    navMap,
+    el('div', { class: 'wb-nav-actions' }, [navFitSelection, navFitGroup]),
+  ]);
+  // The map's geometry as last drawn, so a pan or zoom only moves the
+  // viewport rectangle instead of re-measuring every card.
+  let navGeometry = null;
+  const navCards = new Map();
+  // What screen readers hear from the canvas: the selection, each step of the
+  // relate flow, and each bond forged. It is off-screen and politely
+  // announced, so a pointer user never sees it and a fast sequence replaces
+  // the last message rather than queueing behind it.
+  const liveRegion = el('div', {
+    class: 'wb-live', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true',
+  });
+  let liveTimer = 0;
+  function announce(text) {
+    if (!text) return;
+    clearTimeout(liveTimer);
+    liveRegion.textContent = '';
+    liveTimer = setTimeout(() => { liveRegion.textContent = text; }, 40);
+  }
   // A quiet warning while a drag covers another card. It is decorative like
   // the scale badge; the cards themselves carry the dashed warning outline.
   const overlapHud = el('div', { class: 'wb-overlap-hud hidden', 'aria-hidden': 'true' });
@@ -157,8 +268,10 @@ export function createWorldbuildPanel({ app, root }) {
   ]);
   const workbench = el('div', { class: 'wb-workbench' }, [stage, inspector]);
 
-  canvas.append(edgeSvg, cards, annotationsLayer, guides);
-  stage.append(canvas, marqueeBox, linkOverlay, overlapHud, zoomHud);
+  // The icon layer sits under the cards layer: at icon scale the cards layer
+  // holds only group tabs, and a tab must stay clickable over an icon box.
+  canvas.append(edgeSvg, iconLayer, cards, annotationsLayer, guides);
+  stage.append(canvas, marqueeBox, linkOverlay, lensLayer, overlapHud, zoomHud, navigator, zoomTip, liveRegion);
   // Canvas search: titles, types, fields, colours and group names in this
   // vein, with jump-to, highlight, select-all-matches and isolate.
   const searchInput = el('input', {
@@ -201,7 +314,54 @@ export function createWorldbuildPanel({ app, root }) {
     el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Trace downstream', title: 'Select every card the selected connectors lead to, following the arrows forwards', onclick: () => traceSelectedConnectors('downstream') }),
     el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear', title: 'Clear the connector selection', onclick: () => clearConnectorSelection() }),
   ]);
-  root.append(toolbar, searchBar, connectorBar, workbench, statsBar);
+  // The set's own bar: the bulk actions a region pick exists for, each
+  // carrying the count it would act on so a sweep can be steered without
+  // opening the inspector.
+  const selectionCount = el('span', { class: 'wb-selection-count', text: '' });
+  const selectionGroupBtn = el('button', {
+    class: 'btn btn-ghost btn-mini', type: 'button', text: 'Group',
+    title: 'Stack the selected cards into a new group',
+    onclick: () => groupSelected(),
+  });
+  const selectionPinBtn = el('button', {
+    class: 'btn btn-ghost btn-mini', type: 'button', text: 'Pin',
+    title: 'Pin the selected cards where they stand, so Arrange works around them',
+    onclick: () => toggleSelectionPin(),
+  });
+  const selectionArrangeBtn = el('button', {
+    class: 'btn btn-ghost btn-mini', type: 'button', text: 'Arrange ▾',
+    'aria-haspopup': 'menu',
+    'aria-expanded': 'false',
+    title: 'Arrange just the selected cards — grid, rows, columns, cascade, layered or progression columns',
+    onclick: (event) => openSelectionArrange(event.currentTarget),
+  });
+  const selectionRelateBtn = el('button', {
+    class: 'btn btn-ghost btn-mini', type: 'button', text: 'Relate…',
+    title: 'Relate every selected card to one target, with one kind',
+    onclick: () => relateSelection(selectionRelateBtn),
+  });
+  const selectionDeleteBtn = el('button', {
+    class: 'btn btn-ghost btn-mini', type: 'button', text: 'Delete',
+    title: 'Delete the selected notes from this vein',
+    onclick: () => void deleteSelectedNotes(),
+  });
+  const selectionBar = el('div', {
+    class: 'wb-selection-bar hidden', role: 'toolbar', 'aria-label': 'Selection actions',
+  }, [
+    selectionCount,
+    selectionGroupBtn,
+    selectionPinBtn,
+    selectionArrangeBtn,
+    selectionRelateBtn,
+    selectionDeleteBtn,
+    el('button', {
+      class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear',
+      title: 'Clear the selection',
+      onclick: () => closeInspector(),
+    }),
+  ]);
+
+  root.append(toolbar, searchBar, connectorBar, selectionBar, workbench, statsBar);
 
   let model = null;
   let currentPath = null;
@@ -219,6 +379,9 @@ export function createWorldbuildPanel({ app, root }) {
   // (id → {members, color}), and whether the vein is marked as a
   // worldbuilding graph — all from the saved record.
   let relations = {};
+  // The sentence or citation each bond carries, by the same anchor pair. A
+  // note explains a pair, so it is read from either end of the wire.
+  let bondNotes = {};
   // Which cards are folded to their header, by anchor. A record may also
   // still carry the retired `links` part beside it; nothing reads it.
   let folded = {};
@@ -230,6 +393,15 @@ export function createWorldbuildPanel({ app, root }) {
   let cardSizes = {};
   // Dragged card sizes, by anchor: `{ width, height }` in canvas pixels.
   let cardDims = {};
+  // The cards' stacking order, bottom to top, by anchor. A card this record
+  // does not name sits above the ones it does, so a note added later arrives
+  // visible.
+  let stackOrder = [];
+  // Cards lifted above their neighbours because the reader just clicked or
+  // dragged them. Transient view state: it lasts this visit and is never
+  // written to the vein.
+  let raisedCards = new Map();
+  let raiseClock = 0;
   // The vault's default card height last built with, so a change in Settings
   // rebuilds the canvas even though the vein's text did not change.
   let lastVaultCardSize = null;
@@ -265,7 +437,8 @@ export function createWorldbuildPanel({ app, root }) {
   // deleting a node sweeps the file once no record or snapshot names it.
   const seenAttachmentRefs = new Set();
   // Notes pinned in place: Arrange must work around them, though a pinned
-  // note can still be dragged by hand. Groups pin through their own flag.
+  // note can still be dragged by hand. Pinning a group pins its frame, not
+  // its cards — see `groupBox`.
   let pinned = {};
   // Nodes whose content is locked read-only: the markdown, type, fields,
   // colour and image cannot change, but the card can still be moved (when
@@ -293,6 +466,28 @@ export function createWorldbuildPanel({ app, root }) {
   // hold several tables; this chooses one without moving or merging them.
   let tableSelection = new Map();
   let cardEls = [];
+  // The level of detail each card element was built at (`full` or `icon`), so
+  // the camera can tell a card that is already right from one to rebuild.
+  let cardLods = [];
+  // What each card measured the last time it was on screen. An offstage card
+  // is out of the DOM, but its box still has to report its real size to the
+  // edges and to the arrangement passes that ask about it.
+  let cardWidths = [];
+  let cardHeights = [];
+  // The pending animation frame that mounts the cards in view, and the one
+  // that paints the camera. Both are coalesced: a stream of wheel or pointer
+  // events does one frame of work, not one per event.
+  let windowFrame = 0;
+  let viewFrame = 0;
+  // The camera as last painted, so a repaint of the same view is recognised.
+  let lastAppliedView = '';
+  // Whether the wires were last drawn at the icon level, so the crossing into
+  // and out of it redraws them once.
+  let wasIcon = false;
+  // True while the card window is being mounted. Mounting a big card can resize
+  // the canvas, and a resize repaints the camera; that repaint must not start
+  // another window pass, or the two would keep waking each other.
+  let syncingCards = false;
   // Watchers on content-sized cards: their height follows their prose (and
   // any image or diagram inside it), so connectors and the canvas keep up.
   let contentObservers = [];
@@ -316,6 +511,9 @@ export function createWorldbuildPanel({ app, root }) {
   // An in-progress marquee: screen start, the selection to start from, and
   // whether it has grown past a click.
   let marquee = null;
+  // A marquee changes the count on every frame, so it stays quiet and says
+  // the result once, when the pointer comes up.
+  let selectionQuiet = false;
   let selectMenuEl = null;
   let arrangeMenuEl = null;
   // Canvas search state: matches, the current jump target, and — while
@@ -328,6 +526,11 @@ export function createWorldbuildPanel({ app, root }) {
   // Connectors picked on the canvas, by connector key. Transient, like
   // card selection: they batch routing/arrowheads and seed path tracing.
   let selectedEdges = new Set();
+  // The relationship lens around the current selection, recomputed whenever
+  // the selection or the canvas record changes, and read by the edge painter.
+  let lensState = null;
+  // The kind words the lens draws in stage pixels, with their canvas points.
+  let lensChips = [];
   // How each drawn wire was laid out, so a marquee can tell which connectors
   // its rectangle crosses. Rebuilt with every redraw.
   let connectorCurves = [];
@@ -339,6 +542,9 @@ export function createWorldbuildPanel({ app, root }) {
   // never touches them. A new vein (or tidying the grid) starts at 1:1.
   let view = { x: 0, y: 0, s: 1 };
   let panning = null;
+  // A press on a link dot, waiting to become a forge drag. Until it moves, a
+  // release selects the endpoint instead.
+  let linkPress = null;
   // A drag from a link dot: its source endpoint, the dotted preview, and the
   // endpoint currently lit as the drop target. One pointer gesture, no step
   // until a relationship is chosen.
@@ -348,17 +554,12 @@ export function createWorldbuildPanel({ app, root }) {
 
   /** True when the canvas is scaled below legible, editable card content. */
   function isOverviewZoom() {
-    return view.s < DETAIL_ZOOM;
-  }
-
-  /** True when the canvas is scaled down to its screen-readable summary. */
-  function isSemanticZoom() {
-    return view.s < SUMMARY_ZOOM;
+    return zoomMode(view.s).overview;
   }
 
   /** True when an annotation is below its editing floor and drags as a whole. */
   function isAnnotationDragZoom() {
-    return view.s < ANNOTATION_DRAG_ZOOM;
+    return zoomMode(view.s).annotationDrag;
   }
 
   /* ------------------------------------------------------------ content -- */
@@ -395,6 +596,11 @@ export function createWorldbuildPanel({ app, root }) {
       clear(toolbar);
       clear(statsBar);
       clear(cards);
+      clear(iconLayer);
+      cardEls = [];
+      cardLods = [];
+      cardWidths = [];
+      cardHeights = [];
       clear(annotationsLayer);
       return;
     }
@@ -407,6 +613,8 @@ export function createWorldbuildPanel({ app, root }) {
     if (currentPath !== doc.path) {
       overviewFolded = null;
       selected = new Set();
+      raisedCards = new Map();
+      raiseClock = 0;
       searchMatches = [];
       searchCurrent = -1;
       isolatedAnchors = null;
@@ -422,10 +630,12 @@ export function createWorldbuildPanel({ app, root }) {
     savedViews = cleanSavedViews(record?.savedViews);
     positions = new Map(Object.entries(record?.positions ?? {}));
     relations = record?.relations ?? {};
+    bondNotes = cleanBondNotes(record?.bondNotes);
     folded = record?.folded ?? {};
     cardModes = cleanCardModes(record?.cardModes);
     cardSizes = cleanCardSizes(record?.cardSizes);
     cardDims = cleanCardDims(record?.cardDims);
+    stackOrder = cleanStackOrder(record?.stack);
     collapsedGroups = cleanCollapsedGroups(record?.collapsedGroups);
         nodeTypes = record?.types ?? {};
     fieldValues = record?.fields ?? {};
@@ -449,7 +659,24 @@ export function createWorldbuildPanel({ app, root }) {
     const migratedTables = migrateTableFields();
     mounted = true;
     build();
+    // Cards are measured now, so a pin that predates stored frames can take
+    // the rectangle it would have been given when it was first pinned.
+    if (backfillPinnedGroupFrames()) drawEdges();
     if (migratedTables) commit();
+  }
+
+  /**
+   * A group pinned before frames were stored has no rectangle, so it would
+   * hug its cards instead of holding a boundary. Once the cards are measured,
+   * take the frame that pin would have captured and save it. No card moves and
+   * no undo step appears: only the bookkeeping gains the missing rectangle.
+   */
+  function backfillPinnedGroupFrames() {
+    if (!currentPath) return false;
+    const { groups: next, changed } = capturePinnedGroupFrames(groups, groupHull);
+    if (!changed) return false;
+    groups = app.saveWorldGroups(currentPath, next) ?? next;
+    return true;
   }
 
   /**
@@ -481,8 +708,7 @@ export function createWorldbuildPanel({ app, root }) {
     renderToolbar();
     for (const observer of contentObservers) observer.disconnect();
     contentObservers = [];
-    clear(cards);
-    cardEls = [];
+    resetCardWindow();
 
     const notes = model.notes ?? [];
     const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(Math.max(1, notes.length)))));
@@ -490,16 +716,17 @@ export function createWorldbuildPanel({ app, root }) {
 
     if (model.intro) cards.append(buildIntro());
 
-    notes.forEach((note, index) => {
-      const card = buildCard(note, index);
-      cardEls[index] = card;
-      cards.append(card);
-    });
+    // Only the cards the camera can see become elements: the rest are built as
+    // the view reaches them, and an offstage card is not in the DOM at all.
+    syncCardWindow();
 
     if (!notes.length) cards.append(emptyState());
     clear(annotationsLayer);
     Object.values(annotations).forEach((annotation) => annotationsLayer.append(buildAnnotation(annotation)));
     sizeCanvas();
+    // The lens reads the rebuilt cards and groups; the edges it paints are
+    // drawn immediately below, so this pass does not need its own redraw.
+    syncLens({ redraw: false });
     drawEdges();
     renderStats();
     renderInspector();
@@ -513,6 +740,138 @@ export function createWorldbuildPanel({ app, root }) {
     app.setDraft(text);
     drawEdges();
     renderStats();
+  }
+
+  /* ---------------------------------------------------- low-zoom detail -- */
+
+  /** Empty both card layers and forget what had been built, before a rebuild. */
+  function resetCardWindow() {
+    clear(cards);
+    clear(iconLayer);
+    cardEls = [];
+    cardLods = [];
+    cardWidths = [];
+    cardHeights = [];
+  }
+
+  /**
+   * The canvas rectangle the camera shows, grown by half a viewport on each
+   * side: a card just outside the stage is built before it can be seen, so a
+   * pan never catches a blank patch.
+   */
+  function visibleCanvasBox() {
+    const vpW = stage.clientWidth || 0;
+    const vpH = stage.clientHeight || 0;
+    const padX = (vpW * 0.5) / view.s;
+    const padY = (vpH * 0.5) / view.s;
+    return {
+      x: -view.x / view.s - padX,
+      y: -view.y / view.s - padY,
+      right: (vpW - view.x) / view.s + padX,
+      bottom: (vpH - view.y) / view.s + padY,
+    };
+  }
+
+  /** `icon` below the icon handoff, `full` above it. */
+  function cardLodNow() {
+    return zoomMode(view.s).icon ? 'icon' : 'full';
+  }
+
+  // How many new cards one frame may build. A full card carries a head, its
+  // fields and its prose; sixty of them is under a frame's worth of work at
+  // icon size, and the rest of the screen fills in on the frames after.
+  const MOUNT_BUDGET = 60;
+
+  /** A card at the level of detail this zoom calls for, built once and cached. */
+  function ensureCardEl(index, lod) {
+    const note = model?.notes?.[index];
+    if (!note) return null;
+    if (cardEls[index] && cardLods[index] === lod) return cardEls[index];
+    // Crossing the icon handoff changes what a card is made of, so the old
+    // element is dropped rather than patched into the new shape.
+    cardEls[index]?.remove();
+    const card = lod === 'icon' ? buildIconCard(note, index) : buildCard(note, index);
+    cardEls[index] = card;
+    cardLods[index] = lod;
+    return card;
+  }
+
+  /**
+   * Mount every card the camera can see and unmount the ones it cannot. This is
+   * the whole of the low-zoom level of detail: the canvas holds a screen's
+   * worth of cards at any distance, and below the icon handoff each of those is
+   * one icon box instead of a card full of head, fields, prose and controls.
+   */
+  function syncCardWindow() {
+    if (!model || !mounted || syncingCards) return;
+    syncingCards = true;
+    try {
+      const lod = cardLodNow();
+      const box = visibleCanvasBox();
+      const layer = lod === 'icon' ? iconLayer : cards;
+      // A card is mounted before it is seen and only let go well after it has
+      // left: the slack between the two keeps a camera resting on the edge from
+      // mounting and unmounting the same card every frame.
+      const slackX = (stage.clientWidth || 0) / view.s / 2;
+      const slackY = (stage.clientHeight || 0) / view.s / 2;
+      const mounted2 = [];
+      const changed = [];
+      let built = 0;
+      let deferred = 0;
+      (model.notes ?? []).forEach((note, index) => {
+        const rect = rectOf(index);
+        const seen = !isGroupHidden(note.anchor)
+          && rect.x + rect.width >= box.x - slackX && rect.x <= box.right + slackX
+          && rect.y + rect.height >= box.y - slackY && rect.y <= box.bottom + slackY;
+        const card = cardEls[index];
+        if (!seen) {
+          if (card?.isConnected) card.remove();
+          return;
+        }
+        const fresh = !card || cardLods[index] !== lod;
+        // A frame builds only so many new cards: zooming out over a big graph
+        // fills it in over a few frames instead of stopping the world to build
+        // a thousand cards at once.
+        if (fresh && built >= MOUNT_BUDGET) {
+          deferred += 1;
+          return;
+        }
+        const el2 = fresh ? ensureCardEl(index, lod) : card;
+        if (!el2) return;
+        if (fresh) built += 1;
+        if (el2.parentElement !== layer) layer.append(el2);
+        if (fresh) changed.push(index);
+        mounted2.push(index);
+      });
+      // Measure what was just mounted in one layout pass, so an offstage card
+      // reports the size it last had and the edges keep meeting the right edge.
+      for (const index of mounted2) {
+        const card = cardEls[index];
+        if (!card) continue;
+        if (card.offsetWidth) cardWidths[index] = card.offsetWidth;
+        if (card.offsetHeight) cardHeights[index] = card.offsetHeight;
+      }
+      // Only cards that arrived this pass need their place in the stack and
+      // their mode classes painted; the rest were painted when they mounted.
+      if (changed.length) {
+        applyCardStack(changed);
+        applyCardModes(changed);
+      }
+      // Cards held back for this frame arrive on the next one.
+      if (deferred) scheduleCardWindow();
+    } finally {
+      syncingCards = false;
+    }
+  }
+
+  /** Mount the cards in view on the next frame, once per frame however fast the
+   * camera moves. */
+  function scheduleCardWindow() {
+    if (windowFrame) return;
+    windowFrame = requestAnimationFrame(() => {
+      windowFrame = 0;
+      syncCardWindow();
+    });
   }
 
   /* ------------------------------------------------------------ toolbar -- */
@@ -545,6 +904,7 @@ export function createWorldbuildPanel({ app, root }) {
       el('div', { class: 'spacer' }),
       undoBtn,
       redoBtn,
+      historyBtn,
       el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: '+ Note',
         title: 'Add a note to this vein', onclick: addNewNote,
@@ -610,6 +970,7 @@ export function createWorldbuildPanel({ app, root }) {
     );
     syncHistoryButtons();
     syncSelectionUi();
+    drawNavigatorMap();
   }
 
   /* ------------------------------------------------------------ more menu -- */
@@ -1002,12 +1363,12 @@ export function createWorldbuildPanel({ app, root }) {
       'aria-label': 'Annotation text',
     });
     body.value = annotation.text;
-    body.addEventListener('focus', () => beginStep('Edit annotation'));
+    body.addEventListener('focus', () => beginStep('Edited an annotation'));
     body.addEventListener('input', () => {
       annotations = { ...annotations, [annotation.id]: { ...annotations[annotation.id], text: body.value } };
     });
     body.addEventListener('change', () => {
-      commitStep('Edit annotation');
+      commitStep('Edited an annotation');
       saveAnnotations();
       if (!annotations[annotation.id]) build();
     });
@@ -1016,7 +1377,7 @@ export function createWorldbuildPanel({ app, root }) {
       // In annotation-drag mode the whole note, including its controls, is the
       // drag surface; no child target can take the gesture first.
       if (!isAnnotationDragZoom() && event.target.closest?.('button, textarea')) return;
-      beginStep('Move annotation');
+      beginStep('Moved an annotation');
       const startX = event.clientX;
       const startY = event.clientY;
       const startAnnotation = annotations[annotation.id];
@@ -1035,7 +1396,7 @@ export function createWorldbuildPanel({ app, root }) {
       const end = () => {
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', end);
-        commitStep('Move annotation');
+        commitStep('Moved an annotation');
         saveAnnotations();
         sizeCanvas();
       };
@@ -1080,7 +1441,7 @@ export function createWorldbuildPanel({ app, root }) {
         applyFolds();
         // Only this folded card can cause a stack to move.
         restackFoldedCards([anchor]);
-      }, `${closed ? 'Expand' : 'Fold'} “${noteTitle(anchor)}”`);
+      }, `${closed ? 'Expanded' : 'Collapsed'} “${noteTitle(anchor)}”`);
     });
     return button;
   }
@@ -1173,6 +1534,7 @@ export function createWorldbuildPanel({ app, root }) {
       positions: Object.fromEntries(positions),
       groups,
       relations,
+      bondNotes,
       folded,
       types: nodeTypes,
       fields: fieldValues,
@@ -1184,6 +1546,7 @@ export function createWorldbuildPanel({ app, root }) {
       cardModes,
       cardSizes,
       cardDims,
+      stack: stackOrder,
       collapsedGroups,
       annotations,
       ...(includeTables ? {
@@ -1349,6 +1712,7 @@ export function createWorldbuildPanel({ app, root }) {
       cardModes,
       cardSizes,
       cardDims,
+      stack: stackOrder,
       collapsedGroups,
       annotations,
       view,
@@ -1357,10 +1721,14 @@ export function createWorldbuildPanel({ app, root }) {
     positions = new Map(Object.entries(saved.positions));
     groups = saved.groups;
     relations = saved.relations;
+    bondNotes = saved.bondNotes ?? {};
     folded = saved.folded;
     cardModes = saved.cardModes ?? {};
     cardSizes = saved.cardSizes ?? {};
     cardDims = saved.cardDims ?? {};
+    stackOrder = saved.stack ?? [];
+    raisedCards = new Map();
+    raiseClock = 0;
     collapsedGroups = saved.collapsedGroups ?? {};
     nodeTypes = saved.types;
     fieldValues = saved.fields;
@@ -1388,6 +1756,7 @@ export function createWorldbuildPanel({ app, root }) {
       positions: saved.positions,
       groups,
       relations,
+      bondNotes,
       folded,
       types: nodeTypes,
       fields: fieldValues,
@@ -1399,6 +1768,7 @@ export function createWorldbuildPanel({ app, root }) {
       cardModes,
       cardSizes,
       cardDims,
+      stack: stackOrder,
       collapsedGroups,
       annotations,
       view: anchorOfView(view),
@@ -1446,12 +1816,18 @@ export function createWorldbuildPanel({ app, root }) {
     const stack = historyFor(currentPath);
     undoBtn.disabled = !stack.past.length;
     redoBtn.disabled = !stack.future.length;
-    undoBtn.title = stack.past.length
-      ? `Undo: ${stack.past[stack.past.length - 1].name} (Ctrl+Z) — ${stack.past.length} steps back`
-      : 'Nothing to undo on this canvas';
-    redoBtn.title = stack.future.length
-      ? `Redo: ${stack.future[stack.future.length - 1].name} (Ctrl+Shift+Z) — ${stack.future.length} steps forward`
-      : 'Nothing to redo on this canvas';
+    // The button names the change it would undo, not how many steps are behind
+    // it: the count is the checkpoints popover's business, and “14 steps back”
+    // says nothing about what a click would actually put back.
+    const undoName = stack.past[stack.past.length - 1]?.name;
+    const redoName = stack.future[stack.future.length - 1]?.name;
+    undoBtn.title = undoName ? `Undo: ${undoName} (Ctrl+Z)` : 'Nothing to undo on this canvas';
+    redoBtn.title = redoName ? `Redo: ${redoName} (Ctrl+Shift+Z)` : 'Nothing to redo on this canvas';
+    undoBtn.setAttribute('aria-label', undoName ? `Undo ${undoName}` : 'Undo');
+    redoBtn.setAttribute('aria-label', redoName ? `Redo ${redoName}` : 'Redo');
+    historyBtn.title = stack.past.length
+      ? `Canvas checkpoints — ${stack.past.length} step${stack.past.length === 1 ? '' : 's'} behind; every drag, resize and layout change is one named step`
+      : 'Canvas checkpoints — nothing to undo on this canvas yet';
   }
 
   /** Jump to a history entry in one restore, rewiring both stacks. */
@@ -1541,7 +1917,114 @@ export function createWorldbuildPanel({ app, root }) {
   /** A card's box on the canvas. A folded card is shorter; edges meet its middle. */
   function rectOf(index) {
     const { x, y } = positionOf(index);
-    return { x, y, width: cardEls[index]?.offsetWidth || CARD_W, height: cardEls[index]?.offsetHeight || CARD_H };
+    // A card in the DOM measures itself; one culled offstage reports the size
+    // it had when it was last built, so its wires and its place stay right.
+    const width = cardEls[index]?.offsetWidth || cardWidths[index] || CARD_W;
+    const height = cardEls[index]?.offsetHeight || cardHeights[index] || CARD_H;
+    return { x, y, width, height };
+  }
+
+  /**
+   * The cards' bottom-to-top stacking order: the saved order first, then any
+   * card it does not name — a note added since, or a legacy record — in
+   * outline order. Only cards on this vein are returned.
+   */
+  function effectiveStack() {
+    const live = new Set((model?.notes ?? []).map((note) => note.anchor));
+    const out = [];
+    const seen = new Set();
+    for (const anchor of stackOrder) {
+      if (!live.has(anchor) || seen.has(anchor)) continue;
+      seen.add(anchor);
+      out.push(anchor);
+    }
+    for (const note of model?.notes ?? []) {
+      if (seen.has(note.anchor)) continue;
+      seen.add(note.anchor);
+      out.push(note.anchor);
+    }
+    return out;
+  }
+
+  /** Paint each card at its place in the stack, plus any card just clicked.
+   * With `indexes` in hand only those cards are touched: the camera pass runs
+   * on every frame and must not restyle a screen of cards that did not change. */
+  function applyCardStack(indexes = null) {
+    const ranks = new Map(effectiveStack().map((anchor, index) => [anchor, index + 1]));
+    const paint = (note, index) => {
+      const card = cardEls[index];
+      if (!card) return;
+      const raised = raisedCards.get(note.anchor);
+      card.style.zIndex = String(raised ? CARD_RAISE_Z + raised : ranks.get(note.anchor) ?? 1);
+    };
+    if (indexes) {
+      for (const index of indexes) {
+        const note = model?.notes?.[index];
+        if (note) paint(note, index);
+      }
+      return;
+    }
+    (model?.notes ?? []).forEach(paint);
+  }
+
+  /** Lift one card above the others for the rest of this visit. */
+  function raiseCard(anchor) {
+    const index = (model?.notes ?? []).findIndex((note) => note.anchor === anchor);
+    const card = cardEls[index];
+    if (!card) return;
+    raiseClock += 1;
+    raisedCards.set(anchor, raiseClock);
+    card.style.zIndex = String(CARD_RAISE_Z + raiseClock);
+  }
+
+  /** True when a visible card shares canvas space with another card. */
+  function overlapsAnotherCard(anchor) {
+    const index = (model?.notes ?? []).findIndex((note) => note.anchor === anchor);
+    if (index < 0) return false;
+    const rect = rectOf(index);
+    return visibleCardRects().some((other) => other.anchor !== anchor && rectsOverlap(rect, other));
+  }
+
+  /** Write a new stacking order, bottom to top, as one undoable step. */
+  function setStackOrder(next, name) {
+    if (!currentPath || !next.length) return;
+    step(() => {
+      stackOrder = app.saveWorldStack(currentPath, next) ?? next;
+      raisedCards = new Map();
+      raiseClock = 0;
+      build();
+    }, name);
+  }
+
+  /** Put cards on top of — or under — every other card, keeping their order. */
+  function reorderCards(anchors, where) {
+    const targets = new Set(anchors ?? []);
+    if (!targets.size) return;
+    const order = effectiveStack();
+    const moved = order.filter((anchor) => targets.has(anchor));
+    const rest = order.filter((anchor) => !targets.has(anchor));
+    const next = where === 'front' ? [...rest, ...moved] : [...moved, ...rest];
+    const subject = moved.length === 1 ? `“${noteTitle(moved[0])}”` : `${moved.length} cards`;
+    setStackOrder(next, `${where === 'front' ? 'Bring' : 'Send'} ${subject} to the ${where}`);
+  }
+
+  /**
+   * Lay every card out by size: largest at the back, smallest in front. A card
+   * lying over another then leaves part of the bigger one showing, so all the
+   * overlapping cards stay at least partly visible. Equal sizes keep their
+   * present order.
+   */
+  function orderCardsBySize() {
+    const order = effectiveStack();
+    const next = order
+      .map((anchor, index) => {
+        const noteIndex = model.notes.findIndex((note) => note.anchor === anchor);
+        const rect = noteIndex >= 0 ? rectOf(noteIndex) : null;
+        return { anchor, index, area: rect ? rect.width * rect.height : 0 };
+      })
+      .sort((a, b) => (b.area - a.area) || (a.index - b.index))
+      .map((entry) => entry.anchor);
+    setStackOrder(next, 'Order cards by size');
   }
 
   function cardModeOf(anchor) {
@@ -1704,14 +2187,22 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /** Sync mode classes and hidden members without rebuilding the cards. */
-  function applyCardModes() {
-    (model?.notes ?? []).forEach((note, index) => {
+  function applyCardModes(indexes = null) {
+    const paint = (note, index) => {
       const card = cardEls[index];
       if (!card) return;
       card.classList.toggle('is-mode-compact', cardModeOf(note.anchor) === 'compact');
       card.classList.toggle('is-mode-thumbnail', cardModeOf(note.anchor) === 'thumbnail');
       card.classList.toggle('is-group-hidden', isGroupHidden(note.anchor));
-    });
+    };
+    if (indexes) {
+      for (const index of indexes) {
+        const note = model?.notes?.[index];
+        if (note) paint(note, index);
+      }
+      return;
+    }
+    (model?.notes ?? []).forEach(paint);
   }
 
   /** Collapse or expand one group to its summary card, as one step. */
@@ -1720,7 +2211,7 @@ export function createWorldbuildPanel({ app, root }) {
     step(() => {
       collapsedGroups = app.setWorldGroupCollapsed(currentPath, groupId, collapsed) ?? collapsedGroups;
       build();
-    }, `${collapsed ? 'Collapse' : 'Expand'} group “${groups[groupId].name || 'Group'}”`);
+    }, `${collapsed ? 'Collapsed' : 'Expanded'} ${groups[groupId].name || 'Group'}`);
   }
 
   // The structured row for a typed node — a stat's value, a skill's level, an
@@ -2362,6 +2853,107 @@ export function createWorldbuildPanel({ app, root }) {
     return host;
   }
 
+  /**
+   * The pointer gestures a card and its head share, whichever form the card was
+   * built in: rise above what it overlaps, Ctrl+click to pick it, drag it (and
+   * its selection), double-click to centre it. The icon form passes itself as
+   * its own head, so the same gestures survive the low-zoom handoff.
+   */
+  function wireCardGestures(card, head, { index, note }) {
+    // A card sharing space with another rises above it on a press, so the
+    // card being worked on is never left half buried. The lift is view state:
+    // it lasts this visit and never joins the vein's record or its history.
+    card.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      if (!overlapsAnotherCard(note.anchor)) return;
+      raiseCard(note.anchor);
+    }, true);
+
+    // Ctrl+click — Cmd+click on a Mac, where Ctrl+click is the secondary click
+    // — picks this card from anywhere on it, title and prose included. The
+    // press is taken in the capture phase so the field under the pointer never
+    // starts an edit: picking a card is not typing in it.
+    card.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !selectionClick(event)) return;
+      if (event.target.closest?.('.wb-resize, button, a, select')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      toggleSelected(model.notes[index]?.anchor ?? note.anchor);
+    }, true);
+
+    /** Start a card grab: a drag carries it (and the picked set it belongs to).
+     * Below 75% a plain grab also picks the card, because its content no longer
+     * takes clicks of its own. */
+    function grabCard(event) {
+      if (event.button !== 0) return;
+      if (event.target.closest?.('input, button, select, textarea')) return;
+      if (isOverviewZoom() && !selected.has(note.anchor)) setSelection(new Set([note.anchor]));
+      // A picked card can carry the whole selection with it; a solo card
+      // moves on its own, and dropping it inside or outside a group's box
+      // decides its membership. The tab is the handle that moves a nest.
+      // Locked cards never move: a selection drag carries only its free
+      // cards, and dragging a locked card itself is refused.
+      const pickingSelection = selected.has(note.anchor) && selected.size > 1;
+      const anchors = (pickingSelection ? [...selected] : [note.anchor])
+        .filter((anchor) => !isAnchorLocked(anchor) && !isAnchorFrozen(anchor));
+      if (!anchors.length) {
+        contentLockedToast(note.anchor);
+        event.preventDefault();
+        return;
+      }
+      dragMembers(anchors, event, card, { joinable: !pickingSelection, selection: pickingSelection });
+    }
+
+    head.addEventListener('pointerdown', grabCard);
+    if (head !== card) {
+      // Below 75% the card content is inert, so the body becomes a grab surface
+      // as well: drag it, or Ctrl+click to add it to the selection.
+      card.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 || !isOverviewZoom()) return;
+        if (event.target.closest?.('.wb-card-head, .wb-resize, .wb-fold-toggle')) return;
+        grabCard(event);
+      });
+    }
+    // Double-click the head to centre the card in the viewport.
+    head.addEventListener('dblclick', (event) => {
+      if (event.target.closest?.('input, button, select, textarea')) return;
+      centreOn(index);
+    });
+  }
+
+  /**
+   * A card as the icon handoff draws it: its anchored box, its type icon and its
+   * forge port, and nothing else. At overview scale this is the whole of a
+   * card, so the canvas holds a few nodes per visible card instead of sixty.
+   */
+  function buildIconCard(note, index) {
+    const pos = positionOf(index);
+    const accent = app.colorFor('section', { path: currentPath, anchor: note.anchor });
+    const type = nodeTypeOf(nodeTypes, note.anchor);
+    const card = el('article', {
+      class: `wb-card is-icon-form${selected.has(note.anchor) ? ' is-selected' : ''}${isGroupHidden(note.anchor) ? ' is-group-hidden' : ''}${isFolded(note.anchor) ? ' is-folded' : ''}${searchMatches.some((m) => m.anchor === note.anchor) ? ' is-search-hit' : ''}${searchMatches[searchCurrent]?.anchor === note.anchor ? ' is-search-current' : ''}${isolatedAnchors && !isolatedAnchors.has(note.anchor) ? ' is-dimmed' : ''}${isAnchorPinned(note.anchor) ? ' is-pinned' : ''}`,
+      style: `left:${pos.x}px; top:${pos.y}px; border-left-color:${accent};${sizeStyleOf(note.anchor)}`,
+      'data-note': String(index),
+      'data-anchor': note.anchor,
+      // The keyboard and the card menu still find it: both are handled by the
+      // stage, off the card's own anchor.
+      tabindex: '0',
+      'aria-haspopup': 'menu',
+      'aria-keyshortcuts': 'Shift+F10 Shift+R',
+      title: note.title,
+      'aria-label': note.title,
+    });
+    // The type icon in the node's own colour, when it has one, exactly as the
+    // semantic face showed it before the handoff.
+    const icon = el('span', { class: 'wb-icon', 'aria-hidden': 'true', text: type.icon ?? '' });
+    const tint = nodeColors[note.anchor] ?? type.color;
+    if (tint) icon.style.color = tint;
+    card.append(icon);
+    card.append(linkHandle(note.anchor, `“${note.title || 'this card'}”`));
+    wireCardGestures(card, card, { index, note });
+    return card;
+  }
+
   function buildCard(note, index) {
     const pos = positionOf(index);
     const accent = app.colorFor('section', { path: currentPath, anchor: note.anchor });
@@ -2393,7 +2985,7 @@ export function createWorldbuildPanel({ app, root }) {
       // without having to tab through the controls in its head first.
       tabindex: '0',
       'aria-haspopup': 'menu',
-      'aria-keyshortcuts': 'Shift+F10',
+      'aria-keyshortcuts': 'Shift+F10 Shift+R',
       title: mode === 'thumbnail' ? note.title : undefined,
     });
 
@@ -2656,9 +3248,10 @@ export function createWorldbuildPanel({ app, root }) {
         ])
       : null;
 
-    // Below 1:1 the real card is too small to read, so it wears this summary
-    // instead. The tile is decorative and takes no pointer events; the card
-    // below still receives the drag, context menu and selection gestures.
+    // Below the summary scale the real card is too small to read, so it wears
+    // this summary instead. The tile is decorative and takes no pointer events;
+    // the card below still receives the drag, context menu and selection
+    // gestures.
     const semantic = semanticTile({
       icon: type.icon,
       typeLabel: type.label,
@@ -2681,7 +3274,7 @@ export function createWorldbuildPanel({ app, root }) {
       el('span', { class: 'wb-semantic-dot', text: '·' }),
       semanticWords,
     );
-    /** Keep the summary honest while a title or prose is edited at 1:1. */
+    /** Keep the summary honest while a title or prose is edited at full size. */
     function refreshSemantic() {
       const live = model.notes[index];
       if (!live) return;
@@ -2791,7 +3384,7 @@ export function createWorldbuildPanel({ app, root }) {
         }
         // One drag is one undo step, and the snapshot is taken before the
         // first frame moves the corner.
-        beginStep('Resize note');
+        beginStep('Resized a card');
         const box = rectOf(index);
         resizing = {
           index,
@@ -2871,8 +3464,13 @@ export function createWorldbuildPanel({ app, root }) {
           cardModes = moved.cardModes ?? cardModes;
           cardSizes = moved.cardSizes ?? cardSizes;
           cardDims = moved.cardDims ?? cardDims;
+          stackOrder = moved.stack ?? stackOrder;
           nodeResources = moved.resources ?? nodeResources;
           groups = moved.groups ?? groups;
+          if (raisedCards.has(before)) {
+            raisedCards.set(after, raisedCards.get(before));
+            raisedCards.delete(before);
+          }
         }
         savePositions();
         renameHistorySnapshots(before, after);
@@ -2940,53 +3538,8 @@ export function createWorldbuildPanel({ app, root }) {
         void cleanupOrphanedAttachments().catch(() => {});
     });
 
-    // Ctrl+click — Cmd+click on a Mac, where Ctrl+click is the secondary click
-    // — picks this card from anywhere on it, title and prose included. The
-    // press is taken in the capture phase so the field under the pointer never
-    // starts an edit: picking a card is not typing in it.
-    card.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0 || !selectionClick(event)) return;
-      if (event.target.closest?.('.wb-resize, button, a, select')) return;
-      event.preventDefault();
-      event.stopPropagation();
-      toggleSelected(model.notes[index]?.anchor ?? note.anchor);
-    }, true);
+        wireCardGestures(card, head, { index, note });
 
-    /** Start a card grab: a drag carries it (and the picked set it belongs to).
-     * Below 1:1 a plain grab also picks the card, because its content no longer
-     * takes clicks of its own. */
-    function grabCard(event) {
-      if (event.button !== 0) return;
-      if (event.target.closest?.('input, button, select, textarea')) return;
-      if (isOverviewZoom() && !selected.has(note.anchor)) setSelection(new Set([note.anchor]));
-      // A picked card can carry the whole selection with it; a solo card
-      // moves on its own, and dropping it inside or outside a group's box
-      // decides its membership. The tab is the handle that moves a nest.
-      // Locked cards never move: a selection drag carries only its free
-      // cards, and dragging a locked card itself is refused.
-      const pickingSelection = selected.has(note.anchor) && selected.size > 1;
-      const anchors = (pickingSelection ? [...selected] : [note.anchor])
-        .filter((anchor) => !isAnchorLocked(anchor) && !isAnchorFrozen(anchor));
-      if (!anchors.length) {
-        contentLockedToast(note.anchor);
-        event.preventDefault();
-        return;
-      }
-      dragMembers(anchors, event, card, { joinable: !pickingSelection, selection: pickingSelection });
-    }
-    head.addEventListener('pointerdown', grabCard);
-    // Below 1:1 the card content is inert, so the body becomes a grab surface
-    // as well: drag it, or Ctrl+click to add it to the selection.
-    card.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0 || !isOverviewZoom()) return;
-      if (event.target.closest?.('.wb-card-head, .wb-resize, .wb-fold-toggle')) return;
-      grabCard(event);
-    });
-    // Double-click the head to centre the card in the viewport.
-    head.addEventListener('dblclick', (event) => {
-      if (event.target.closest?.('input, button, select, textarea')) return;
-      centreOn(index);
-    });
 
     /** The note's tags as chips, with a field for tagging the note. */
     function refreshTags() {
@@ -3220,6 +3773,9 @@ export function createWorldbuildPanel({ app, root }) {
 
     const width = Math.max(stage.clientWidth || 0, maxX + PAD);
     const height = maxY + PAD + 40;
+    // Mounting a card can resize the canvas; writing the same size back would
+    // wake its observer again for nothing, so only a real change is written.
+    if (canvas.offsetWidth === width && canvas.offsetHeight === height) return;
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
     edgeSvg.setAttribute('width', String(width));
@@ -3228,42 +3784,90 @@ export function createWorldbuildPanel({ app, root }) {
     applyView();
   }
 
+  /**
+   * Paint the camera on the next frame. A wheel fling or a drag of the
+   * background arrives as a stream of events; the view is updated on each one,
+   * and the canvas is repainted once per frame instead of once per event.
+   */
+  function scheduleView() {
+    if (viewFrame) return;
+    viewFrame = requestAnimationFrame(() => {
+      viewFrame = 0;
+      applyView();
+    });
+  }
+
   /** Put the current view on the canvas, clamped to the viewport with a
    * slight overpan past the canvas edges so wires there stay reachable. */
   function applyView() {
     view = clampView(view, canvas.clientWidth, canvas.clientHeight, stage.clientWidth, stage.clientHeight);
-    const overview = isOverviewZoom();
-    const annotationDrag = isAnnotationDragZoom();
-    if (
-      overview !== stage.classList.contains('is-zoomed-out')
-      || annotationDrag !== stage.classList.contains('is-annotation-drag')
-      || isForgeZoom(view.s) !== stage.classList.contains('is-forge-zoom')
-    ) syncZoomInteraction();
-    const semantic = isSemanticZoom();
-    const icon = isIconZoom(view.s);
-    stage.classList.toggle('is-semantic-zoom', semantic);
-    stage.classList.toggle('is-icon-zoom', icon);
+    const mode = zoomMode(view.s);
+    maybeShowZoomTip(mode);
+    const wasOverview = stage.classList.contains('is-zoomed-out');
+    const wasAnnotationDrag = stage.classList.contains('is-annotation-drag');
+    // Only a change of interaction floor needs the tabindex and blur sweep;
+    // the classes themselves are cheap and are reapplied every frame.
+    if (mode.overview !== wasOverview || mode.annotationDrag !== wasAnnotationDrag) {
+      syncZoomInteraction(mode, { wasOverview, wasAnnotationDrag });
+    } else {
+      applyZoomClasses(stage.classList, mode);
+    }
+    // Crossing into or out of the icon handoff changes how the wires are drawn
+    // (one batched path below it, a path and its labels above it), so the
+    // edges are laid out again at the new level — once per crossing, not per
+    // frame.
+    if (mode.icon !== wasIcon) {
+      wasIcon = mode.icon;
+      scheduleEdges();
+    }
     // The semantic face is laid out in screen pixels: the canvas scale shrinks
     // its box, while its own inverse scale keeps its type and counts legible.
     // Below 25% that fixed size is too large to see a whole graph, so both the
     // face and its type shrink together until the icon handoff at 12.5%.
-    const compact = view.s >= COMPACT_ZOOM
-      ? 1
-      : Math.max(0.5, view.s / COMPACT_ZOOM);
-    const iconSize = 18 * Math.max(0.22, Math.min(1, view.s / ICON_ZOOM));
     canvas.style.setProperty('--wb-zoom', String(view.s));
     canvas.style.setProperty('--wb-inv-zoom', String(1 / view.s));
-    canvas.style.setProperty('--wb-semantic-shrink', String(compact));
-    canvas.style.setProperty('--wb-icon-font', `${iconSize}px`);
+    canvas.style.setProperty('--wb-semantic-shrink', String(mode.semanticShrink));
+    canvas.style.setProperty('--wb-icon-font', `${mode.iconFont}px`);
     canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.s})`;
+    // Cards follow the camera on the next frame too: a zoom that crosses the
+    // icon handoff rebuilds one screen of cards, and a pan mounts the screen it
+    // is arriving at, both once per frame. Only a changed view schedules that
+    // work — a repaint over the same camera must not start another frame, or a
+    // card that resizes the canvas on mount would keep the loop awake.
+    const applied = `${view.x},${view.y},${view.s}`;
+    if (applied !== lastAppliedView && !syncingCards) {
+      lastAppliedView = applied;
+      scheduleCardWindow();
+    }
+    positionLensChips();
+    syncNavigatorViewport();
+  }
+
+  // One answer per visit: 'unasked' until the canvas first goes below 65%,
+  // then 'asked' whether the note opened or the settings said it was seen.
+  let zoomTipState = 'unasked';
+
+  /** The first pass below 65% opens the object-map note, once ever. */
+  function maybeShowZoomTip(mode) {
+    if (zoomTipState !== 'unasked' || !mode?.forge || !model) return;
+    zoomTipState = 'asked';
+    if (app.lowZoomTipSeen()) return;
+    zoomTip.classList.remove('hidden');
+    announce('Object map: drag a card’s corner ring to bond it to another card or group; a click picks instead. This note opens once.');
+  }
+
+  /** Retire the note for good; the same story stays in Help. */
+  function dismissZoomTip() {
+    zoomTip.classList.add('hidden');
+    app.markLowZoomTipSeen();
+    announce('Object map note dismissed');
   }
 
   /** Show the current scale for a moment; a continuous wheel keeps it up. */
   function showZoomHud() {
-    if (!Number.isFinite(view.s) || view.s <= 0) return;
-    const percent = view.s * 100;
-    const digits = percent >= 10 ? 1 : percent >= 1 ? 2 : 4;
-    zoomHudValue.textContent = `${Number(percent.toFixed(digits))}%`;
+    const mode = zoomMode(view.s);
+    if (!mode.scale) return;
+    zoomHudValue.textContent = mode.label;
     zoomHud.classList.add('is-visible');
     clearTimeout(zoomHudTimer);
     zoomHudTimer = setTimeout(() => zoomHud.classList.remove('is-visible'), 1100);
@@ -3271,19 +3875,17 @@ export function createWorldbuildPanel({ app, root }) {
 
   /**
    * Keep card and annotation interaction in step with the camera. Cards give
-   * up their detail controls below 1:1. Annotations keep their text editable
-   * down to 62%, then become one drag surface with every inner control out of
-   * reach. The CSS handles pointer shielding; this also keeps disabled
-   * controls out of the Tab order.
+   * up their detail controls below 75%, though the link port still forges
+   * bonds there — below 65% it is redrawn as a screen-sized corner ring.
+   * Annotations keep their text editable down to 62%, then become one drag
+   * surface with every inner control out of reach. The CSS handles pointer
+   * shielding; this also keeps disabled controls out of the Tab order.
    */
-  function syncZoomInteraction() {
-    const wasOverview = stage.classList.contains('is-zoomed-out');
-    const wasAnnotationDrag = stage.classList.contains('is-annotation-drag');
-    const overview = isOverviewZoom();
-    const annotationDrag = isAnnotationDragZoom();
-    stage.classList.toggle('is-zoomed-out', overview);
-    syncForgeZoomClass(stage.classList, view.s);
-    stage.classList.toggle('is-annotation-drag', annotationDrag);
+  function syncZoomInteraction(mode = zoomMode(view.s), was = {}) {
+    const wasOverview = was.wasOverview ?? stage.classList.contains('is-zoomed-out');
+    const wasAnnotationDrag = was.wasAnnotationDrag ?? stage.classList.contains('is-annotation-drag');
+    const { overview, annotationDrag } = mode;
+    applyZoomClasses(stage.classList, mode);
     if (overview && !wasOverview) {
       const active = document.activeElement;
       if (
@@ -3443,6 +4045,134 @@ export function createWorldbuildPanel({ app, root }) {
     showZoomHud();
   }
 
+  /**
+   * The group a selection stands for: its exact members when the selection is
+   * that whole group, otherwise the group holding the first selected card.
+   * The same reading the lens uses, so the two never disagree.
+   */
+  function navigatorGroup() {
+    if (!selected.size) return null;
+    const chosen = [...selected];
+    let holder = null;
+    for (const group of Object.values(groups ?? {})) {
+      const members = effectiveMembers(group);
+      if (members.size === chosen.length && chosen.every((anchor) => members.has(anchor))) return group;
+      if (!holder && chosen.some((anchor) => members.has(anchor))) holder = group;
+    }
+    return holder;
+  }
+
+  /**
+   * Frame the group the selection belongs to: the group's frame and padding,
+   * not its cards one by one, so a group whose cards are spread out still
+   * reads as one object at any zoom.
+   */
+  function zoomToFitGroup() {
+    const group = navigatorGroup();
+    if (!group) {
+      app.toast('Select cards in a group to fit it', 'info', 2000);
+      return;
+    }
+    const rect = groupDisplayRect(group) ?? groupBox(group);
+    if (!rect) {
+      app.toast(`“${group.name || 'Group'}” is inside a collapsed group — expand it first`, 'info', 2400);
+      return;
+    }
+    const fitted = fitView(
+      { minX: rect.x, minY: rect.y, maxX: rect.x + rect.width, maxY: rect.y + rect.height },
+      stage.clientWidth, stage.clientHeight, 60,
+    );
+    if (!fitted) return;
+    view = fitted;
+    persistView();
+    applyView();
+    showZoomHud();
+  }
+
+  /**
+   * The navigator's map: every card and group at one scale, selected cards
+   * ringed, and the viewport rectangle on top. It is rebuilt with the canvas,
+   * because that is when a card's place can change; a pan or a zoom only moves
+   * the rectangle (see syncNavigatorViewport).
+   */
+  function drawNavigatorMap() {
+    navCards.clear();
+    navMap.replaceChildren();
+    navGeometry = null;
+    if (!model || !(model.notes ?? []).length) {
+      syncNavigatorViewport();
+      return;
+    }
+    const map = navigatorMap(contentBounds(), NAV_W, NAV_H, 8);
+    if (!map) {
+      syncNavigatorViewport();
+      return;
+    }
+    navGeometry = map;
+    const shapes = svgNode('g');
+    for (const group of Object.values(groups ?? {})) {
+      const rect = groupDisplayRect(group);
+      const box = rect ? navigatorProject(map, rect) : null;
+      if (!box) continue;
+      shapes.append(svgNode('rect', {
+        class: 'wb-nav-group',
+        x: box.x, y: box.y, width: box.width, height: box.height, rx: 2,
+      }));
+    }
+    (model.notes ?? []).forEach((note, index) => {
+      if (isGroupHidden(note.anchor)) return;
+      const box = navigatorProject(map, rectOf(index));
+      const rect = svgNode('rect', {
+        class: `wb-nav-card${selected.has(note.anchor) ? ' is-selected' : ''}`,
+        x: box.x,
+        y: box.y,
+        width: Math.max(1.5, box.width),
+        height: Math.max(1.5, box.height),
+        rx: 1.5,
+        fill: inspectorColor(note.anchor),
+      });
+      navCards.set(note.anchor, rect);
+      shapes.append(rect);
+    });
+    navMap.append(shapes, navViewport);
+    syncNavigatorViewport();
+  }
+
+  /** The viewport rectangle on the map, and the drawing mode beside it. */
+  function syncNavigatorViewport() {
+    const mode = zoomMode(view.s);
+    navMode.textContent = `${navigatorModeLabel(mode)} · ${mode.label}`;
+    if (!navGeometry) {
+      navViewport.setAttribute('width', '0');
+      navViewport.setAttribute('height', '0');
+      return;
+    }
+    const box = navigatorViewport(
+      navGeometry, view, stage.clientWidth || 1, stage.clientHeight || 1, NAV_W, NAV_H,
+    );
+    if (!box) return;
+    navViewport.setAttribute('x', String(box.x));
+    navViewport.setAttribute('y', String(box.y));
+    // A viewport that holds the whole canvas still gets a frame to read.
+    navViewport.setAttribute('width', String(Math.max(2, box.width)));
+    navViewport.setAttribute('height', String(Math.max(2, box.height)));
+  }
+
+  /** Ring the selected cards on the map without re-measuring it. */
+  function syncNavigatorSelection() {
+    for (const [anchor, rect] of navCards) rect.classList.toggle('is-selected', selected.has(anchor));
+  }
+
+  /** Offer only the framings that can do something. */
+  function syncNavigatorActions() {
+    navFitSelection.disabled = !selected.size;
+    const group = navigatorGroup();
+    navFitGroup.disabled = !group;
+    navFitGroup.title = group
+      ? `Frame the group “${group.name || 'Group'}”`
+      : 'Select cards in a group to fit it';
+  }
+
   /** Centre one card in the viewport at the current zoom. */
   function centreOn(index) {
     const centred = centreView(rectOf(index), stage.clientWidth, stage.clientHeight, view.s);
@@ -3535,10 +4265,17 @@ export function createWorldbuildPanel({ app, root }) {
     const notes = model?.notes ?? [];
     // Pinned notes and locked groups keep their cards where they are: capture
     // those places before the grid is rebuilt, keep them as obstacles while
-    // other units flow into free cells, and put them back afterwards.
+    // other units flow into free cells, and put them back afterwards. A
+    // pinned group is a place too: arranging the whole vein leaves its frame
+    // and its cards alone, exactly as it leaves a pinned card alone.
+    const pinnedGroupAnchors = new Set();
+    for (const group of Object.values(groups ?? {})) {
+      if (!group.pinned) continue;
+      for (const anchor of effectiveMembers(group)) pinnedGroupAnchors.add(anchor);
+    }
     const fixedBefore = new Map();
     notes.forEach((note, index) => {
-      if (isAnchorPinned(note.anchor) || isAnchorLocked(note.anchor)) {
+      if (isAnchorPinned(note.anchor) || pinnedGroupAnchors.has(note.anchor) || isAnchorLocked(note.anchor)) {
         fixedBefore.set(note.anchor, positionOf(index));
       }
     });
@@ -3581,7 +4318,9 @@ export function createWorldbuildPanel({ app, root }) {
       return {
         members,
         firstPos: first,
-        fixed: unit.every((i) => fixedAnchors.has(notes[i].anchor)),
+        // A unit holding a pinned or locked card stays put whole: moving a
+        // group around one of its fixed cards would stretch its frame.
+        fixed: unit.some((i) => fixedAnchors.has(notes[i].anchor)),
         width: Math.max(...members.map((m) => m.dx)) + CARD_W,
         height: Math.max(...members.map((m) => m.dy + m.height)),
       };
@@ -3790,22 +4529,20 @@ export function createWorldbuildPanel({ app, root }) {
     let current = initial;
     for (let pass = 0; pass < 6 && current > 0; pass += 1) {
       let best = null;
-      for (let a = 0; a < shapes.length; a += 1) {
-        for (let b = a + 1; b < shapes.length; b += 1) {
-          const affected = edges.filter((edge) => [edge.fromUnit, edge.toUnit].includes(a) || [edge.fromUnit, edge.toUnit].includes(b));
-          if (!affected.length) continue;
-          const [originA, originB] = [origins[a], origins[b]];
-          const swapped = (index) => {
-            const fixed = fixedBefore.get(notes[index]?.anchor);
-            if (fixed) return fixed;
-            const unit = unitOf.get(index);
-            if (unit === a) return { ...positionsByIndex[index], x: positionsByIndex[index].x + originB.x - originA.x, y: positionsByIndex[index].y + originB.y - originA.y };
-            if (unit === b) return { ...positionsByIndex[index], x: positionsByIndex[index].x + originA.x - originB.x, y: positionsByIndex[index].y + originA.y - originB.y };
-            return positionsByIndex[index];
-          };
-          const delta = score(affected, swapped) - score(affected, (index) => positionsByIndex[index]);
-          if (delta < 0 && (!best || delta < best.delta)) best = { a, b, delta };
-        }
+      for (const [a, b] of arrangeSwapPairs(shapes)) {
+        const affected = edges.filter((edge) => [edge.fromUnit, edge.toUnit].includes(a) || [edge.fromUnit, edge.toUnit].includes(b));
+        if (!affected.length) continue;
+        const [originA, originB] = [origins[a], origins[b]];
+        const swapped = (index) => {
+          const fixed = fixedBefore.get(notes[index]?.anchor);
+          if (fixed) return fixed;
+          const unit = unitOf.get(index);
+          if (unit === a) return { ...positionsByIndex[index], x: positionsByIndex[index].x + originB.x - originA.x, y: positionsByIndex[index].y + originB.y - originA.y };
+          if (unit === b) return { ...positionsByIndex[index], x: positionsByIndex[index].x + originA.x - originB.x, y: positionsByIndex[index].y + originA.y - originB.y };
+          return positionsByIndex[index];
+        };
+        const delta = score(affected, swapped) - score(affected, (index) => positionsByIndex[index]);
+        if (delta < 0 && (!best || delta < best.delta)) best = { a, b, delta };
       }
       if (!best) break;
       // Keep the swap: exchange the units' grid origins.
@@ -3874,7 +4611,11 @@ export function createWorldbuildPanel({ app, root }) {
       }
     }
     el?.classList.add('is-dragging');
-    dragging.members.forEach((member) => member.el.classList.add('is-dragging'));
+    dragging.members.forEach((member) => {
+      member.el.classList.add('is-dragging');
+      // The cards being carried paint above the ones they pass over.
+      raiseCard(member.anchor);
+    });
     paintDragOverlapUi(anchors);
     event.preventDefault();
   }
@@ -4238,17 +4979,12 @@ export function createWorldbuildPanel({ app, root }) {
     );
   }
 
-  /** The pinned group holding a note in place, if one does. */
-  function pinnedGroupOf(anchor) {
-    return Object.values(groups ?? {}).find(
-      (group) => group.pinned && effectiveMembers(group).has(anchor),
-    ) ?? null;
-  }
-
-  /** A note is pinned when it is pinned itself or sits in a pinned group. */
+  /**
+   * A note is pinned when its own pin says so. A pinned group pins its frame,
+   * not its cards.
+   */
   function isAnchorPinned(anchor) {
-    if (pinned[anchor]) return true;
-    return Boolean(pinnedGroupOf(anchor));
+    return Boolean(pinned[anchor]);
   }
 
   /** Every note a group contains: its own cards plus all descendants'. */
@@ -4280,13 +5016,107 @@ export function createWorldbuildPanel({ app, root }) {
     return depths;
   }
 
-  /** Put the selection on screen: card outlines, the Fit button, the inspector. */
+  /** Put the selection on screen: card outlines, the lens, the Fit button, the inspector. */
   function syncSelectionUi() {
     (model?.notes ?? []).forEach((note, index) => {
       cardEls[index]?.classList.toggle('is-selected', selected.has(note.anchor));
     });
     moreMenuEl?.querySelector('[data-fit-selection]')?.toggleAttribute('disabled', !selected.size);
+    syncSelectionBar();
+    syncLens();
     renderInspector();
+    syncNavigatorSelection();
+    syncNavigatorActions();
+  }
+
+  /* ------------------------------------------------------------- lens -- */
+
+  /** Each group's effective members, the shape the lens reads a group by. */
+  function groupMemberLists() {
+    const out = {};
+    for (const group of Object.values(groups ?? {})) out[group.id] = [...effectiveMembers(group)];
+    return out;
+  }
+
+  /**
+   * Recompute the relationship lens around the selection: the selected cards,
+   * the group an exact selection of its cards stands for, the wires that touch
+   * them, and the cards one hop away. Only the reading is new — every
+   * relationship it uses is already in the canvas record.
+   */
+  function syncLens({ redraw = true } = {}) {
+    lensState = lensFocus(
+      model ? connectorList(model, groups, relations, bondNotes) : [],
+      [...selected],
+      groupMemberLists(),
+    );
+    syncCardDimming();
+    for (const node of annotationsLayer.children) {
+      node.classList.toggle('is-dimmed', lensState.active);
+    }
+    if (redraw) scheduleEdges();
+  }
+
+  /**
+   * One owner for card dimming: a search isolation and the lens both hide
+   * cards, and whichever changed last must not clear the other. Everything
+   * the focus touches stays bright, including the group frames around it.
+   */
+  function syncCardDimming() {
+    const bright = lensState?.active
+      ? new Set([...lensState.focus, ...lensState.neighbours])
+      : null;
+    (model?.notes ?? []).forEach((note, index) => {
+      const outOfSearch = Boolean(isolatedAnchors) && !isolatedAnchors.has(note.anchor);
+      const outOfLens = Boolean(bright) && !bright.has(note.anchor);
+      cardEls[index]?.classList.toggle('is-dimmed', outOfSearch || outOfLens);
+    });
+    stage.classList.toggle('is-lens', Boolean(lensState?.active));
+  }
+
+  /** Whether a group stays bright: it is the focus or a neighbour, or a card
+   * the lens keeps bright sits inside it. */
+  function lensKeepsGroup(id) {
+    if (!lensState?.active) return true;
+    if (lensState.groups.has(id) || lensState.neighbourGroups.has(id)) return true;
+    const group = groups?.[id];
+    return group
+      ? [...effectiveMembers(group)].some(
+        (anchor) => lensState.focus.has(anchor) || lensState.neighbours.has(anchor),
+      )
+      : true;
+  }
+
+  /** Rebuild the screen-sized kind words the lens puts on its focused wires. */
+  function renderLensChips(chips) {
+    lensChips = chips.map((chip) => ({ ...chip, el: null }));
+    clear(lensLayer);
+    for (const chip of lensChips) {
+      chip.el = el('span', {
+        class: `wb-lens-label wb-rel-${chip.relation}`,
+        text: chip.label,
+        title: chip.note ? `${chip.label} — “${chip.note}”` : chip.label,
+      });
+      lensLayer.append(chip.el);
+    }
+    positionLensChips();
+  }
+
+  /**
+   * Put the kind words on their wire points. Down to the summary handoff the
+   * SVG's own word is still drawn, so a second one would double it; below that
+   * the word on the wire is under six pixels tall and the chips carry it.
+   */
+  function positionLensChips() {
+    const show = Boolean(lensState?.active) && lensChips.length > 0 && zoomMode(view.s).semantic;
+    lensLayer.classList.toggle('hidden', !show);
+    if (!show) return;
+    lensChips.forEach((chip, index) => {
+      if (!chip.el) return;
+      chip.el.style.left = `${view.x + chip.x * view.s}px`;
+      chip.el.style.top = `${view.y + chip.y * view.s}px`;
+      chip.el.style.setProperty('--wb-lens-shift', `${((index % 3) - 1) * 13}px`);
+    });
   }
 
   /* ---------------------------------------------------------- inspector -- */
@@ -4313,68 +5143,103 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
-   * The links and bonds around one card, split by direction. Prose links stay
-   * prose links; a stated relationship strengthens the label rather than
-   * replacing what the note itself says.
+   * One direction of the lens as inspector rows: each neighbour's title,
+   * colour and the kind of wire that reaches it. Prose links, canvas bonds,
+   * group bonds and the outline spine all arrive through the same lens, so a
+   * lone card and a whole group are read the same way.
    */
-  function inspectorConnections(note) {
-    const notes = model?.notes ?? [];
-    const byAnchor = new Map(notes.map((entry, index) => [entry.anchor, index]));
-    const out = new Map();
-    const incoming = new Map();
-    const add = (map, other, kind) => {
-      if (!other || other.anchor === note.anchor) return;
-      if (!map.has(other.anchor)) {
-        map.set(other.anchor, {
-          anchor: other.anchor,
-          title: other.title || 'Untitled',
-          color: inspectorColor(other.anchor),
-          kinds: [],
-        });
+  function lensRowEntries(direction) {
+    if (!lensState?.active || !model) return [];
+    const byAnchor = new Map((model.notes ?? []).map((note) => [note.anchor, note]));
+    // One row per neighbour, however many wires reach it: a card the prose
+    // links and a bond also names is still one place to walk to.
+    const merged = new Map();
+    for (const row of lensState.rows) {
+      if (row.direction !== direction) continue;
+      let entry = merged.get(row.endpoint);
+      if (!entry) {
+        if (row.endpoint.startsWith('group:')) {
+          const group = groups[row.endpoint.slice('group:'.length)];
+          if (!group) continue;
+          entry = {
+            endpoint: row.endpoint,
+            title: group.name || 'Group',
+            color: group.color || GROUP_DEFAULT_COLOR,
+            icon: group.icon || GROUP_GENERIC_ICON,
+            kinds: [],
+            notes: [],
+          };
+        } else {
+          const note = byAnchor.get(row.endpoint);
+          if (!note) continue;
+          entry = {
+            endpoint: row.endpoint,
+            title: note.title || 'Untitled',
+            color: inspectorColor(note.anchor),
+            icon: '',
+            kinds: [],
+            notes: [],
+          };
+        }
+        merged.set(row.endpoint, entry);
       }
-      const row = map.get(other.anchor);
-      if (kind && !row.kinds.includes(kind)) row.kinds.push(kind);
-    };
-    for (const edge of noteEdges(model, relations)) {
-      const from = notes[edge.from];
-      const to = notes[edge.to];
-      if (!from || !to) continue;
-      const relation = relationKind(edge.relation);
-      const extra = relation && relation.id !== DEFAULT_RELATION ? ` · ${relation.label.toLowerCase()}` : '';
-      const kind = `${edge.kind === 'section' ? 'section link' : 'mention'}${extra}`;
-      if (from.anchor === note.anchor) add(out, to, kind);
-      else if (to.anchor === note.anchor) add(incoming, from, kind);
+      if (!entry.kinds.includes(row.label)) entry.kinds.push(row.label);
+      // The note the bond carries, once per pair however many wires say it.
+      if (row.note && !entry.notes.includes(row.note)) entry.notes.push(row.note);
     }
-    for (const edge of bondEdges(model, relations)) {
-      const from = notes[byAnchor.get(edge.from)];
-      const to = notes[byAnchor.get(edge.to)];
-      if (!from || !to) continue;
-      const kind = (relationKind(edge.relation)?.label ?? 'bond').toLowerCase();
-      if (from.anchor === note.anchor) add(out, to, kind);
-      else if (to.anchor === note.anchor) add(incoming, from, kind);
-    }
-    const rows = (map) => [...map.values()]
-      .map((row) => ({ ...row, label: row.kinds.join(' · ') }))
+    return [...merged.values()]
+      .map((entry) => ({ ...entry, label: entry.kinds.join(' · ') }))
       .sort((a, b) => a.title.localeCompare(b.title));
-    return { outgoing: rows(out), incoming: rows(incoming) };
+  }
+
+  /** Jump along a row: the neighbour becomes the focus and is centred. */
+  function jumpAlong(entry) {
+    if (!entry?.endpoint) return;
+    if (entry.endpoint.startsWith('group:')) {
+      const group = groups[entry.endpoint.slice('group:'.length)];
+      if (!group) return;
+      setSelection([...effectiveMembers(group)]);
+      focusEndpoint(entry.endpoint);
+      return;
+    }
+    if (!(model?.notes ?? []).some((note) => note.anchor === entry.endpoint)) return;
+    setSelection([entry.endpoint]);
+    focusEndpoint(entry.endpoint);
   }
 
   function inspectorLink(entry) {
+    const notes = entry.notes ?? [];
     return el('button', {
       class: 'wb-inspector-link',
       type: 'button',
-      title: `Select “${entry.title}” and centre it`,
-      onclick: () => {
-        const index = (model?.notes ?? []).findIndex((note) => note.anchor === entry.anchor);
-        if (index < 0) return;
-        setSelection([entry.anchor]);
-        centreOn(index);
-      },
+      title: `Jump to “${entry.title}” — ${entry.label}${notes.length ? `\n“${notes.join('” “')}”` : ''}`,
+      onclick: () => jumpAlong(entry),
     }, [
       el('span', { class: 'wb-inspector-link-dot', style: `background:${entry.color || 'var(--text-faint)'}` }),
+      entry.icon ? el('span', { class: 'wb-inspector-link-icon', text: entry.icon }) : null,
       el('span', { class: 'wb-inspector-link-name', text: entry.title }),
       el('span', { class: 'wb-inspector-link-kind', text: entry.label }),
+      ...notes.map((note) => el('span', { class: 'wb-inspector-link-note', text: `“${note}”` })),
     ]);
+  }
+
+  /** The lens list, split the way the wires run: out of the focus, into it. */
+  function connectionsSection(outgoing = lensRowEntries('out'), incoming = lensRowEntries('in')) {
+    const total = outgoing.length + incoming.length;
+    const body = el('div', { class: 'wb-inspector-connections' });
+    if (!total) {
+      body.append(inspectorEmpty('No prose links, canvas bonds or outline step in this vein.'));
+    } else {
+      for (const [label, rows] of [['Outgoing', outgoing], ['Incoming', incoming]]) {
+        if (!rows.length) continue;
+        body.append(el('div', { class: 'wb-inspector-subhead' }, [
+          el('span', { text: label }),
+          el('span', { text: String(rows.length) }),
+        ]));
+        rows.forEach((entry) => body.append(inspectorLink(entry)));
+      }
+    }
+    return inspectorSection('Connections', body, total);
   }
 
   function inspectorSection(title, content, count = null) {
@@ -4413,9 +5278,18 @@ export function createWorldbuildPanel({ app, root }) {
         const label = nodeTypeOf(nodeTypes, note.anchor).label;
         kinds.set(label, (kinds.get(label) ?? 0) + 1);
       }
+      // A group is selected by selecting every card it holds; naming it here
+      // is what turns the same list into the lens on that group's bonds.
+      const focusedGroup = lensState?.groups?.size === 1
+        ? groups[[...lensState.groups][0]]
+        : null;
       const summary = el('div', { class: 'wb-inspector-summary' }, [
-        el('strong', { text: `${picked.length} cards selected` }),
-        el('span', { text: [...kinds].map(([label, count]) => `${count} ${label.toLowerCase()}${count === 1 ? '' : 's'}`).join(' · ') }),
+        el('strong', {
+          text: focusedGroup
+            ? `Group “${focusedGroup.name || 'Group'}”`
+            : `${picked.length} cards selected`,
+        }),
+        el('span', { text: `${picked.length} card${picked.length === 1 ? '' : 's'} · ${[...kinds].map(([label, count]) => `${count} ${label.toLowerCase()}${count === 1 ? '' : 's'}`).join(' · ')}` }),
       ]);
       const list = el('div', { class: 'wb-inspector-list' });
       for (const note of picked) {
@@ -4440,7 +5314,12 @@ export function createWorldbuildPanel({ app, root }) {
         el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Fit selection', title: 'Zoom to fit every selected card', onclick: zoomToFitSelection }),
         el('button', { class: 'btn btn-ghost btn-mini', type: 'button', text: 'Clear selection', title: 'Clear the selection and close the inspector', onclick: closeInspector }),
       ]);
-      inspectorBody.append(summary, inspectorSection('Selected cards', list, picked.length), actions);
+      inspectorBody.append(
+        summary,
+        inspectorSection('Selected cards', list, picked.length),
+        connectionsSection(),
+        actions,
+      );
       inspector.classList.remove('hidden');
       return;
     }
@@ -4450,7 +5329,8 @@ export function createWorldbuildPanel({ app, root }) {
     const type = nodeTypeOf(nodeTypes, note.anchor);
     const typeColor = nodeColors[note.anchor] ?? type.color ?? 'var(--text-dim)';
     const group = groupOf(note.anchor);
-    const links = inspectorConnections(note);
+    const outgoing = lensRowEntries('out');
+    const incoming = lensRowEntries('in');
     const mode = cardModeOf(note.anchor);
     const modeLabel = mode === 'full' ? null : (mode === 'compact' ? 'Compact card' : 'Thumbnail card');
     inspector.setAttribute('aria-label', `Inspector for ${note.title || 'Untitled'}`);
@@ -4475,7 +5355,7 @@ export function createWorldbuildPanel({ app, root }) {
     const words = countWords(note.title) + countWords(note.body);
     const meta = el('div', { class: 'wb-inspector-meta' }, [
       el('span', { text: `${words} words` }),
-      el('span', { text: `${links.outgoing.length} out · ${links.incoming.length} in` }),
+      el('span', { text: `${outgoing.length} out · ${incoming.length} in` }),
     ]);
     const actions = el('div', { class: 'wb-inspector-actions' }, [
       resolveOverlapsButton(),
@@ -4518,21 +5398,7 @@ export function createWorldbuildPanel({ app, root }) {
       ])));
     }
 
-    const connectionBody = el('div', { class: 'wb-inspector-connections' });
-    const totalLinks = links.outgoing.length + links.incoming.length;
-    if (!totalLinks) {
-      connectionBody.append(inspectorEmpty('No prose links or canvas bonds in this vein.'));
-    } else {
-      for (const [label, rows] of [['Outgoing', links.outgoing], ['Incoming', links.incoming]]) {
-        if (!rows.length) continue;
-        connectionBody.append(el('div', { class: 'wb-inspector-subhead' }, [
-          el('span', { text: label }),
-          el('span', { text: String(rows.length) }),
-        ]));
-        rows.forEach((entry) => connectionBody.append(inspectorLink(entry)));
-      }
-    }
-    pieces.push(inspectorSection('Connections', connectionBody, totalLinks));
+    pieces.push(connectionsSection(outgoing, incoming));
 
     inspectorBody.append(...pieces);
     inspector.classList.remove('hidden');
@@ -4560,7 +5426,9 @@ export function createWorldbuildPanel({ app, root }) {
       syncSearchUi();
       return;
     }
-    searchMatches = canvasSearch(model, { types: nodeTypes, fields: fieldValues, colors: nodeColors, groups }, query);
+    searchMatches = canvasSearch(model, {
+      types: nodeTypes, fields: fieldValues, colors: nodeColors, groups, bondNotes,
+    }, query);
     searchCurrent = searchMatches.length ? 0 : -1;
     renderSearchResults();
     syncSearchUi();
@@ -4595,8 +5463,8 @@ export function createWorldbuildPanel({ app, root }) {
       if (!card) return;
       card.classList.toggle('is-search-hit', hits.has(note.anchor));
       card.classList.toggle('is-search-current', note.anchor === currentAnchor);
-      card.classList.toggle('is-dimmed', Boolean(isolatedAnchors) && !isolatedAnchors.has(note.anchor));
     });
+    syncCardDimming();
     stage.classList.toggle('is-isolating', Boolean(isolatedAnchors));
   }
 
@@ -4655,11 +5523,69 @@ export function createWorldbuildPanel({ app, root }) {
     setSelection(next);
   }
 
+  /** What a screen reader hears when the selection changes. */
+  function announceSelection() {
+    if (selectionQuiet) return;
+    const anchors = [...selected];
+    if (!anchors.length) {
+      announce('Selection cleared');
+      return;
+    }
+    if (anchors.length === 1) {
+      announce(`Selected “${endpointTitle(anchors[0])}”`);
+      return;
+    }
+    const boxes = coveredGroups(groups, anchors).length;
+    announce(`${anchors.length} cards selected${boxes ? `, ${boxes} group${boxes === 1 ? '' : 's'}` : ''}`);
+  }
+
+  /**
+   * The selection bar's reading of the set: how many cards, how many boxes it
+   * covers whole and how many cards are locked out of the moving actions.
+   */
+  function syncSelectionBar() {
+    const count = selected.size;
+    selectionBar.classList.toggle('hidden', count < 2);
+    if (count < 2) {
+      selectionCount.textContent = '';
+      return;
+    }
+    const anchors = [...selected];
+    const boxes = coveredGroups(groups, anchors).length;
+    const locked = anchors.filter((anchor) => isAnchorLocked(anchor)).length;
+    const unlocked = count - locked;
+    const unpinned = anchors.filter((anchor) => !pinned[anchor]).length;
+    selectionCount.textContent = `${count} cards${boxes ? ` · ${boxes} group${boxes === 1 ? '' : 's'}` : ''}${locked ? ` · ${locked} locked` : ''}`;
+    selectionGroupBtn.textContent = `Group ${count}`;
+    selectionGroupBtn.title = locked
+      ? `${locked} selected card${locked === 1 ? ' is' : 's are'} locked — group its unlocked cards instead`
+      : `Stack the ${count} selected cards into a new group`;
+    // Pinning is all-or-nothing: a set with any free card pins the rest, a
+    // set already pinned in full unpins.
+    selectionPinBtn.textContent = unpinned ? `Pin ${unpinned}` : `Unpin ${count}`;
+    selectionPinBtn.title = unpinned
+      ? `Pin ${unpinned} card${unpinned === 1 ? '' : 's'} where ${unpinned === 1 ? 'it stands' : 'they stand'} — Arrange works around ${unpinned === 1 ? 'it' : 'them'}`
+      : 'Unpin every selected card so Arrange may move it again';
+    selectionArrangeBtn.textContent = `Arrange ${count} ▾`;
+    selectionArrangeBtn.disabled = unlocked < 2;
+    selectionArrangeBtn.title = unlocked < 2
+      ? 'Arrange needs two unlocked cards in the selection'
+      : `Arrange just the ${unlocked} unlocked card${unlocked === 1 ? '' : 's'} in this selection`;
+    selectionRelateBtn.textContent = `Relate ${count}…`;
+    selectionRelateBtn.title = `Relate every one of the ${count} selected cards to one target, with one kind`;
+    selectionDeleteBtn.textContent = `Delete ${count}`;
+    selectionDeleteBtn.disabled = locked === count;
+    selectionDeleteBtn.title = locked === count
+      ? 'Every selected card is locked — unlock it before deleting'
+      : `Delete the ${count - locked} selected note${count - locked === 1 ? '' : 's'}${locked ? ` (${locked} locked left alone)` : ''}`;
+  }
+
   /** Replace the selection with the given anchors that still exist. */
   function setSelection(anchors) {
     const live = new Set((model?.notes ?? []).map((note) => note.anchor));
     selected = new Set([...(anchors ?? [])].filter((anchor) => live.has(anchor)));
     syncSelectionUi();
+    announceSelection();
   }
 
   /**
@@ -4946,8 +5872,14 @@ export function createWorldbuildPanel({ app, root }) {
    * card never moves, and free placements flow around every other card —
    * so an arrangement can neither tear a locked group nor land on top of
    * a neighbour.
+   *
+   * A pinned group is never such a unit: its frame is a place, not something
+   * to move. Cards inside it flow individually when the target names them,
+   * letting the frame grow and contract, and every other pinned frame stays
+   * an obstacle. `explicitGroupId` names the group the arrangement was aimed
+   * at, so a pinned group's own layout starts from its frame's corner.
    */
-  function arrangeTargets(indexes, layout) {
+  function arrangeTargets(indexes, layout, { explicitGroupId = null } = {}) {
     const notes = model?.notes ?? [];
     const targetIndexes = [...new Set(indexes ?? [])].filter((index) => notes[index] !== undefined).sort((a, b) => a - b);
     if (targetIndexes.length < 2) return;
@@ -4957,6 +5889,10 @@ export function createWorldbuildPanel({ app, root }) {
         .map((index) => notes[index].anchor)
         .filter((anchor) => isAnchorPinned(anchor) || isAnchorLocked(anchor)),
     );
+    // Pinned groups and who they hold: their frames are obstacles, unless the
+    // arrangement names one of their cards and may therefore lay it out inside.
+    const pinnedGroups = Object.values(groups ?? {}).filter((group) => group.pinned);
+    const pinnedMembers = new Map(pinnedGroups.map((group) => [group.id, effectiveMembers(group)]));
     // Whole groups fully inside the target move as one unit — outermost
     // first, so a parent claims its nested groups, but a nested group that
     // is itself the target (scope: group) still moves as one.
@@ -4969,6 +5905,9 @@ export function createWorldbuildPanel({ app, root }) {
     // Progression columns move cards one by one: a whole group kept as one
     // unit would keep its offsets and could never split across tiers.
     for (const group of layout === 'progression' ? [] : orderedGroups) {
+      // A pinned group keeps its frame where it is: its cards are arranged
+      // one by one, never carried as a rigid block to a new place.
+      if (group.pinned) continue;
       const memberIndexes = [...effectiveMembers(group)]
         .map((anchor) => notes.findIndex((note) => note.anchor === anchor))
         .filter((index) => index >= 0);
@@ -5020,12 +5959,11 @@ export function createWorldbuildPanel({ app, root }) {
         if (index >= 0 && !isGroupHidden(member.anchor)) blockers.push(rectOf(index));
       }
     }
-    for (const group of Object.values(groups ?? {})) {
-      if (!group.pinned) continue;
-      const memberIndexes = [...effectiveMembers(group)]
+    for (const group of pinnedGroups) {
+      const memberIndexes = [...pinnedMembers.get(group.id)]
         .map((anchor) => notes.findIndex((note) => note.anchor === anchor))
         .filter((index) => index >= 0);
-      if (memberIndexes.length >= 2 && memberIndexes.every((index) => targetSet.has(index))) continue;
+      if (memberIndexes.some((index) => targetSet.has(index))) continue;
       const box = groupDisplayRect(group);
       if (box) blockers.push({ x: box.x - BOX_PAD, y: box.y - BOX_PAD, width: box.width + BOX_PAD * 2, height: box.height + BOX_PAD * 2 });
     }
@@ -5041,12 +5979,17 @@ export function createWorldbuildPanel({ app, root }) {
         if (rect) targetRects.push(rect);
       }
     }
-    const origin = targetRects.length
+    const targetOrigin = targetRects.length
       ? {
           x: Math.min(...targetRects.map((rect) => rect.x)),
           y: Math.min(...targetRects.map((rect) => rect.y)),
         }
       : { x: PAD, y: layout.top };
+    // A pinned group's own layout starts at its frame's corner: the frame is
+    // the group's place, so the arrangement grows into it rather than the
+    // group sliding to wherever the cards happened to sit.
+    const explicitFrame = explicitGroupId ? cleanGroupFrame(groups[explicitGroupId]?.frame) : null;
+    const origin = explicitFrame ? { x: explicitFrame.x, y: explicitFrame.y } : targetOrigin;
     const freeShapes = shapes.filter((shape) => !shape.fixed);
     if (layout === 'progression') {
       const columns = progressionColumns(model, targetIndexes.map((index) => notes[index].anchor));
@@ -5118,7 +6061,7 @@ export function createWorldbuildPanel({ app, root }) {
         groups = { ...groups, [resolved.groupId]: { ...groups[resolved.groupId], layout: 'progression' } };
         app.saveWorldGroups(currentPath, groups);
       }
-      arrangeTargets(resolved.indexes, layout);
+      arrangeTargets(resolved.indexes, layout, { explicitGroupId: resolved.groupId ?? null });
       savePositions();
       sizeCanvas();
       drawEdges();
@@ -5153,7 +6096,7 @@ export function createWorldbuildPanel({ app, root }) {
       }
       groups = { ...groups, [groupId]: { ...groups[groupId], layout: 'progression' } };
       app.saveWorldGroups(currentPath, groups);
-      arrangeTargets(indexes, 'progression');
+      arrangeTargets(indexes, 'progression', { explicitGroupId: groupId });
       savePositions();
       sizeCanvas();
       drawEdges();
@@ -5312,6 +6255,100 @@ export function createWorldbuildPanel({ app, root }) {
     }, name);
   }
 
+  /**
+   * Pin every selected card where it stands, or unpin the whole set when it
+   * is already pinned throughout. One step, so one undo puts them all back.
+   */
+  function toggleSelectionPin() {
+    const anchors = [...selected];
+    if (!currentPath || !anchors.length) return;
+    const unpinned = anchors.filter((anchor) => !pinned[anchor]);
+    const pinning = unpinned.length > 0;
+    const targets = pinning ? unpinned : anchors;
+    step(() => {
+      for (const anchor of targets) {
+        pinned = app.setWorldNodePin(currentPath, anchor, pinning) ?? pinned;
+      }
+      build();
+    }, `${pinning ? 'Pin' : 'Unpin'} ${targets.length} card${targets.length === 1 ? '' : 's'}`);
+    const message = `${pinning ? 'Pinned' : 'Unpinned'} ${targets.length} card${targets.length === 1 ? '' : 's'}`;
+    app.toast(message, 'ok', 1800);
+    announce(message);
+  }
+
+  /** The bar's Arrange button: the selection scope, straight to its layouts. */
+  function openSelectionArrange(button) {
+    const resolved = arrangeScope('selection');
+    if (!resolved || resolved.indexes.length < 2) {
+      app.toast('Select at least two cards first — Shift+drag or Ctrl+click', 'warn', 2200);
+      return;
+    }
+    showArrangeLayouts(button, 'selection', resolved);
+  }
+
+  /** Relate the whole selection to one target, through the announced flow. */
+  function relateSelection(anchorEl) {
+    const sources = [...selected].filter((anchor) => endpointKnown(anchor));
+    if (sources.length < 2) {
+      app.toast('Select at least two cards to relate as a set', 'warn', 2200);
+      return;
+    }
+    openRelateFlow(sources, anchorEl);
+  }
+
+  /**
+   * Delete every selected card, asking once with the counts on the button.
+   * The same bookkeeping as a card's own ✕: the prose leaves the vein's
+   * markdown and the card's bonds, fields, pin, colour, image and group box go
+   * with it. The markdown is the record of a deletion, so no canvas step is
+   * written — the canvas history would not have the prose to restore.
+   */
+  async function deleteSelectedNotes() {
+    if (!currentPath || !model) return;
+    const anchors = [...selected].filter((anchor) => endpointKnown(anchor));
+    const deletable = anchors.filter((anchor) => !isContentLocked(anchor));
+    const lockedCount = anchors.length - deletable.length;
+    if (!deletable.length) {
+      app.toast('Every selected card is locked — unlock it before deleting', 'warn', 2400);
+      return;
+    }
+    const confirmed = await askConfirm({
+      title: `Delete ${deletable.length} note${deletable.length === 1 ? '' : 's'}?`,
+      message: `Their prose is removed from this vein's markdown${lockedCount ? `; ${lockedCount} locked card${lockedCount === 1 ? ' stays' : 's stay'} on the canvas` : ''}.`,
+      confirmLabel: `Delete ${deletable.length}`,
+    });
+    if (!confirmed) {
+      announce('Delete cancelled');
+      return;
+    }
+    for (const anchor of deletable) {
+      const index = (model?.notes ?? []).findIndex((note) => note.anchor === anchor);
+      if (index < 0) continue;
+      if (nodeImages[anchor]) seenNodeImageRefs.add(nodeImages[anchor]);
+      for (const file of nodeResources[anchor]?.files ?? []) seenAttachmentRefs.add(file.ref);
+      model = removeNote(model, index);
+      positions.delete(anchor);
+      relations = app.dropWorldRelations(currentPath, anchor) ?? relations;
+      fieldValues = app.dropWorldFields(currentPath, anchor) ?? fieldValues;
+      delete nodeResources[anchor];
+      delete pinned[anchor];
+      nodeColors = app.setWorldNodeColor(currentPath, anchor, null) ?? nodeColors;
+      nodeImages = app.setWorldNodeImage(currentPath, anchor, null) ?? nodeImages;
+      groups = app.dropWorldGroups(currentPath, anchor) ?? groups;
+    }
+    setSelection([]);
+    pruneHistorySnapshots(new Set((model?.notes ?? []).map((liveNote) => liveNote.anchor)));
+    savePositions();
+    commit();
+    build();
+    // Once no card and no snapshot here or elsewhere names the files, they go.
+    void cleanupOrphanedNodeImages().catch(() => {});
+    void cleanupOrphanedAttachments().catch(() => {});
+    const message = `Deleted ${deletable.length} note${deletable.length === 1 ? '' : 's'}${lockedCount ? ` — ${lockedCount} locked card${lockedCount === 1 ? '' : 's'} left alone` : ''}`;
+    app.toast(message, 'ok', 2600);
+    announce(message);
+  }
+
   /** Stack the selected nodes into a column at the first one's position, and
    * open a coloured box around them. A grouping that covers a whole group
    * nests it instead of dissolving it; partial picks are pulled out of
@@ -5384,6 +6421,7 @@ export function createWorldbuildPanel({ app, root }) {
     savePositions();
     build();
     app.toast(`Grouped ${picked.length} notes`, 'ok', 1500);
+    announce(`Grouped ${picked.length} notes`);
   }
 
   /** The lowest "Group N" no group is using, so no two groups share a name
@@ -5678,7 +6716,11 @@ export function createWorldbuildPanel({ app, root }) {
     if (submenuEl) {
       closeSubmenu({ returnFocus: true });
     } else {
+      // A flow that is abandoned says so, so a screen reader is not left
+      // waiting for a step that will never come.
+      const message = menuEl._cancelAnnounce;
       closeMenu({ returnFocus: true });
+      if (message) announce(message);
     }
   }
 
@@ -5732,7 +6774,7 @@ export function createWorldbuildPanel({ app, root }) {
       legendRow(legendSample('wb-edge wb-edge-contains'), 'Dotted', 'the vein’s outline: each card nested under its nearest shallower heading.'),
       legendRow(legendSample('wb-edge wb-edge-section'), 'Solid', 'a link in the prose — [[#Heading]] — between two notes.'),
       legendRow(legendSample('wb-edge wb-edge-mention'), 'Green and faint', 'a mention, [[Another note]], reaching across the vault.'),
-      legendRow(legendSample('wb-edge wb-edge-section wb-rel-affects'), 'A word on the line', 'is its relationship: associate, references, member of, tab/tab of, template, parent, child, contains, controls, affects, and on to ally and foe — thickening as it strengthens. Click the word to step it.'),
+      legendRow(legendSample('wb-edge wb-edge-section wb-rel-affects'), 'A word on the line', 'is its relationship: associate, references, member of, tab/tab of, supplying/supplied by, template, parent, child, contains, controls, affects, and on to ally and foe — thickening as it strengthens. Click the word to step it.'),
       legendRow(legendSample('wb-edge wb-edge-bond wb-rel-ally'), 'Dashed', 'a canvas bond asserted from a link dot — no prose link stands behind it.'),
       legendRow(legendSample('wb-edge wb-edge-group wb-rel-ally'), 'Dashed and doubled', 'a canvas bond to a group, drawn at twice the weight of a card bond of the same kind.'),
       el('div', { class: 'wb-menu-label', text: 'Colour' }),
@@ -5805,7 +6847,9 @@ export function createWorldbuildPanel({ app, root }) {
 
     const query = String(saved.filters?.query ?? '');
     searchInput.value = query;
-    searchMatches = query ? canvasSearch(model, { types: nodeTypes, fields: fieldValues, colors: nodeColors, groups }, query) : [];
+    searchMatches = query ? canvasSearch(model, {
+      types: nodeTypes, fields: fieldValues, colors: nodeColors, groups, bondNotes,
+    }, query) : [];
     searchCurrent = searchMatches.length ? 0 : -1;
     const isolated = Array.isArray(saved.isolated)
       ? new Set(saved.isolated.filter((anchor) => liveAnchors.has(anchor)))
@@ -5927,7 +6971,7 @@ export function createWorldbuildPanel({ app, root }) {
       legendRow('2× click', 'A group’s tab', 'renames the group in place.'),
       el('div', { class: 'wb-menu-label', text: 'Connectors' }),
       legendRow('◉', 'A link dot', 'drag it to another card or group and choose the relationship on release. That asserts a dashed canvas bond without writing prose; a pair already joined by a markdown link is left to that wire.'),
-      legendRow('Click', 'The word on a line', 'steps its relationship to the next kind — associate, member of, tab, tab of, template, parent, child, contains, controls, affects, ally, foe.'),
+      legendRow('Click', 'The word on a line', 'steps its relationship to the next kind — associate, member of, tab, tab of, supplying, supplied by, template, parent, child, contains, controls, affects, ally, foe.'),
       legendRow('◇', 'A cut-off wire', 'a wire longer than a screen ends in a diamond; click it to reveal the far card if it is inside a collapsed group, then centre the view on it. Otherwise the view centres on the card directly. Trim on the toolbar switches this on.'),
       el('div', { class: 'wb-menu-label', text: 'Fold' }),
       legendRow('▾', 'A card’s Fold chevron', 'collapses the card to its header. Overview folds every card, then zooms to fit.'),
@@ -6263,6 +7307,58 @@ export function createWorldbuildPanel({ app, root }) {
    * its button. Picking an entry undoes or redoes all the way to it. */
   function toggleHistory(button) {
     toggleDropdown(button, 'wb-history', 'Canvas history', historyRows());
+  }
+
+  /** One checkpoint: a named state, `steps` away from where the canvas is now. */
+  function checkpointRow(entry, kind, glyph, steps) {
+    const direction = kind === 'undo' ? 'back' : 'forward';
+    const count = `${steps} step${steps === 1 ? '' : 's'} ${direction}`;
+    return el('button', {
+      class: 'wb-menu-item wb-checkpoint',
+      type: 'button',
+      title: `Return to the canvas as it was before this step — ${count}`,
+      onclick: () => jumpHistory(kind, steps - 1),
+    }, [
+      el('span', { class: 'wb-checkpoint-glyph', text: glyph, 'aria-hidden': 'true' }),
+      el('span', { class: 'wb-checkpoint-name', text: entry.name }),
+      el('span', { class: 'wb-checkpoint-steps', text: count }),
+    ]);
+  }
+
+  /**
+   * The canvas's checkpoints, nearest to now first: what the canvas looked like
+   * before each step, each one a place to come back to. A drag is one step and
+   * a resize is one step, so the list reads as the layout work that was done
+   * rather than as a count of pointer events.
+   */
+  function checkpointRows() {
+    const stack = historyFor(currentPath);
+    const rows = [
+      el('span', { class: 'wb-menu-label', text: 'Canvas checkpoints' }),
+      el('span', { class: 'wb-checkpoint-hint', text: 'Every drag, resize and layout change is one step. Pick one to return to the canvas as it was then.' }),
+    ];
+    if (stack.future.length) {
+      rows.push(el('span', { class: 'wb-menu-label', text: 'Ahead' }));
+      [...stack.future].reverse().forEach((entry, i) => rows.push(checkpointRow(entry, 'redo', '↷', i + 1)));
+    }
+    rows.push(el('span', {
+      class: 'wb-checkpoint-now',
+      text: stack.past.length
+        ? `⦿ now — ${stack.past.length} step${stack.past.length === 1 ? '' : 's'} behind`
+        : '⦿ now — nothing behind yet',
+    }));
+    if (stack.past.length) {
+      rows.push(el('span', { class: 'wb-menu-label', text: 'Behind' }));
+      [...stack.past].reverse().forEach((entry, i) => rows.push(checkpointRow(entry, 'undo', '↶', i + 1)));
+    } else {
+      rows.push(el('span', { class: 'wb-history-empty', text: 'Nothing to undo on this canvas yet.' }));
+    }
+    return rows;
+  }
+
+  /** The checkpoints popover, opened from the caret beside undo. */
+  function toggleCheckpoints(button) {
+    toggleDropdown(button, 'wb-checkpoints', 'Canvas checkpoints', checkpointRows());
   }
 
   /** The health panel as a drop-down below the toolbar, on the menu's own
@@ -6853,36 +7949,37 @@ export function createWorldbuildPanel({ app, root }) {
     if (group) toggleGroupLock(group.id);
   }
 
+  /** Refuse a whole-group drag on a pinned group: its frame is a place, not a handle. */
+  function refusePinnedGroupDrag(event, group) {
+    app.toast(`“${group.name || 'Group'}” is pinned — its frame stays put; drag its cards to move them, or unpin it to move the group`, 'info', 2800);
+    event.preventDefault();
+  }
+
   /** Pin one note where it stands, or unpin it again. */
   function toggleNodePin(anchor) {
     const nextPinned = !pinned[anchor];
-    const group = pinnedGroupOf(anchor);
     step(() => {
       pinned = app.setWorldNodePin(currentPath, anchor, nextPinned) ?? pinned;
       build();
     }, nextPinned ? `Pin “${noteTitle(anchor)}”` : `Unpin “${noteTitle(anchor)}”`);
     closeMenu();
-    // A pinned group already holds this card, so its own pin changes nothing
-    // on screen: name the group rather than let the click look ignored.
-    if (group) {
-      app.toast(
-        nextPinned
-          ? `“${noteTitle(anchor)}” is already pinned by group “${group.name || 'Group'}” — pinned on its own too`
-          : `“${noteTitle(anchor)}” is still pinned by group “${group.name || 'Group'}”`,
-        'info',
-        2600,
-      );
-    }
   }
 
-  /** Pin a whole group where it stands, or unpin it again. */
+  /** Pin a whole group's frame where it stands, or unpin it again. */
   function toggleGroupPin(id) {
     const group = groups[id];
     if (!group) return;
     const nextPinned = !group.pinned;
     const parent = restrictingParentGroup(id, 'pinned');
     step(() => {
-      const next = { ...groups, [id]: { ...group, pinned: nextPinned } };
+      // The frame is taken now and kept as the group's place: cards can later
+      // stretch it outwards and back, but it is never rewritten and Arrange
+      // never shifts it.
+      const frame = nextPinned ? cleanGroupFrame(groupHull(group)) : null;
+      const nextGroup = { ...group, pinned: nextPinned };
+      if (frame) nextGroup.frame = frame;
+      else delete nextGroup.frame;
+      const next = { ...groups, [id]: nextGroup };
       groups = app.saveWorldGroups(currentPath, next) ?? next;
       build();
     }, nextPinned ? `Pin “${group.name || 'group'}”` : `Unpin “${group.name || 'group'}”`);
@@ -6890,8 +7987,8 @@ export function createWorldbuildPanel({ app, root }) {
     if (parent) {
       app.toast(
         nextPinned
-          ? `“${group.name || 'Group'}” is already pinned by group “${parent.name || 'Group'}” — pinned on its own too`
-          : `“${group.name || 'Group'}” is still pinned by group “${parent.name || 'Group'}”`,
+          ? `“${group.name || 'Group'}” sits inside pinned group “${parent.name || 'Group'}” — its cards can still move, but the outer frame stays put`
+          : `“${group.name || 'Group'}” is still inside pinned group “${parent.name || 'Group'}”`,
         'info',
         2600,
       );
@@ -7031,6 +8128,21 @@ export function createWorldbuildPanel({ app, root }) {
    */
   // The drag's step wears the name of what its drop did — membership first,
   // a plain move otherwise. Returns the name, or null for no membership change.
+  /**
+   * What a drag's step is called: what moved, and how much of it. One drag is
+   * one step however far it went, so its name is the whole of the change —
+   * “Moved 3 cards”, not “Move card” three times over.
+   */
+  function moveStepName(drop) {
+    const count = drop.members.length;
+    if (drop.groupId) {
+      const name = groups[drop.groupId]?.name;
+      return name ? `Moved Group “${name}”` : `Moved ${count} cards`;
+    }
+    if (drop.selection || count > 1) return `Moved ${count} cards`;
+    return `Moved “${noteTitle(drop.members[0]?.anchor)}”`;
+  }
+
   function dropMembership(drop) {
     if (drop.groupId) return dropGroup(drop);
     if (!drop.joinable) return null;
@@ -7189,16 +8301,41 @@ export function createWorldbuildPanel({ app, root }) {
   function linkHandle(endpoint, label, className = '') {
     const handle = el('span', {
       class: `wb-link-handle${className ? ` ${className}` : ''}`,
-      title: `Drag to link ${label} to another card or group`,
+      title: `Drag to link ${label} to another card or group; click to select`,
       'aria-hidden': 'true',
       dataset: { linkEndpoint: endpoint },
     }, [el('span', { class: 'wb-link-handle-core', 'aria-hidden': 'true' })]);
-    handle.addEventListener('pointerdown', (event) => startLinkDrag(event, endpoint, handle));
+    handle.addEventListener('pointerdown', (event) => beginLinkPress(event, endpoint, handle));
     handle.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
     });
     return handle;
+  }
+
+  /** Select the card, or the group's members, when a port press does not drag. */
+  function selectLinkEndpoint(endpoint, event) {
+    if (!endpoint) return;
+    if (endpoint.startsWith('group:')) {
+      const group = groups[endpoint.slice('group:'.length)];
+      if (!group) return;
+      const members = [...effectiveMembers(group)];
+      if (!members.length) return;
+      if (selectionClick(event)) {
+        const next = new Set(selected);
+        const all = members.every((anchor) => next.has(anchor));
+        for (const anchor of members) {
+          if (all) next.delete(anchor);
+          else next.add(anchor);
+        }
+        setSelection(next);
+      } else {
+        setSelection(members);
+      }
+      return;
+    }
+    if (selectionClick(event)) toggleSelected(endpoint);
+    else setSelection([endpoint]);
   }
 
   /** The innermost visible group under a canvas point, including locked ones. */
@@ -7279,6 +8416,21 @@ export function createWorldbuildPanel({ app, root }) {
     linkPreviewDot.setAttribute('cy', String(endY));
   }
 
+  /** Hold a port press until it either moves into a forge drag or clicks. */
+  function beginLinkPress(event, from, handle) {
+    if (event.button !== 0 || !currentPath || !model) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeMenu();
+    linkPress = {
+      from,
+      handle,
+      event,
+      startX: event.clientX,
+      startY: event.clientY,
+    };
+  }
+
   function startLinkDrag(event, from, handle) {
     // Forging stays available at every zoom: zoomed out, the handle is the
     // card's screen-sized corner ring rather than its tiny head port.
@@ -7314,13 +8466,224 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   function cancelLinkDrag() {
+    linkPress = null;
     finishLinkDrag();
   }
 
+  /* ----------------------------------------------------------- touch -- */
+
+  // How long a finger must rest before the press becomes a forge, and how far
+  // it may drift before the press is a move instead. Screen pixels.
+  const TOUCH_HOLD_MS = 450;
+  const TOUCH_SLOP = 10;
+  // The one press being weighed, the two fingers of a pinch, and every finger
+  // currently down on the stage, by pointerId. All empty unless the reader
+  // turned tablet gestures on in Settings → Worldbuilding.
+  let touchHold = null;
+  let pinch = null;
+  const touchPointers = new Map();
+
+  /** Whether tablet gestures are switched on. Read per event, so the setting
+   * takes effect without a rebuild. */
+  function touchGestures() {
+    return document.body.classList.contains('is-touch-canvas');
+  }
+
+  /** The card or group a touch landed on, with the endpoint a forge starts from. */
+  function touchEndpoint(target) {
+    if (!model || !(target instanceof Element)) return null;
+    // A control inside the card keeps its own touch: typing, buttons, links
+    // and the resize corner are not gestures.
+    if (target.closest('input, textarea, select, button, a[href], [contenteditable="true"], .wb-resize')) return null;
+    const card = target.closest('.wb-card');
+    if (card) {
+      const anchor = model.notes[Number(card.dataset.note)]?.anchor;
+      return anchor ? { kind: 'card', endpoint: anchor, el: card } : null;
+    }
+    const groupEl = target.closest('[data-group-id]');
+    const groupId = groupEl?.getAttribute('data-group-id');
+    if (groupId && groups[groupId]) return { kind: 'group', groupId, endpoint: groupEndpoint(groupId), el: groupEl };
+    return null;
+  }
+
+  /** Stop waiting on a press. Returns it when one was still being weighed. */
+  function endTouchHold() {
+    if (!touchHold) return null;
+    const hold = touchHold;
+    clearTimeout(hold.timer);
+    touchHold = null;
+    return hold;
+  }
+
+  /** A press that rested long enough: forge from it, starting at the finger. */
+  function forgeFromHold(hold) {
+    if (!currentPath || !model) return;
+    // No click-versus-drag weighing here: the press already waited, and its
+    // release must end the drag at whatever it lands on.
+    startLinkDrag(hold.event, hold.endpoint, hold.el);
+    if (!linkDrag) return;
+    const box = stage.getBoundingClientRect();
+    linkDrag.startX = hold.startX - box.left;
+    linkDrag.startY = hold.startY - box.top;
+    updateLinkPreview(hold.startX, hold.startY);
+    announce(`Forging from “${endpointTitle(hold.endpoint)}” — drag onto another card and release`);
+  }
+
+  /** A press that started moving: the ordinary move gesture, from the finger. */
+  function moveFromHold(hold) {
+    if (!currentPath || !model) return;
+    if (hold.kind === 'group') {
+      const group = groups[hold.groupId];
+      if (!group || group.pinned) return;
+      const movable = [...effectiveMembers(group)].filter(
+        (anchor) => !isAnchorLocked(anchor) && !isAnchorFrozen(anchor),
+      );
+      if (!movable.length) return;
+      dragMembers(movable, hold.event, hold.el, { groupId: group.id });
+      return;
+    }
+    // Zoomed out, a touch on a card also picks it: its content no longer takes
+    // the finger, so the press is the only way to say “this one”.
+    if (zoomMode(view.s).overview && !selected.has(hold.endpoint)) setSelection([hold.endpoint]);
+    if (isAnchorLocked(hold.endpoint) || isAnchorFrozen(hold.endpoint)) return;
+    const picking = selected.has(hold.endpoint) && selected.size > 1;
+    const anchors = (picking ? [...selected] : [hold.endpoint])
+      .filter((anchor) => !isAnchorLocked(anchor) && !isAnchorFrozen(anchor));
+    if (!anchors.length) return;
+    dragMembers(anchors, hold.event, hold.el, { joinable: !picking, selection: picking });
+  }
+
+  /** The two fingers a pinch reads, or null when fewer than two are down. */
+  function pinchPair() {
+    const points = [...touchPointers.values()].slice(0, 2);
+    if (points.length < 2) return null;
+    const [a, b] = points;
+    return {
+      distance: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+      midX: (a.x + b.x) / 2,
+      midY: (a.y + b.y) / 2,
+    };
+  }
+
+  /** Undo a move a pinch interrupted, without writing a step. */
+  function cancelTouchMove() {
+    if (!dragging) return;
+    const drop = dragging;
+    dragging = null;
+    drop.el?.classList.remove('is-dragging');
+    for (const member of drop.members) {
+      member.el.classList.remove('is-dragging');
+      positions.set(member.anchor, member.start);
+      member.el.style.left = `${member.start.x}px`;
+      member.el.style.top = `${member.start.y}px`;
+    }
+    dropTargetId = null;
+    paintGuides([]);
+    clearOverlapUi();
+    sizeCanvas();
+    drawEdges();
+    // Pushes nothing when the cards went back exactly where they were.
+    commitStep();
+  }
+
+  /** A second finger lands: the press is abandoned and the pinch begins. */
+  function startPinch() {
+    endTouchHold();
+    cancelTouchMove();
+    const pair = pinchPair();
+    if (!pair) return;
+    pinch = pair;
+  }
+
+  /** Two fingers: zoom around their midpoint and pan with it, in one move. */
+  function stepPinch() {
+    const pair = pinchPair();
+    if (!pinch || !pair) return;
+    const rect = stage.getBoundingClientRect();
+    view = snapZoomView(view, pair.midX - rect.left, pair.midY - rect.top, pair.distance / pinch.distance);
+    view.x += pair.midX - pinch.midX;
+    view.y += pair.midY - pinch.midY;
+    pinch = pair;
+    applyView();
+    showZoomHud();
+  }
+
   /**
-   * The relationship chooser opens at the drop point. Canvas bonds are only
-   * for pairs with no prose link: a prose link already owns the line between
-   * its notes, and duplicating it here would leave two contradictory wires.
+   * One touch press on a card or group, read once: resting forges from it,
+   * moving moves it, and lifting without either leaves the click to do the
+   * picking. The press is taken in the capture phase so the card's own drag
+   * does not claim it first; without the setting this does nothing at all.
+   */
+  stage.addEventListener('pointerdown', (event) => {
+    if (!touchGestures() || event.pointerType !== 'touch') return;
+    touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (touchPointers.size >= 2) {
+      startPinch();
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    const at = touchEndpoint(event.target);
+    if (!at) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const hold = { ...at, event, startX: event.clientX, startY: event.clientY, timer: 0 };
+    hold.timer = setTimeout(() => {
+      if (touchHold !== hold) return;
+      touchHold = null;
+      forgeFromHold(hold);
+    }, TOUCH_HOLD_MS);
+    touchHold = hold;
+  }, true);
+
+  window.addEventListener('pointermove', (event) => {
+    if (event.pointerType !== 'touch' || !touchGestures()) return;
+    if (touchPointers.has(event.pointerId)) touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pinch) {
+      if (event.cancelable) event.preventDefault();
+      stepPinch();
+      return;
+    }
+    if (!touchHold) return;
+    if (Math.hypot(event.clientX - touchHold.startX, event.clientY - touchHold.startY) < TOUCH_SLOP) return;
+    const hold = endTouchHold();
+    if (hold) moveFromHold(hold);
+  }, { capture: true, passive: false });
+
+  const endTouchPointer = (event) => {
+    if (event.pointerType !== 'touch') return;
+    touchPointers.delete(event.pointerId);
+    if (touchHold) endTouchHold();
+    if (pinch && touchPointers.size < 2) {
+      pinch = null;
+      persistView();
+    }
+  };
+  window.addEventListener('pointerup', endTouchPointer, true);
+  window.addEventListener('pointercancel', endTouchPointer, true);
+
+  /** The type an end of a bond contributes to the palette's pair memory. */
+  function endpointTypeId(endpoint) {
+    if (String(endpoint).startsWith('group:')) return 'group';
+    return nodeTypeOf(nodeTypes, endpoint).id;
+  }
+
+  /** Point a dialog's close back at the card or group a flow started from. */
+  function focusOriginFor(panel, endpoint) {
+    if (String(endpoint).startsWith('group:')) {
+      panel._focusOriginGroup = endpoint.slice('group:'.length);
+      return;
+    }
+    const index = (model?.notes ?? []).findIndex((note) => note.anchor === endpoint);
+    if (index >= 0 && cardEls[index]) {
+      panel._focusOrigin = cardEls[index];
+      panel._focusOriginAnchor = endpoint;
+    }
+  }
+
+  /**
+   * A drag's release: canvas bonds are only for pairs with no prose link, and
+   * the release point is where the kind palette opens.
    */
   function openCanvasLinkMenu(event, from, to) {
     if (!model || !currentPath || !from || !to || from === to) return;
@@ -7330,41 +8693,435 @@ export function createWorldbuildPanel({ app, root }) {
         'info',
         4200,
       );
+      announce(`“${endpointTitle(from)}” and “${endpointTitle(to)}” are already joined by a markdown link`);
       return;
     }
-    const fromTitle = endpointTitle(from);
+    openKindPalette(from, to, { x: event.clientX, y: event.clientY });
+  }
+
+  /**
+   * The kind step of forging, wherever it was started: a drag's release, the
+   * keyboard's relate flow, or a menu. Nineteen kinds would be a long list, so
+   * it is a compact palette — the kind last used for this pair of types is
+   * already active, favourites and recent kinds follow, typing searches the
+   * rest, and digits pick from what is on screen.
+   */
+  function openKindPalette(from, to, at = null, { alsoFrom = [] } = {}) {
+    if (!model || !currentPath || !from || !to || from === to) return;
+    // A bulk relate forges one kind from several sources to the same target;
+    // the first source keeps the pair memory and the palette's shape.
+    const also = (alsoFrom ?? []).filter((anchor) => anchor && anchor !== from && anchor !== to && endpointKnown(anchor));
+    const fromTitle = also.length ? `${also.length + 1} cards` : endpointTitle(from);
     const toTitle = endpointTitle(to);
     const forwardKey = relationKey(from, to);
     const hasForward = forwardKey in (relations ?? {});
     const hasReverse = !hasForward && relationKey(to, from) in (relations ?? {});
     const current = hasForward ? relationOf(relations, from, to) : null;
-    const items = [
-      el('div', { class: 'wb-menu-label', text: `${fromTitle} → ${toTitle}` }),
-      el('span', { class: 'wb-menu-note', text: 'Canvas bond — no link is written into either note.' }),
-    ];
-    if (hasReverse) {
-      items.push(el('span', {
-        class: 'wb-menu-note',
-        text: 'A bond already runs the other way; choosing a kind replaces its direction.',
-      }));
-    }
-    for (const kind of RELATION_KINDS) {
-      items.push(el('button', {
-        class: `wb-menu-item wb-submenu-choice${current?.id === kind.id ? ' is-current' : ''}`,
-        type: 'button',
-        'aria-current': current?.id === kind.id ? 'true' : undefined,
-        title: `Assert “${fromTitle}” ${kind.label.toLowerCase()} “${toTitle}”`,
-        onclick: () => {
-          closeMenu();
-          assertCanvasBond(from, to, kind.id, { replaceReverse: hasReverse });
+    const fromType = endpointTypeId(from);
+    const toType = endpointTypeId(to);
+    let prefs = app.forgePrefs();
+    let rows = [];
+    // A bond that already exists opens on the kind it has; otherwise the pair's
+    // remembered kind is one Enter away.
+    const opening = forgePalette({ fromType, toType, prefs }).rows;
+    let active = Math.max(0, current
+      ? opening.findIndex((row) => row.id === current.id)
+      : opening.findIndex((row) => row.remembered));
+
+    const search = el('input', {
+      class: 'wb-forge-search',
+      type: 'text',
+      role: 'combobox',
+      'aria-expanded': 'true',
+      'aria-controls': 'wb-forge-listbox',
+      'aria-autocomplete': 'list',
+      'aria-label': 'Find a relationship kind',
+      placeholder: 'Find a kind…',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      onkeydown: (event) => paletteKeydown(event),
+      oninput: () => renderRows(),
+    });
+    const list = el('div', {
+      class: 'wb-forge-list',
+      id: 'wb-forge-listbox',
+      role: 'listbox',
+      'aria-label': 'Relationship kinds',
+    });
+    const panel = el('div', {
+      class: 'wb-menu wb-forge-palette',
+      role: 'dialog',
+      'aria-label': `Forge ${also.length ? fromTitle : `“${fromTitle}”`} → “${toTitle}”`,
+    }, [
+      el('div', { class: 'wb-forge-head' }, [
+        el('div', { class: 'wb-menu-label', text: `${fromTitle} → ${toTitle}` }),
+        el('span', {
+          class: 'wb-menu-note',
+          text: hasReverse
+            ? 'A bond already runs the other way; choosing a kind replaces its direction.'
+            : 'Canvas bond — no link is written into either note.',
+        }),
+      ]),
+      search,
+      list,
+      el('div', { class: 'wb-forge-hint' }, [
+        el('span', { text: 'Enter asserts' }),
+        el('span', { text: '1–9 picks' }),
+        el('span', { text: '* pins' }),
+      ]),
+    ]);
+
+    const sectionLabel = (section) => ({
+      remembered: 'Last used for this pair',
+      favourite: 'Favourites',
+      recent: 'Recent',
+      other: 'All kinds',
+    })[section];
+
+    function rowNode(row, index) {
+      return el('div', {
+        class: `wb-forge-row${index === active ? ' is-active' : ''}${row.favourite ? ' is-favourite' : ''}`,
+        id: `wb-forge-option-${row.id}`,
+        role: 'option',
+        'aria-selected': index === active ? 'true' : 'false',
+        title: row.remembered
+          ? `Last kind forged from ${fromType} to ${toType}`
+          : `Assert “${fromTitle}” ${row.label.toLowerCase()} “${toTitle}”`,
+        dataset: { kind: row.id },
+        onclick: () => choose(row.id),
+        onpointerenter: () => {
+          active = index;
+          syncActive();
         },
       }, [
-        el('span', { class: 'wb-submenu-choice-label', text: kind.label }),
-        el('span', { class: 'wb-menu-check', 'aria-hidden': 'true', text: current?.id === kind.id ? '✓' : '' }),
-      ]));
+        el('span', { class: 'wb-forge-number', 'aria-hidden': 'true', text: index < 9 ? String(index + 1) : '' }),
+        el('span', { class: 'wb-forge-label', text: row.label }),
+        row.remembered ? el('span', { class: 'wb-forge-tag', text: 'last' }) : null,
+        row.recent && !row.remembered ? el('span', { class: 'wb-forge-tag', text: 'recent' }) : null,
+        row.favourite ? el('span', { class: 'wb-forge-star', 'aria-hidden': 'true', text: '★' }) : null,
+        current?.id === row.id ? el('span', { class: 'wb-menu-check', 'aria-hidden': 'true', text: '✓' }) : null,
+      ]);
     }
-    showMenu(event, items);
+
+    function renderRows() {
+      rows = forgePalette({ fromType, toType, prefs, query: search.value }).rows;
+      if (active >= rows.length) active = Math.max(0, rows.length - 1);
+      list.replaceChildren();
+      let section = '';
+      rows.forEach((row, index) => {
+        if (row.section !== section) {
+          section = row.section;
+          list.append(el('div', { class: 'wb-forge-section', text: sectionLabel(section) }));
+        }
+        list.append(rowNode(row, index));
+      });
+      if (!rows.length) list.append(el('p', { class: 'wb-forge-empty', text: 'No kind matches that.' }));
+      syncActive();
+    }
+
+    function syncActive() {
+      const items = [...list.querySelectorAll('.wb-forge-row')];
+      items.forEach((node, index) => {
+        const on = index === active;
+        node.classList.toggle('is-active', on);
+        node.setAttribute('aria-selected', on ? 'true' : 'false');
+        if (on) node.scrollIntoView({ block: 'nearest' });
+      });
+      const row = rows[active];
+      if (row) search.setAttribute('aria-activedescendant', `wb-forge-option-${row.id}`);
+      else search.removeAttribute('aria-activedescendant');
+    }
+
+    function choose(kindId) {
+      prefs = app.rememberForgeKind(fromType, toType, kindId);
+      closeMenu({ returnFocus: false });
+      if (also.length) assertCanvasBonds([from, ...also], to, kindId);
+      else assertCanvasBond(from, to, kindId, { replaceReverse: hasReverse });
+    }
+
+    function pinActive() {
+      const row = rows[active];
+      if (!row) return;
+      prefs = app.toggleForgeFavourite(row.id);
+      renderRows();
+    }
+
+    function paletteKeydown(event) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        if (!rows.length) return;
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        active = (active + step + rows.length) % rows.length;
+        syncActive();
+        return;
+      }
+      if (event.key === 'Enter') {
+        const row = rows[active];
+        if (!row) return;
+        event.preventDefault();
+        choose(row.id);
+        return;
+      }
+      // Digits can never occur in a kind's name, so they are always shortcuts.
+      if (/^[1-9]$/.test(event.key) && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        const row = rows[Number(event.key) - 1];
+        if (!row) return;
+        event.preventDefault();
+        choose(row.id);
+        return;
+      }
+      if (event.key === '*' && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        pinActive();
+      }
+    }
+
+    menuEl = panel;
+    panel._cancelAnnounce = 'Relationship cancelled';
+    focusOriginFor(panel, from);
+    document.body.append(panel);
+    panel.style.maxHeight = `${Math.max(240, Math.min(560, window.innerHeight - 24))}px`;
+    renderRows();
+    // Keep the whole palette on screen: a drop near an edge, or at 20%, must
+    // not push half the list past the window.
+    const box = stage.getBoundingClientRect();
+    const atX = at?.x ?? box.left + 24;
+    const atY = at?.y ?? box.top + 24;
+    panel.style.left = `${Math.max(8, Math.min(atX, window.innerWidth - panel.offsetWidth - 8))}px`;
+    panel.style.top = `${Math.max(8, Math.min(atY, window.innerHeight - panel.offsetHeight - 8))}px`;
+    document.addEventListener('pointerdown', dismissMenu, true);
+    document.addEventListener('keydown', escapeMenu, true);
+    focusMenuStart(panel);
   }
+
+  /**
+   * The keyboard's relate flow: a source (the focused card), “Relate to…”, a
+   * target searched in the order the canvas reads, then the kind. Every step
+   * is announced, and the kind step is the same palette a drag opens, so the
+   * two ways of forging cannot drift apart.
+   */
+  function openRelateFlow(sources, anchorEl = null) {
+    const picked = [...new Set([].concat(sources ?? []))].filter((anchor) => endpointKnown(anchor));
+    if (!model || !currentPath || !picked.length) return;
+    const sourceSet = new Set(picked);
+    // One source reads as its name; a set reads as its count.
+    const sourceName = picked.length === 1 ? `“${endpointTitle(picked[0])}”` : `${picked.length} cards`;
+    const notes = model.notes ?? [];
+    const cards = readingOrder(notes
+      .map((note, index) => ({ key: note.anchor, ...rectOf(index) }))
+      .filter((entry) => !sourceSet.has(entry.key) && !isGroupHidden(entry.key)))
+      .map((anchor) => ({
+        anchor,
+        title: notes.find((note) => note.anchor === anchor)?.title || 'Untitled',
+        type: nodeTypeOf(nodeTypes, anchor).label,
+        section: 'Cards',
+      }));
+    const groupRows = readingOrder(Object.values(groups ?? {})
+      .filter((group) => !hasCollapsedAncestor(group.id) && !sourceSet.has(groupEndpoint(group.id)))
+      .map((group) => {
+        const rect = groupDisplayRect(group);
+        return rect ? { key: group.id, x: rect.x, y: rect.y } : null;
+      })
+      .filter(Boolean))
+      .map((id) => ({
+        anchor: groupEndpoint(id),
+        title: groups[id]?.name || 'Group',
+        type: 'Group',
+        section: 'Groups',
+      }));
+    const targets = [...cards, ...groupRows];
+    const squash = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+    let rows = targets;
+    let active = 0;
+
+    const search = el('input', {
+      class: 'wb-forge-search wb-relate-search',
+      type: 'text',
+      role: 'combobox',
+      'aria-expanded': 'true',
+      'aria-controls': 'wb-relate-listbox',
+      'aria-autocomplete': 'list',
+      'aria-label': `Relate ${sourceName} to which card?`,
+      placeholder: 'Find a card or group…',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      onkeydown: (event) => flowKeydown(event),
+      oninput: () => renderTargets(),
+    });
+    const list = el('div', {
+      class: 'wb-relate-list',
+      id: 'wb-relate-listbox',
+      role: 'listbox',
+      'aria-label': 'Targets in canvas order',
+    });
+    const panel = el('div', {
+      class: 'wb-menu wb-relate',
+      role: 'dialog',
+      'aria-label': `Relate ${sourceName}`,
+    }, [
+      el('div', { class: 'wb-relate-head' }, [
+        el('div', { class: 'wb-menu-label', text: `Relate ${sourceName} to…` }),
+        el('span', { class: 'wb-relate-step', text: 'Step 1 of 2 · target' }),
+      ]),
+      search,
+      list,
+      el('div', { class: 'wb-relate-hint' }, [
+        el('span', { text: 'Enter chooses' }),
+        el('span', { text: '1–9 picks' }),
+        el('span', { text: '↑↓ move' }),
+        el('span', { text: 'Esc cancels' }),
+      ]),
+    ]);
+
+    function renderTargets() {
+      const terms = search.value.trim().toLowerCase().split(/\s+/).map(squash).filter(Boolean);
+      rows = targets.filter((row) => {
+        if (!terms.length) return true;
+        const text = squash(`${row.title} ${row.type} ${row.anchor}`);
+        return terms.every((term) => text.includes(term));
+      });
+      if (active >= rows.length) active = Math.max(0, rows.length - 1);
+      list.replaceChildren();
+      let section = '';
+      rows.forEach((row, index) => {
+        if (row.section !== section) {
+          section = row.section;
+          list.append(el('div', { class: 'wb-relate-section', text: section }));
+        }
+        list.append(el('div', {
+          class: `wb-relate-row${index === active ? ' is-active' : ''}`,
+          id: `wb-relate-option-${index}`,
+          role: 'option',
+          'aria-selected': index === active ? 'true' : 'false',
+          title: `Relate ${sourceName} to “${row.title}”`,
+          dataset: { target: row.anchor },
+          onclick: () => chooseTarget(row.anchor),
+          onpointerenter: () => {
+            active = index;
+            syncActive();
+          },
+        }, [
+          el('span', { class: 'wb-relate-number', 'aria-hidden': 'true', text: index < 9 ? String(index + 1) : '' }),
+          el('span', { class: 'wb-relate-name', text: row.title }),
+          el('span', { class: 'wb-relate-type', text: row.type }),
+        ]));
+      });
+      if (!rows.length) list.append(el('p', { class: 'wb-relate-empty', text: 'No card matches that.' }));
+      syncActive();
+    }
+
+    function syncActive() {
+      const items = [...list.querySelectorAll('.wb-relate-row')];
+      items.forEach((node, index) => {
+        const on = index === active;
+        node.classList.toggle('is-active', on);
+        node.setAttribute('aria-selected', on ? 'true' : 'false');
+        if (on) node.scrollIntoView({ block: 'nearest' });
+      });
+      const row = rows[active];
+      if (row) search.setAttribute('aria-activedescendant', `wb-relate-option-${active}`);
+      else search.removeAttribute('aria-activedescendant');
+    }
+
+    function chooseTarget(anchor) {
+      if (!anchor || sourceSet.has(anchor)) return;
+      // A single source can be told why one pair is out; a set is counted per
+      // pair by the bulk forge instead, so a mix of prose links is fine.
+      if (picked.length === 1 && proseLinkBetween(model, picked[0], anchor)) {
+        app.toast(
+          `“${endpointTitle(picked[0])}” and “${endpointTitle(anchor)}” are already joined by a markdown link — its relationship belongs on that wire`,
+          'info',
+          3800,
+        );
+        announce('Those two are already joined by a markdown link; change its relationship on the wire');
+        return;
+      }
+      const at = panel.getBoundingClientRect();
+      closeMenu({ returnFocus: false });
+      announce(`Target: “${endpointTitle(anchor)}”. Choose a relationship kind.`);
+      openKindPalette(picked[0], anchor, { x: at.left, y: at.top }, { alsoFrom: picked.slice(1) });
+    }
+
+    function flowKeydown(event) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        if (!rows.length) return;
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        active = (active + step + rows.length) % rows.length;
+        syncActive();
+        return;
+      }
+      if (event.key === 'Enter') {
+        const row = rows[active];
+        if (!row) return;
+        event.preventDefault();
+        chooseTarget(row.anchor);
+        return;
+      }
+      // Digits never occur in a title search worth keeping, so they pick a row.
+      if (/^[1-9]$/.test(event.key) && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        const row = rows[Number(event.key) - 1];
+        if (!row) return;
+        event.preventDefault();
+        chooseTarget(row.anchor);
+      }
+    }
+
+    menuEl = panel;
+    panel._cancelAnnounce = 'Relationship cancelled';
+    if (picked.length === 1) focusOriginFor(panel, picked[0]);
+    document.body.append(panel);
+    panel.style.maxHeight = `${Math.max(240, Math.min(520, window.innerHeight - 24))}px`;
+    renderTargets();
+    const anchorBox = anchorEl?.getBoundingClientRect() ?? null;
+    const box = stage.getBoundingClientRect();
+    const atX = anchorBox ? anchorBox.right + 8 : box.left + 24;
+    const atY = anchorBox ? anchorBox.top : box.top + 24;
+    panel.style.left = `${Math.max(8, Math.min(atX, window.innerWidth - panel.offsetWidth - 8))}px`;
+    panel.style.top = `${Math.max(8, Math.min(atY, window.innerHeight - panel.offsetHeight - 8))}px`;
+    document.addEventListener('pointerdown', dismissMenu, true);
+    document.addEventListener('keydown', escapeMenu, true);
+    focusMenuStart(panel);
+    announce(`Relate ${sourceName} to which card? ${targets.length} targets, in canvas order.`);
+  }
+
+  /**
+   * The keyboard's side of the canvas. A card is a focus stop of its own, so
+   * Enter or Space picks it and Shift+R starts a relationship from it — at
+   * every zoom, including the overview where the pointer's port is a small
+   * ring. A group tab does the same for its members.
+   */
+  function canvasKeyboard(event) {
+    if (!model) return;
+    const card = event.target.closest?.('.wb-card');
+    const tab = event.target.closest?.('.wb-group-tab');
+    const target = card ?? tab;
+    if (!target) return;
+    // A control inside the card keeps its own keys; only the card itself acts.
+    if (event.target !== target) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const anchor = card?.dataset.anchor ?? null;
+    const groupId = tab?.dataset.groupId ?? null;
+    if (!anchor && !groupId) return;
+    if ((event.key === 'Enter' || event.key === ' ') && !event.shiftKey) {
+      event.preventDefault();
+      if (anchor) {
+        setSelection([anchor]);
+      } else {
+        const group = groups[groupId];
+        if (group) setSelection([...effectiveMembers(group)]);
+      }
+      return;
+    }
+    if (event.shiftKey && event.key.toLowerCase() === 'r') {
+      event.preventDefault();
+      event.stopPropagation();
+      const source = anchor ?? groupEndpoint(groupId);
+      setSelection(anchor ? [anchor] : [...effectiveMembers(groups[groupId])]);
+      openRelateFlow([source], target);
+    }
+  }
+  stage.addEventListener('keydown', canvasKeyboard);
 
   /** Assert a canvas-owned bond as one named, undoable step. */
   function assertCanvasBond(from, to, kindId, { replaceReverse = false } = {}) {
@@ -7377,29 +9134,97 @@ export function createWorldbuildPanel({ app, root }) {
         'info',
         3400,
       );
+      announce(`“${endpointTitle(from)}” and “${endpointTitle(to)}” already share a prose link`);
       return;
     }
     const forwardKey = relationKey(from, to);
     if (!replaceReverse && forwardKey in (relations ?? {}) && relationOf(relations, from, to).id === kind.id) {
       app.toast(`“${endpointTitle(from)}” already ${kind.label.toLowerCase()} “${endpointTitle(to)}”`, 'info', 1800);
+      announce(`Already ${kind.label.toLowerCase()}`);
       return;
     }
+    // Replacing a bond that ran the other way keeps the note it carried.
+    const previousNote = replaceReverse ? (bondNotes[relationKey(to, from)] ?? '') : '';
     step(() => {
       if (replaceReverse) relations = app.removeWorldRelation(currentPath, to, from) ?? relations;
       relations = app.setWorldRelation(currentPath, from, to, kind.id) ?? relations;
+      if (previousNote) bondNotes = app.setWorldBondNote(currentPath, from, to, previousNote) ?? bondNotes;
       drawEdges();
       build();
     }, `Link “${endpointTitle(from)}” ${kind.label.toLowerCase()} “${endpointTitle(to)}”`);
     app.toast(`Canvas bond: “${endpointTitle(from)}” ${kind.label.toLowerCase()} “${endpointTitle(to)}”`, 'ok', 2200);
+    announce(`Bond forged: “${endpointTitle(from)}” ${kind.label.toLowerCase()} “${endpointTitle(to)}”`);
+  }
+
+  /**
+   * Forge one kind from many cards to one target, as a single step. A pair a
+   * prose link already joins, and a pair that already holds that kind, are
+   * counted and left alone, so a bulk relate writes no duplicate and never
+   * talks over a sentence.
+   */
+  function assertCanvasBonds(sources, to, kindId) {
+    if (!currentPath || !to) return 0;
+    const kind = relationKind(kindId);
+    if (!kind) return 0;
+    const unique = [...new Set(sources ?? [])].filter((anchor) => anchor && anchor !== to && endpointKnown(anchor));
+    if (!unique.length) return 0;
+    const prose = unique.filter((anchor) => proseLinkBetween(model, anchor, to));
+    const already = unique.filter((anchor) => !prose.includes(anchor)
+      && relationKey(anchor, to) in (relations ?? {})
+      && relationOf(relations, anchor, to).id === kind.id);
+    const todo = unique.filter((anchor) => !prose.includes(anchor) && !already.includes(anchor));
+    const targetTitle = endpointTitle(to);
+    if (!todo.length) {
+      app.toast(
+        prose.length
+          ? 'Every pair there is already joined by a markdown link — its relationship belongs on that wire'
+          : `All ${unique.length} already ${kind.label.toLowerCase()} “${targetTitle}”`,
+        'info',
+        2800,
+      );
+      announce('Nothing to forge — those pairs already carry it');
+      return 0;
+    }
+    step(() => {
+      for (const from of todo) {
+        relations = app.setWorldRelation(currentPath, from, to, kind.id) ?? relations;
+      }
+      drawEdges();
+      build();
+    }, `Link ${todo.length} card${todo.length === 1 ? '' : 's'} ${kind.label.toLowerCase()} “${targetTitle}”`);
+    const detail = [];
+    if (already.length) detail.push(`${already.length} already ${kind.label.toLowerCase()}`);
+    if (prose.length) detail.push(`${prose.length} joined by prose`);
+    const message = `${todo.length} bond${todo.length === 1 ? '' : 's'} forged → “${targetTitle}”${detail.length ? ` — ${detail.join(', ')}` : ''}`;
+    app.toast(message, 'ok', 3000);
+    announce(message);
+    return todo.length;
   }
 
   window.addEventListener('pointermove', (event) => {
+    if (linkPress && !linkDrag) {
+      const moved = Math.hypot(event.clientX - linkPress.startX, event.clientY - linkPress.startY);
+      if (moved < LINK_DRAG_THRESHOLD) return;
+      const press = linkPress;
+      linkPress = null;
+      startLinkDrag(press.event, press.from, press.handle);
+    }
     if (!linkDrag) return;
     updateLinkPreview(event.clientX, event.clientY);
     paintLinkTarget(linkTargetAt(event.clientX, event.clientY));
   });
 
   window.addEventListener('pointerup', (event) => {
+    if (linkPress) {
+      const press = linkPress;
+      linkPress = null;
+      const moved = Math.hypot(event.clientX - press.startX, event.clientY - press.startY);
+      if (moved < LINK_DRAG_THRESHOLD) {
+        selectLinkEndpoint(press.from, event);
+        return;
+      }
+      startLinkDrag(press.event, press.from, press.handle);
+    }
     if (!linkDrag) return;
     const target = linkTargetAt(event.clientX, event.clientY);
     const done = finishLinkDrag();
@@ -7408,13 +9233,13 @@ export function createWorldbuildPanel({ app, root }) {
   });
 
   window.addEventListener('pointercancel', () => {
-    if (linkDrag) cancelLinkDrag();
+    if (linkPress || linkDrag) cancelLinkDrag();
   });
   window.addEventListener('blur', () => {
-    if (linkDrag) cancelLinkDrag();
+    if (linkPress || linkDrag) cancelLinkDrag();
   });
   window.addEventListener('keydown', (event) => {
-    if (!linkDrag || event.key !== 'Escape') return;
+    if ((!linkPress && !linkDrag) || event.key !== 'Escape') return;
     event.preventDefault();
     event.stopPropagation();
     cancelLinkDrag();
@@ -7443,7 +9268,8 @@ export function createWorldbuildPanel({ app, root }) {
       if (!from || !to || (from !== own && to !== own)) continue;
       if (!endpointKnown(from) || !endpointKnown(to)) continue;
       const known = relationKind(kind) ?? relationKind(DEFAULT_RELATION);
-      rows.push({ from, to, relation: known.id, rank: known.rank });
+      const note = bondNotes[key] ?? bondNotes[relationKey(to, from)] ?? '';
+      rows.push({ from, to, relation: known.id, rank: known.rank, note });
     }
     // Weakest first, so the meaning of the list grows as it is read.
     return rows.sort((a, b) => a.rank - b.rank);
@@ -7469,10 +9295,9 @@ export function createWorldbuildPanel({ app, root }) {
     const rows = [...bonds.values()].sort((a, b) => a.rank - b.rank);
     for (const bond of rows) {
       items.push(el('button', {
-        class: 'wb-menu-item',
+        class: 'wb-menu-item wb-bond-row',
         type: 'button',
-        text: `${endpointTitle(bond.from)} ${relationKind(bond.relation).label.toLowerCase()} ${endpointTitle(bond.to)} ✕`,
-        title: 'Remove this relationship — a prose link between the two notes stays',
+        title: `Remove this relationship — a prose link between the two notes stays${bond.note ? `\nNote: ${bond.note}` : ''}`,
         onclick: () => {
           step(() => {
             relations = app.removeWorldRelation(currentPath, bond.from, bond.to) ?? relations;
@@ -7482,7 +9307,13 @@ export function createWorldbuildPanel({ app, root }) {
           announceBondRemoved(bond.from, bond.to, relationKind(bond.relation).label);
           closeMenu();
         },
-      }));
+      }, [
+        el('span', {
+          class: 'wb-bond-row-title',
+          text: `${endpointTitle(bond.from)} ${relationKind(bond.relation).label.toLowerCase()} ${endpointTitle(bond.to)} ✕`,
+        }),
+        bond.note ? el('span', { class: 'wb-bond-row-note', text: `“${bond.note}”` }) : null,
+      ]));
     }
 
     const kind = el('select', { class: 'wb-menu-select', 'aria-label': 'Relationship kind' }, RELATION_KINDS.map(
@@ -7762,9 +9593,12 @@ export function createWorldbuildPanel({ app, root }) {
     const current = relationKind(relations?.[key]);
     const inverse = current?.inverse ? relationKind(current.inverse) : null;
     if (!current || !inverse) return;
+    // The note explains the bond, not the direction it was written in.
+    const note = bondNotes[key] ?? bondNotes[relationKey(edge.to, edge.from)] ?? '';
     step(() => {
       relations = app.setWorldRelation(currentPath, edge.to, edge.from, inverse.id) ?? relations;
       relations = app.removeWorldRelation(currentPath, edge.from, edge.to) ?? relations;
+      bondNotes = app.setWorldBondNote(currentPath, edge.to, edge.from, note) ?? bondNotes;
       drawEdges();
       build();
     }, `Reverse “${endpointTitle(edge.from)}” ${current.label.toLowerCase()} “${endpointTitle(edge.to)}”`);
@@ -7789,6 +9623,92 @@ export function createWorldbuildPanel({ app, root }) {
     routing = normalizeRouting({ ...routing, edges });
     app.saveWorldRouting?.(currentPath, routing);
     drawEdges();
+  }
+
+  /**
+   * Store one bond's note as an undoable step. The note is keyed by the pair,
+   * so it reads back from either end of the wire, and an empty text removes it.
+   */
+  function setBondNote(edge, text) {
+    if (!currentPath || !edge?.from || !edge.to) return;
+    const from = edge.from;
+    const to = edge.to;
+    const kind = relationKind(edge.relation);
+    const what = kind
+      ? `“${endpointTitle(from)}” ${kind.label.toLowerCase()} “${endpointTitle(to)}”`
+      : `“${endpointTitle(from)}” → “${endpointTitle(to)}”`;
+    const clean = String(text ?? '').trim();
+    step(() => {
+      bondNotes = app.setWorldBondNote(currentPath, from, to, clean) ?? bondNotes;
+      drawEdges();
+      build();
+    }, clean ? `Bond note on ${what}` : `Remove bond note from ${what}`);
+    app.toast(clean ? 'Bond note saved' : 'Bond note removed', 'ok', 1600);
+  }
+
+  /**
+   * The note for one bond: a sentence or a source citation, kept with the bond
+   * and read in the inspector, the wire's tooltip and canvas search. The box is
+   * a menu panel, so Escape and an outside click close it like any other.
+   */
+  function openBondNoteEditor(edge) {
+    if (!currentPath || !edge?.from || !edge.to) return;
+    const anchor = menuEl?.getBoundingClientRect() ?? null;
+    closeMenu({ returnFocus: false });
+    const key = relationKey(edge.from, edge.to);
+    const existing = bondNotes[key] ?? bondNotes[relationKey(edge.to, edge.from)] ?? '';
+    const relation = relationKind(edge.relation);
+    const label = `${endpointTitle(edge.from)} ${relation ? relation.label.toLowerCase() : '→'} ${endpointTitle(edge.to)}`;
+    const field = el('textarea', {
+      class: 'wb-bond-note-field',
+      rows: '3',
+      maxlength: String(BOND_NOTE_MAX),
+      spellcheck: 'true',
+      'aria-label': `Bond note for ${label}`,
+      placeholder: 'Why this bond holds — a sentence, or where it comes from.',
+      onkeydown: (event) => {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          save();
+        }
+      },
+    });
+    field.value = existing;
+    function save() {
+      const text = field.value.trim();
+      closeMenu({ returnFocus: false });
+      setBondNote(edge, text);
+    }
+    const panel = el('div', {
+      class: 'wb-menu wb-bond-note',
+      role: 'dialog',
+      'aria-label': `Bond note for ${label}`,
+    }, [
+      el('div', { class: 'wb-menu-label', text: label }),
+      el('span', { class: 'wb-menu-note', text: 'Kept with the bond — Ctrl+Enter saves.' }),
+      field,
+      el('div', { class: 'wb-bond-note-actions' }, [
+        el('button', { class: 'wb-menu-item wb-bond-note-save', type: 'button', text: 'Save note', onclick: save }),
+        existing ? el('button', {
+          class: 'wb-menu-item',
+          type: 'button',
+          text: 'Remove',
+          onclick: () => {
+            closeMenu({ returnFocus: false });
+            setBondNote(edge, '');
+          },
+        }) : null,
+        el('button', { class: 'wb-menu-item', type: 'button', text: 'Cancel', onclick: () => closeMenu({ returnFocus: true }) }),
+      ]),
+    ]);
+    menuEl = panel;
+    document.body.append(panel);
+    panel.style.left = `${Math.max(8, Math.min(anchor?.left ?? 8, window.innerWidth - panel.offsetWidth - 8))}px`;
+    panel.style.top = `${Math.max(8, Math.min(anchor?.top ?? 8, window.innerHeight - panel.offsetHeight - 8))}px`;
+    document.addEventListener('pointerdown', dismissMenu, true);
+    document.addEventListener('keydown', escapeMenu, true);
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
   }
 
   /**
@@ -7851,6 +9771,16 @@ export function createWorldbuildPanel({ app, root }) {
       });
       relationshipItems.push(removeButton);
       items.push(submenuItem('Relationship', relationshipItems, current?.label ?? 'Associate'));
+      const bondKey = relationKey(edge.from, edge.to);
+      const note = bondNotes[bondKey] ?? bondNotes[relationKey(edge.to, edge.from)] ?? '';
+      if (note) items.push(el('span', { class: 'wb-menu-note wb-bond-note-text', text: `“${note}”` }));
+      items.push(el('button', {
+        class: 'wb-menu-item',
+        type: 'button',
+        text: note ? 'Edit bond note…' : 'Bond note…',
+        title: 'Why this bond holds — a sentence or a source citation, read in the inspector, the wire tooltip and searches',
+        onclick: () => openBondNoteEditor(edge),
+      }));
     }
 
     const eff = effectiveRouting(routing, key);
@@ -8102,6 +10032,27 @@ export function createWorldbuildPanel({ app, root }) {
         }));
       }
       items.push(submenuItem('Card height', heightItems, cardSizeOf(anchor) === 'content' ? 'Fit to content' : 'Fixed height'));
+      const orderTargets = selected.size ? [...selected] : [anchor];
+      const orderSubject = orderTargets.length === 1
+        ? `“${noteTitle(orderTargets[0])}”`
+        : `${orderTargets.length} selected cards`;
+      items.push(submenuItem('Order', [
+        el('button', {
+          class: 'wb-menu-item', type: 'button', text: 'Bring to Front',
+          title: `Put ${orderSubject} above every other card`,
+          onclick: () => { closeMenu(); reorderCards(orderTargets, 'front'); },
+        }),
+        el('button', {
+          class: 'wb-menu-item', type: 'button', text: 'Send to Back',
+          title: `Put ${orderSubject} behind every other card`,
+          onclick: () => { closeMenu(); reorderCards(orderTargets, 'back'); },
+        }),
+        el('button', {
+          class: 'wb-menu-item', type: 'button', text: 'Order by Size',
+          title: 'Order every card largest at the back, smallest in front — each overlapping card stays at least partly visible',
+          onclick: () => { closeMenu(); orderCardsBySize(); },
+        }),
+      ]));
       items.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: pinned[anchor] ? 'Unpin node' : 'Pin node',
         title: pinned[anchor]
@@ -8413,7 +10364,7 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /** The smallest rectangle around a group's cards, plus those cards' indexes. */
-  function groupBox(group) {
+  function groupHull(group) {
     const indexes = [...effectiveMembers(group)]
       .map((anchor) => model.notes.findIndex((note) => note.anchor === anchor))
       .filter((index) => index >= 0);
@@ -8424,6 +10375,19 @@ export function createWorldbuildPanel({ app, root }) {
     const maxX = Math.max(...rects.map((rect) => rect.x + rect.width));
     const maxY = Math.max(...rects.map((rect) => rect.y + rect.height));
     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY, indexes };
+  }
+
+  /**
+   * The rectangle a group draws: its cards' hull, or — once pinned — the frame
+   * it was pinned with, grown around any card moved outside it. Cards moving
+   * back contract the frame to the pinned shape, so the group keeps its place
+   * while its boundary expands and contracts around what it holds.
+   */
+  function groupBox(group) {
+    const hull = groupHull(group);
+    if (!hull || !group?.frame) return hull;
+    const frame = pinnedGroupFrame(group.frame, hull);
+    return frame ? { ...frame, indexes: hull.indexes } : hull;
   }
 
   /** Where one end of a relationship sits: a card's box, or a group's bounds. */
@@ -8542,7 +10506,7 @@ export function createWorldbuildPanel({ app, root }) {
           })
         : null;
     const summary = el('div', {
-      class: `wb-group-summary${summaryLocked ? ' is-locked' : ''}${summaryFrozen ? ' is-frozen' : ''}${group.pinned ? ' is-pinned' : ''}`,
+      class: `wb-group-summary${summaryLocked ? ' is-locked' : ''}${summaryFrozen ? ' is-frozen' : ''}${group.pinned ? ' is-pinned' : ''}${lensKeepsGroup(group.id) ? '' : ' is-dimmed'}`,
       dataset: { groupId: group.id },
       title: summaryFrozen
         ? summaryFrozenTitle
@@ -8571,6 +10535,10 @@ export function createWorldbuildPanel({ app, root }) {
       if (isGroupLocked(group)) {
         app.toast(`“${group.name || 'Group'}” is locked — click the padlock to unlock it before moving its contents`, 'warn', 2400);
         event.preventDefault();
+        return;
+      }
+      if (group.pinned) {
+        refusePinnedGroupDrag(event, group);
         return;
       }
       const movable = members.filter((anchor) => !isAnchorLocked(anchor) && !isAnchorFrozen(anchor));
@@ -8622,7 +10590,7 @@ export function createWorldbuildPanel({ app, root }) {
       const boxY = box.y - topPad;
       const boxHeight = box.height + topPad + pad;
       edgeSvg.append(svgNode('rect', {
-        class: `wb-box${dropTargetId === group.id ? ' is-drop-target' : ''}${isGroupLocked(group) ? ' is-locked' : ''}${group.pinned ? ' is-pinned' : ''}`,
+        class: `wb-box${dropTargetId === group.id ? ' is-drop-target' : ''}${isGroupLocked(group) ? ' is-locked' : ''}${group.pinned ? ' is-pinned' : ''}${lensKeepsGroup(group.id) ? '' : ' is-dimmed'}`,
         'data-link-group': group.id,
         x: boxX,
         y: boxY,
@@ -8709,14 +10677,14 @@ export function createWorldbuildPanel({ app, root }) {
             })
           : el('span', { class: 'wb-grip', text: group.pinned ? '📌' : '⠿' });
       const tab = el('div', {
-        class: `wb-group-tab${groupLocked ? ' is-locked' : ''}${groupFrozen ? ' is-frozen' : ''}${group.pinned ? ' is-pinned' : ''}`,
+        class: `wb-group-tab${groupLocked ? ' is-locked' : ''}${groupFrozen ? ' is-frozen' : ''}${group.pinned ? ' is-pinned' : ''}${lensKeepsGroup(group.id) ? '' : ' is-dimmed'}`,
         dataset: { groupId: group.id },
         tabindex: '0',
         'aria-haspopup': 'menu',
-        'aria-keyshortcuts': 'Shift+F10',
+        'aria-keyshortcuts': 'Shift+F10 Shift+R',
         title: groupFrozen
           ? frozenTitle
-          : groupLocked ? groupLockTitle : group.pinned ? `${name} — pinned; Arrange works around it` : `${name} — drag to move the group`,
+          : groupLocked ? groupLockTitle : group.pinned ? `${name} — pinned frame; Arrange works around it, and its cards still move` : `${name} — drag to move the group`,
       }, [
         lockControl,
         el('span', {
@@ -8743,6 +10711,10 @@ export function createWorldbuildPanel({ app, root }) {
         if (groupLocked) {
           app.toast(`“${name}” is locked — click the padlock to unlock it before moving its contents`, 'warn', 2400);
           event.preventDefault();
+          return;
+        }
+        if (group.pinned) {
+          refusePinnedGroupDrag(event, group);
           return;
         }
         const movable = [...effectiveMembers(group)].filter(
@@ -8795,7 +10767,7 @@ export function createWorldbuildPanel({ app, root }) {
     // Every connector names its ends the same way — a note anchor or a group
     // endpoint — so prose links, the outline spine and group bonds all draw
     // and label through one path.
-    const connectors = connectorList(model, groups, relations);
+    const connectors = connectorList(model, groups, relations, bondNotes);
     // A selection outlives a redraw but not its connector: prune dead keys.
     const live = new Set(connectors.map(connectorKey));
     if ([...selectedEdges].some((key) => !live.has(key))) {
@@ -8818,15 +10790,68 @@ export function createWorldbuildPanel({ app, root }) {
     // and moves along it to avoid neighbours, crossing wires, cards and group
     // borders.
     const labels = [];
+    // The lens's screen-sized kind words, one per focused asserted bond.
+    const chips = [];
+    const lens = lensState?.active ? lensState : null;
     const surfaceRects = labelSurfaceRects();
     const drawnConnectors = spreadConnectorCurves(prepared);
     connectorCurves = drawnConnectors.map(({ key, at }) => ({ key, at }));
+    // At icon scale a wire is a hairline a pixel wide, and there can be a
+    // thousand of them: paint one path per look instead of a path and a hit
+    // twin per wire. The canvas then holds a handful of SVG nodes however many
+    // connectors it has, and a pan repaints that handful, not a thousand paths.
+    if (zoomMode(view.s).icon) {
+      const buckets = new Map();
+      for (const { edge, key, path, stacked, cut, at } of drawnConnectors) {
+        const isGroup = edge.from.startsWith('group:') || edge.to.startsWith('group:');
+        const relation = edge.relation ? relationKind(edge.relation) : null;
+        const lensFocused = Boolean(lens?.edges.has(key));
+        const lensClass = lensFocused ? ' is-lens' : (lens && !selectedEdges.has(key) ? ' is-dimmed' : '');
+        const cls = `wb-edge wb-edge-batch wb-edge-${isGroup ? 'group' : edge.kind}${relation ? ` wb-rel-${relation.id}` : ''}${selectedEdges.has(key) ? ' is-selected' : ''}${lensClass}${cut && !stacked ? ' is-cut' : ''}`;
+        buckets.set(cls, `${buckets.get(cls) ?? ''} ${path}`);
+        if (lensFocused && relation) {
+          const point = at(0.5);
+          chips.push({ key, x: point.x, y: point.y, label: relation.label.toLowerCase(), relation: relation.id, note: typeof edge.note === 'string' ? edge.note : '' });
+        }
+      }
+      for (const [cls, d] of buckets) {
+        edgeSvg.append(svgNode('path', { class: cls, d: d.trim(), fill: 'none' }));
+      }
+      renderLensChips(chips);
+      syncConnectorUi();
+      return;
+    }
+    // A wire whose two ends are both well off the screen is not painted: at
+    // detail zoom the canvas can hold a thousand connectors and show a dozen.
+    const stageBox = visibleCanvasBox();
+    const reachesScreen = (edge) => {
+      const a = endpointRect(edge.from);
+      const b = endpointRect(edge.to);
+      if (!a || !b) return Boolean(a || b);
+      // The box the wire lives in, both ends and the whole bend between them:
+      // a wire that crosses the screen keeps drawing, one entirely past an
+      // edge does not.
+      const left = Math.min(a.x, b.x);
+      const top = Math.min(a.y, b.y);
+      const right = Math.max(a.x + a.width, b.x + b.width);
+      const bottom = Math.max(a.y + a.height, b.y + b.height);
+      return right >= stageBox.x && left <= stageBox.right && bottom >= stageBox.y && top <= stageBox.bottom;
+    };
     for (const { edge, key, eff, stacked, path, at, headAtStart, cut } of drawnConnectors) {
+      if (!reachesScreen(edge)) continue;
       const isGroup = edge.from.startsWith('group:') || edge.to.startsWith('group:');
       const relation = edge.relation ? relationKind(edge.relation) : null;
       const kindClass = `wb-edge-${isGroup ? 'group' : edge.kind}`;
+      // A wire the lens keeps is the point of the picture; the rest of the
+      // canvas steps back so the neighbourhood reads as one shape.
+      const lensFocused = Boolean(lens?.edges.has(key));
+      // A wire the reader picked explicitly keeps its own weight: lens dimming
+      // is about the neighbourhood, not about overruling a connector choice.
+      const lensClass = lensFocused
+        ? ' is-lens'
+        : (lens && !selectedEdges.has(key) ? ' is-dimmed' : '');
       const line = svgNode('path', {
-        class: `wb-edge ${kindClass}${relation ? ` wb-rel-${relation.id}` : ''}${selectedEdges.has(key) ? ' is-selected' : ''}`,
+        class: `wb-edge ${kindClass}${relation ? ` wb-rel-${relation.id}` : ''}${selectedEdges.has(key) ? ' is-selected' : ''}${lensClass}`,
         d: path,
         fill: 'none',
         'data-from': edge.from,
@@ -8836,11 +10861,12 @@ export function createWorldbuildPanel({ app, root }) {
           ? headAtStart ? { 'marker-start': 'url(#wb-arrow)' } : { 'marker-end': 'url(#wb-arrow)' }
           : {}),
       });
+      const note = typeof edge.note === 'string' ? edge.note : '';
       const title = svgNode('title');
       const kindPrefix = edge.kind === 'bond' ? 'Canvas bond · ' : isGroup ? 'Group bond · ' : '';
       title.textContent = kindPrefix + (relation
         ? `${endpointTitle(edge.from)} ${relation.label.toLowerCase()} ${endpointTitle(edge.to)}`
-        : `${endpointTitle(edge.from)} → ${endpointTitle(edge.to)}`);
+        : `${endpointTitle(edge.from)} → ${endpointTitle(edge.to)}`) + (note ? `\n“${note}”` : '');
       line.append(title);
       edgeSvg.append(line);
       // Put the invisible fat twin over the visible wire, so the whole wire
@@ -8852,7 +10878,7 @@ export function createWorldbuildPanel({ app, root }) {
         'data-edge-key': key,
       });
       edgeSvg.append(hit);
-      if (cut) edgeSvg.append(cutMarker(edge, key, cut, relation, isGroup ? '' : kindClass));
+      if (cut) edgeSvg.append(cutMarker(edge, key, cut, relation, isGroup ? '' : kindClass, lensClass));
       // The asserted kind, read right on the line; Associate stays unlabelled
       // because it is the default every plain link already has. A stacked
       // pair's wire is only STACK_GAP long — the word would sit on the cards
@@ -8861,16 +10887,29 @@ export function createWorldbuildPanel({ app, root }) {
       // right-click menu.
       if (!relation || relation.id === DEFAULT_RELATION || stacked) continue;
       const text = svgNode('text', {
-        class: `wb-edge-label wb-rel-${relation.id}`,
+        class: `wb-edge-label wb-rel-${relation.id}${lensClass}`,
         'text-anchor': 'middle',
         'dominant-baseline': 'central',
         'data-edge-key': key,
       });
       text.textContent = relation.label.toLowerCase();
+      // The same word rides a screen-sized chip when the canvas is zoomed
+      // out far enough that the SVG's own word stops being legible.
+      if (lensFocused) {
+        const point = at(0.5);
+        chips.push({
+          key,
+          x: point.x,
+          y: point.y,
+          label: relation.label.toLowerCase(),
+          relation: relation.id,
+          note,
+        });
+      }
       // The word is the handle: click it and the asserted kind steps to the
       // next one in the scale (weakest to strongest, then wraps).
       const tip = svgNode('title');
-      tip.textContent = 'Click to change this relationship — right-click for more connector options';
+      tip.textContent = `Click to change this relationship — right-click for more connector options${note ? `\n“${note}”` : ''}`;
       text.append(tip);
       text.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -8897,6 +10936,7 @@ export function createWorldbuildPanel({ app, root }) {
       });
     }
     placeLabels(labels);
+    renderLensChips(chips);
     syncConnectorUi();
   }
 
@@ -8905,10 +10945,10 @@ export function createWorldbuildPanel({ app, root }) {
    * a chevron inside it. That card can be screens away, so the diamond is
    * also the way there — a click flies the camera to it.
    */
-  function cutMarker(edge, key, cut, relation, kindClass = '') {
+  function cutMarker(edge, key, cut, relation, kindClass = '', lensClass = '') {
     const angle = (Math.atan2(cut.dir.y, cut.dir.x) * 180) / Math.PI;
     const marker = svgNode('g', {
-      class: `wb-edge-cut${kindClass ? ` ${kindClass}` : ''}${relation ? ` wb-rel-${relation.id}` : ''}${selectedEdges.has(key) ? ' is-selected' : ''}`,
+      class: `wb-edge-cut${kindClass ? ` ${kindClass}` : ''}${relation ? ` wb-rel-${relation.id}` : ''}${selectedEdges.has(key) ? ' is-selected' : ''}${lensClass}`,
       transform: `translate(${cut.x} ${cut.y}) rotate(${angle})`,
       'data-cut-to': edge.to,
     });
@@ -8978,6 +11018,7 @@ export function createWorldbuildPanel({ app, root }) {
         connectorBase: new Set(selectedEdges),
         moved: false,
       };
+      selectionQuiet = true;
       event.preventDefault();
       return;
     }
@@ -9065,13 +11106,21 @@ export function createWorldbuildPanel({ app, root }) {
           syncConnectorUi();
           scheduleEdges();
         }
+        // What the sweep holds so far, on the box itself: at a zoom where a
+        // card is only an icon, the count is what steering the drag needs.
+        const hitCount = hits instanceof Set ? hits.size : hits.length;
+        const parts = [`${hitCount} card${hitCount === 1 ? '' : 's'}`];
+        const covered = coveredGroups(groups, hits).length;
+        if (covered) parts.push(`${covered} group${covered === 1 ? '' : 's'}`);
+        if (marquee.connectorBase.size) parts.push(`${selectedEdges.size} wire${selectedEdges.size === 1 ? '' : 's'}`);
+        marqueeCount.textContent = parts.join(' · ');
       }
       return;
     }
     if (panning) {
       view.x = panning.viewX + (event.clientX - panning.startX);
       view.y = panning.viewY + (event.clientY - panning.startY);
-      applyView();
+      scheduleView();
       return;
     }
     if (!dragging) return;
@@ -9169,7 +11218,7 @@ export function createWorldbuildPanel({ app, root }) {
     const px = event.clientX - rect.left;
     const py = event.clientY - rect.top;
     view = snapZoomView(view, px, py, Math.exp(-event.deltaY * 0.002));
-    applyView();
+    scheduleView();
     showZoomHud();
     // Zooming moves the saved anchor too; the save is debounced underneath,
     // so a pinch stream collapses into one write.
@@ -9183,6 +11232,10 @@ export function createWorldbuildPanel({ app, root }) {
       if (!marquee.moved && !marquee.additive) setSelection([]);
       marquee = null;
       marqueeBox.classList.add('hidden');
+      marqueeCount.textContent = '';
+      // The drag stayed quiet while it ran, so its result is the announcement.
+      selectionQuiet = false;
+      announceSelection();
     }
     if (panning) {
       panning = null;
@@ -9207,7 +11260,7 @@ export function createWorldbuildPanel({ app, root }) {
         sizeCanvas();
         drawEdges();
       }
-      commitStep(done.moved ? 'Resize note' : undefined);
+      commitStep(done.moved ? `Resized “${noteTitle(done.anchor)}”` : undefined);
     }
     if (!dragging) return;
     const drop = dragging;
@@ -9225,7 +11278,7 @@ export function createWorldbuildPanel({ app, root }) {
     // dropped above a node it links to stacks with it, in the same step.
     const dropName = dropMembership(drop);
     restackFoldedCards(drop.members.map((member) => member.anchor));
-    commitStep(dropName ?? (drop.groupId ? 'Move group' : drop.selection ? `Move ${drop.members.length} cards` : 'Move card'));
+    commitStep(dropName ?? moveStepName(drop));
   });
 
   return {

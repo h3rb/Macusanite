@@ -3170,6 +3170,7 @@ dialog::backdrop {
 .viewer.is-world .wb-toolbar,
 .viewer.is-world .wb-search,
 .viewer.is-world .wb-connector-bar,
+.viewer.is-world .wb-selection-bar,
 .viewer.is-world .wb-stats {
   flex: 0 0 auto;
 }
@@ -3432,6 +3433,22 @@ dialog::backdrop {
   white-space: nowrap;
 }
 
+/* What a bond means, read under the row that reaches it: the kind is a label,
+ * the note is the reason. */
+.wb-inspector-link-note {
+  display: -webkit-box;
+  grid-column: 1 / -1;
+  margin-top: 1px;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-style: italic;
+  line-height: 1.35;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .wb-inspector-link:hover .wb-inspector-link-name,
 .wb-inspector-picked:hover .wb-inspector-picked-name {
   color: var(--accent);
@@ -3638,6 +3655,227 @@ dialog::backdrop {
   font-size: 13px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+/* The navigator: a corner map of the whole canvas with the viewport drawn on
+ * it, the drawing mode named beside it, and the two framings that stay useful
+ * when a card has been dragged out of sight or the canvas is too small to
+ * orient by. Settings → Worldbuilding hides it, and the × hides it at once. */
+/* Tablet gestures (Settings → Worldbuilding): rings, grips and resize corners
+ * grow to finger size, and the stage keeps every touch for itself so a press
+ * is a press rather than a scroll. Nothing here applies with the setting off. */
+body.is-touch-canvas .wb-stage {
+  touch-action: none;
+}
+
+body.is-touch-canvas .wb-link-handle {
+  width: 24px;
+  height: 24px;
+}
+
+body.is-touch-canvas .wb-link-handle-core {
+  width: 11px;
+  height: 11px;
+  border-width: 2px;
+}
+
+body.is-touch-canvas .wb-grip {
+  padding: 6px 4px;
+}
+
+body.is-touch-canvas .wb-resize {
+  width: 26px;
+  height: 26px;
+}
+
+body.is-touch-canvas .wb-group-tab {
+  min-height: 34px;
+  padding: 5px 12px 5px 9px;
+}
+
+/* The zoomed-out corner ring is already scaled up; a finger needs more. */
+body.is-touch-canvas .wb-stage.is-forge-zoom .wb-card-head .wb-link-handle,
+body.is-touch-canvas .wb-stage.is-forge-zoom .wb-group-tab .wb-link-handle,
+body.is-touch-canvas .wb-stage.is-forge-zoom .wb-group-summary .wb-link-handle {
+  width: 34px;
+  height: 34px;
+}
+
+body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
+  width: 14px;
+  height: 14px;
+}
+
+/* The one-time object-map note: bottom-left, clear of the navigator, so the
+ * first pass below 65% explains the rings where the reader is already looking. */
+.wb-zoom-tip {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 9;
+  /* A hint must never eat a press meant for the canvas under it. */
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: calc(100% - 240px);
+  min-width: 220px;
+  max-width: 340px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  box-shadow: var(--shadow-lg);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.wb-zoom-tip.hidden {
+  display: none;
+}
+
+.wb-zoom-tip button {
+  pointer-events: auto;
+}
+
+.wb-zoom-tip-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wb-zoom-tip-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.wb-zoom-tip-row {
+  display: flex;
+  gap: 7px;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.wb-zoom-tip-mark {
+  flex: none;
+  width: 14px;
+  color: var(--accent);
+  font-size: 12px;
+  text-align: center;
+}
+
+.wb-navigator {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 196px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: var(--shadow-lg);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.hide-canvas-navigator .wb-navigator {
+  display: none;
+}
+
+.wb-nav-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 1px;
+}
+
+.wb-nav-kicker {
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wb-nav-mode {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wb-nav-hide {
+  flex: none;
+}
+
+.wb-nav-map {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 5px;
+  background: var(--bg);
+}
+
+.wb-nav-group {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 0.7;
+  opacity: 0.8;
+}
+
+.wb-nav-card {
+  opacity: 0.5;
+}
+
+.wb-nav-card.is-selected {
+  opacity: 1;
+  stroke: var(--accent);
+  stroke-width: 1.2;
+}
+
+.wb-nav-viewport {
+  fill: color-mix(in srgb, var(--accent) 16%, transparent);
+  stroke: var(--accent);
+  stroke-width: 1.1;
+  pointer-events: none;
+}
+
+.wb-nav-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.wb-nav-action {
+  flex: 1;
+  padding: 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.wb-nav-action:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.wb-nav-action:disabled {
+  color: var(--text-faint);
+  cursor: default;
+  opacity: 0.6;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3873,6 +4111,21 @@ dialog::backdrop {
   pointer-events: none;
 }
 
+/* What the sweep holds, on the box itself, so a drag can be steered by count
+ * at a zoom where the cards underneath are only icons. */
+.wb-marquee-count {
+  position: absolute;
+  right: -1px;
+  bottom: -21px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .wb-select-menu {
   min-width: 220px;
 }
@@ -4098,6 +4351,307 @@ dialog::backdrop {
   font-size: 11px;
 }
 
+/* The quick-forge palette: search, shortlist and the whole list in one
+ * compact panel, kept inside the window wherever the drag ended. */
+.wb-forge-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(300px, calc(100vw - 16px));
+  padding: 8px;
+  overflow: hidden;
+}
+
+.wb-forge-head .wb-menu-label,
+.wb-forge-head .wb-menu-note {
+  padding: 0 2px;
+}
+
+.wb-forge-search {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.wb-forge-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.wb-forge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.wb-forge-section {
+  padding: 6px 6px 3px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wb-forge-section:first-child {
+  padding-top: 2px;
+}
+
+.wb-forge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.wb-forge-row.is-active {
+  background: var(--bg-hover);
+}
+
+.wb-forge-number {
+  width: 10px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.wb-forge-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.wb-forge-tag {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  color: var(--text-faint);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wb-forge-star {
+  width: 1em;
+  color: var(--warn);
+  text-align: center;
+}
+
+.wb-forge-hint {
+  display: flex;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.wb-forge-empty {
+  margin: 4px 6px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+/* The bond note: one sentence of why a wire exists, kept with the wire. */
+.wb-bond-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(320px, calc(100vw - 16px));
+  padding: 8px;
+}
+
+.wb-bond-note .wb-menu-label,
+.wb-bond-note .wb-menu-note {
+  padding: 0 2px;
+}
+
+.wb-bond-note-field {
+  width: 100%;
+  min-height: 62px;
+  max-height: 180px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.wb-bond-note-field:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.wb-bond-note-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.wb-bond-note-actions .wb-menu-item {
+  width: auto;
+  padding: 5px 9px;
+}
+
+.wb-bond-note-save {
+  font-weight: 600;
+}
+
+.wb-bond-note-text {
+  white-space: normal;
+  font-style: italic;
+}
+
+.wb-bond-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wb-bond-row-note {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-style: italic;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+/* The canvas's voice: selection, flow steps and forged bonds are announced
+ * politely from here, and nothing is drawn. */
+.wb-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The keyboard's relate flow: source, “Relate to…”, a searched target picked
+ * in canvas order, then the same kind palette a drag opens. */
+.wb-relate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(320px, calc(100vw - 16px));
+  padding: 8px;
+  overflow: hidden;
+}
+
+.wb-relate-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 2px;
+}
+
+.wb-relate-head .wb-menu-label {
+  padding: 0;
+}
+
+.wb-relate-step {
+  color: var(--text-faint);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wb-relate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.wb-relate-section {
+  padding: 6px 6px 3px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wb-relate-section:first-child {
+  padding-top: 2px;
+}
+
+.wb-relate-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.wb-relate-row.is-active {
+  background: var(--bg-hover);
+}
+
+.wb-relate-number {
+  width: 10px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.wb-relate-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-relate-type {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wb-relate-hint {
+  display: flex;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.wb-relate-empty {
+  margin: 4px 6px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
 /* The node-type picker: a grid of icon buttons. */
 .wb-menu-icons {
   display: grid;
@@ -4280,6 +4834,79 @@ dialog::backdrop {
   padding: 6px 10px;
   color: var(--text-faint);
   font-size: 12px;
+}
+
+/* The caret beside undo opens the canvas's checkpoints: what the canvas
+ * looked like before each step, each one a place to come back to. */
+.wb-history-toggle {
+  min-width: 18px;
+  min-height: 21px;
+  padding: 0 3px;
+  line-height: 1;
+}
+
+.wb-menu.wb-checkpoints {
+  min-width: 260px;
+  max-width: 340px;
+}
+
+.wb-checkpoint {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wb-checkpoint:hover,
+.wb-checkpoint:focus-visible {
+  background: var(--bg-hover);
+}
+
+.wb-checkpoint-glyph {
+  color: var(--text-faint);
+}
+
+.wb-checkpoint-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-checkpoint-steps {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.wb-checkpoint-hint {
+  display: block;
+  padding: 0 10px 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.wb-checkpoint-now {
+  display: block;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .wb-legend-row {
@@ -4550,6 +5177,29 @@ dialog::backdrop {
   margin-right: auto;
 }
 
+/* The set's bulk actions: one row that appears with a region pick, its counts
+ * on the label and on every button. */
+.wb-selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+
+.wb-selection-bar.hidden {
+  display: none;
+}
+
+.wb-selection-count {
+  margin-right: auto;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .wb-arrowhead {
   fill: var(--accent);
   fill: context-stroke;
@@ -4597,6 +5247,8 @@ dialog::backdrop {
 .wb-rel-member-of,
 .wb-rel-tab,
 .wb-rel-tab-of,
+.wb-rel-supplying,
+.wb-rel-supplied-by,
 .wb-rel-references,
 .wb-rel-referenced-by {
   --wb-weight: 2.2px;
@@ -4678,6 +5330,8 @@ dialog::backdrop {
   white-space: nowrap;
   cursor: grab;
   user-select: none;
+  /* Above every card, including one just clicked to the front. */
+  z-index: 100000;
 }
 
 .wb-group-tab .wb-grip {
@@ -4715,12 +5369,150 @@ dialog::backdrop {
   cursor: pointer;
 }
 
+/* The relationship lens: a selection dims everything more than one step away,
+ * keeps its own wires at full strength, and lets the kinds on them read as the
+ * explanation of the shape. Dimming is per object, so explicit connector
+ * selections and the search isolation keep their own weight. */
+.wb-stage.is-lens .wb-annotation.is-dimmed {
+  opacity: 0.18;
+}
+
+.wb-box.is-dimmed {
+  opacity: 0.16;
+}
+
+.wb-group-tab.is-dimmed,
+.wb-group-summary.is-dimmed {
+  opacity: 0.28;
+}
+
+.wb-edge.is-dimmed {
+  opacity: 0.08;
+}
+
+.wb-edge.is-lens {
+  stroke-width: calc(var(--wb-weight, 1.6px) * 1.9);
+  opacity: 1;
+}
+
+.wb-edge-label.is-dimmed {
+  opacity: 0.1;
+}
+
+.wb-edge-label.is-lens {
+  font-weight: 700;
+}
+
+/* The lens's kind words live in stage pixels: once the canvas is an object map
+ * (below 75%) the words the SVG draws on the wires are a few pixels tall, so
+ * the focused bonds carry their kind at a size that stays readable. */
+.wb-lens-labels {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.wb-lens-label {
+  position: absolute;
+  transform: translate(-50%, calc(-50% + var(--wb-lens-shift, 0px)));
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.wb-lens-label.wb-rel-ally {
+  color: var(--ok);
+}
+
+.wb-lens-label.wb-rel-foe {
+  color: var(--error);
+}
+
 /* The cards layer spans the whole canvas, so it must let clicks through to
  * the edge labels underneath; only cards and group tabs take them. */
 .wb-cards {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  /* Cards carry an explicit stacking order inside this layer, so the layer
+   * itself keeps them all under the annotations above it. */
+  z-index: 0;
+}
+
+/* Below the icon handoff, cards are drawn in this one layer instead: a small
+ * icon box per visible card, with no head, fields or prose inside it. */
+.wb-icon-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.wb-icon-layer .wb-card {
+  pointer-events: auto;
+}
+
+/* An icon card keeps its box and its place, and nothing else: the type icon is
+ * centred in it at the same screen size the semantic face used to give it. */
+.wb-card.is-icon-form {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+.wb-card.is-icon-form .wb-icon {
+  font-size: calc(var(--wb-icon-font, 18px) * var(--wb-inv-zoom, 1));
+  line-height: 1;
+  color: var(--text);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.wb-card.is-icon-form .wb-link-handle {
+  position: absolute;
+  top: calc(-8px * var(--wb-inv-zoom, 1));
+  right: calc(-8px * var(--wb-inv-zoom, 1));
+}
+
+/* The states a full card shows as outlines around its face, on an icon box. */
+.wb-card.is-icon-form.is-selected .wb-icon {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.wb-card.is-icon-form.is-search-hit .wb-icon {
+  outline: 2px solid var(--warn);
+  outline-offset: 2px;
+}
+
+.wb-card.is-icon-form.is-search-current .wb-icon {
+  outline: 3px solid var(--warn);
+  outline-offset: 3px;
+}
+
+.wb-card.is-icon-form.is-link-target .wb-icon {
+  outline: 2px solid var(--warn);
+  outline-offset: 3px;
+}
+
+.wb-card.is-icon-form.is-dimmed {
+  opacity: 0.35;
 }
 
 .wb-card,
@@ -4728,7 +5520,7 @@ dialog::backdrop {
   pointer-events: auto;
 }
 
-/* Below 1:1 the card's text and controls are too small to aim at. Only the
+/* Below 75% the card's text and controls are too small to aim at. Only the
  * card itself, its head, fold toggle, resize handle and link port keep the
  * pointer; the rest falls through to the card, whose body is a drag surface.
  * Menus stay available on right-click, including the card's Rename command. */
@@ -5405,6 +6197,7 @@ dialog::backdrop {
 .wb-group-summary {
   position: absolute;
   pointer-events: auto;
+  z-index: 100000;
   width: 280px;
   height: 120px;
   box-sizing: border-box;

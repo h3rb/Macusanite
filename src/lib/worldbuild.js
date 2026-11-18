@@ -207,6 +207,8 @@ export const RELATION_KINDS = [
   // claims no authority, so it sits with Member Of at the low rank.
   { id: 'tab', label: 'Tab', inverse: 'tab-of', rank: 1 },
   { id: 'tab-of', label: 'Tab Of', inverse: 'tab', rank: 1 },
+  { id: 'supplying', label: 'Supplying', inverse: 'supplied-by', rank: 1 },
+  { id: 'supplied-by', label: 'Supplied By', inverse: 'supplying', rank: 1 },
   { id: 'template', label: 'Template', rank: 2 },
   { id: 'parent', label: 'Parent', inverse: 'child', rank: 2 },
   { id: 'child', label: 'Child', inverse: 'parent', rank: 2 },
@@ -1472,6 +1474,23 @@ export function cleanCardDims(dims = {}) {
   return out;
 }
 
+/**
+ * The cards' stacking order for a vein, bottom to top, by note anchor. A card
+ * the list does not name sits above the ones it does, so a note added after an
+ * order was saved still arrives on top. Duplicates and junk are dropped.
+ */
+export function cleanStackOrder(order = []) {
+  if (!Array.isArray(order)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const anchor of order) {
+    if (typeof anchor !== 'string' || !anchor || seen.has(anchor)) continue;
+    seen.add(anchor);
+    out.push(anchor);
+  }
+  return out;
+}
+
 export function cleanCollapsedGroups(collapsed = {}) {
   const out = {};
   for (const [id, value] of Object.entries(collapsed ?? {})) {
@@ -1529,9 +1548,11 @@ export function cleanSavedViews(views = []) {
 
 export function canvasSnapshot(state = {}) {
   return JSON.stringify({
+    schema: CANVAS_SCHEMA,
     positions: cleanPositions(state.positions),
     groups: state.groups ?? {},
     relations: state.relations ?? {},
+    bondNotes: cleanBondNotes(state.bondNotes),
     folded: state.folded ?? {},
     types: state.types ?? {},
     fields: state.fields ?? {},
@@ -1543,6 +1564,7 @@ export function canvasSnapshot(state = {}) {
     cardModes: cleanCardModes(state.cardModes),
     cardSizes: cleanCardSizes(state.cardSizes),
     cardDims: cleanCardDims(state.cardDims),
+    stack: cleanStackOrder(state.stack),
     collapsedGroups: cleanCollapsedGroups(state.collapsedGroups),
     annotations: cleanAnnotations(state.annotations),
     // Markdown is a table's source of truth. Table edit steps carry the prose
@@ -1601,16 +1623,74 @@ export function dropAnchorFromGroups(groups = {}, anchor) {
   return pruneGroups(groups ?? {}, (member) => member !== anchor);
 }
 
+/**
+ * A pinned group's stored frame, cleaned for the record: four finite numbers
+ * with a non-negative extent, or null when it is not a rectangle. The frame
+ * is the group's *place* — captured when it is pinned and never rewritten by
+ * a move or an arrangement.
+ */
+export function cleanGroupFrame(frame) {
+  if (!frame || typeof frame !== 'object') return null;
+  const { x, y, width, height } = frame;
+  if (![x, y, width, height].every((value) => Number.isFinite(value))) return null;
+  if (width < 0 || height < 0) return null;
+  return { x, y, width, height };
+}
+
+/**
+ * The rectangle a pinned group shows: its pinned frame, grown to hold every
+ * card that has since moved outside it. The pinned frame is the anchor, so a
+ * card moved out expands the group and moving it back contracts the group to
+ * exactly the shape it was pinned with. With no usable frame the cards' own
+ * hull stands in, so older records still draw.
+ */
+export function pinnedGroupFrame(frame, hull) {
+  const base = cleanGroupFrame(frame);
+  const content = cleanGroupFrame(hull);
+  if (!base) return content;
+  if (!content) return base;
+  const x = Math.min(base.x, content.x);
+  const y = Math.min(base.y, content.y);
+  const right = Math.max(base.x + base.width, content.x + content.width);
+  const bottom = Math.max(base.y + base.height, content.y + content.height);
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+/**
+ * Capture a frame for pinned groups that predate stored frames. Each gets the
+ * hull `hullOf` reports for it right now, so an old pin holds a boundary the
+ * same way a new one does. Unpinned groups and pins that already have a frame
+ * are left untouched; the groups and whether anything changed are returned.
+ */
+export function capturePinnedGroupFrames(groups, hullOf) {
+  const live = groups ?? {};
+  const captured = {};
+  for (const [id, group] of Object.entries(live)) {
+    if (!group?.pinned || cleanGroupFrame(group.frame)) continue;
+    const frame = cleanGroupFrame(hullOf(group));
+    if (!frame) continue;
+    captured[id] = { ...group, frame };
+  }
+  const changed = Object.keys(captured).length > 0;
+  return { groups: changed ? { ...live, ...captured } : live, changed };
+}
+
 export function pruneSnapshotAnchors(snap, live) {
   const prunedGroups = pruneGroups(snap.groups ?? {}, (anchor) => live.has(anchor));
   const { groups } = prunedGroups;
   const surviving = new Set(Object.keys(groups));
+  const known = (end) => live.has(end) || (end.startsWith('group:') && surviving.has(end.slice(6)));
   const relations = {};
   for (const [key, kind] of Object.entries(snap.relations ?? {})) {
     const ends = splitRelationKey(key);
-    if (!ends) continue;
-    const known = (end) => live.has(end) || (end.startsWith('group:') && surviving.has(end.slice(6)));
-    if (known(ends.from) && known(ends.to)) relations[key] = kind;
+    if (ends && known(ends.from) && known(ends.to)) relations[key] = kind;
+  }
+  // A note explains a bond, so it leaves with the bond: both its ends must
+  // still be on the canvas.
+  const bondNotes = {};
+  for (const [key, text] of Object.entries(cleanBondNotes(snap.bondNotes))) {
+    const ends = splitRelationKey(key);
+    if (ends && known(ends.from) && known(ends.to)) bondNotes[key] = text;
   }
   const anchors = (obj) => Object.fromEntries(
     Object.entries(obj ?? {}).filter(([anchor]) => live.has(anchor)),
@@ -1624,6 +1704,7 @@ export function pruneSnapshotAnchors(snap, live) {
     folded: anchors(snap.folded),
     groups,
     relations,
+    bondNotes,
     ...(snap.types ? { types: anchors(snap.types) } : {}),
     ...(snap.fields ? { fields: anchors(snap.fields) } : {}),
     ...(snap.colors ? { colors: anchors(snap.colors) } : {}),
@@ -1634,6 +1715,7 @@ export function pruneSnapshotAnchors(snap, live) {
     ...(snap.cardModes ? { cardModes: anchors(snap.cardModes) } : {}),
     ...(snap.cardSizes ? { cardSizes: anchors(snap.cardSizes) } : {}),
     ...(snap.cardDims ? { cardDims: anchors(snap.cardDims) } : {}),
+    ...(snap.stack ? { stack: cleanStackOrder(snap.stack).filter((anchor) => live.has(anchor)) } : {}),
     ...(snap.collapsedGroups ? { collapsedGroups } : {}),
     ...(snap.annotations ? { annotations: cleanAnnotations(snap.annotations) } : {}),
     ...(snap.tables ? { tables: anchors(snap.tables) } : {}),
@@ -1651,6 +1733,183 @@ export function cleanView(view, fallback = null) {
   return { x: view.x, y: view.y, s };
 }
 
+/* ------------------------------------------------------ canvas schema -- */
+
+/**
+ * The shape version of a vein's canvas record and of every snapshot in its
+ * history. It is bumped when a field changes shape or meaning, not when one
+ * is merely added, because every reader already treats a missing key as “this
+ * record is older than that field”.
+ *
+ * `migrateCanvasRecord` and `migrateCanvasSnapshot` bring older shapes up to
+ * this number, and both are idempotent: migrating a migrated record changes
+ * nothing, so a save, an undo and a reload cannot each add their own drift.
+ * Keys this version does not know are carried through untouched, so a file
+ * written by a newer version survives a visit from an older one.
+ */
+export const CANVAS_SCHEMA = 2;
+
+/**
+ * The cards' stacking order, bottom to top, from whichever shape a record
+ * kept it in: `stack` now, `stackOrder` in early records, or a per-card depth
+ * map before either.
+ */
+function migratedStack(record) {
+  if (Array.isArray(record.stack)) return cleanStackOrder(record.stack);
+  if (Array.isArray(record.stackOrder)) return cleanStackOrder(record.stackOrder);
+  if (record.z && typeof record.z === 'object' && !Array.isArray(record.z)) {
+    return cleanStackOrder(
+      Object.entries(record.z)
+        .filter(([anchor, depth]) => typeof anchor === 'string' && anchor && Number.isFinite(depth))
+        .sort((a, b) => a[1] - b[1])
+        .map(([anchor]) => anchor),
+    );
+  }
+  return [];
+}
+
+/**
+ * Annotations from a map (now) or a list (before ids were kept), with ids that
+ * are stable across migrations: a list entry without one takes a name from
+ * its position, so migrating twice cannot invent a second id.
+ */
+function migratedAnnotations(record) {
+  const raw = record.annotations ?? record.marginNotes;
+  if (Array.isArray(raw)) {
+    const out = {};
+    raw.forEach((entry, index) => {
+      if (!entry || typeof entry !== 'object') return;
+      const id = typeof entry.id === 'string' && entry.id ? entry.id : `ann-migrated-${index + 1}`;
+      out[id] = { ...entry, id };
+    });
+    return cleanAnnotations(out);
+  }
+  return cleanAnnotations(raw);
+}
+
+/** Groups as this version keeps them: real members, real children, clean frame. */
+function migratedGroups(raw) {
+  const out = {};
+  for (const [id, group] of Object.entries(raw ?? {})) {
+    if (!id || !group || typeof group !== 'object' || Array.isArray(group)) continue;
+    const members = Array.isArray(group.members)
+      ? [...new Set(group.members.filter((anchor) => typeof anchor === 'string' && anchor))]
+      : [];
+    const children = Array.isArray(group.children)
+      ? [...new Set(group.children.filter((child) => typeof child === 'string' && child && child !== id))]
+      : [];
+    const next = { ...group, members };
+    if (children.length) next.children = children;
+    else delete next.children;
+    const frame = cleanGroupFrame(group.frame);
+    if (frame) next.frame = frame;
+    else delete next.frame;
+    // A pin from before frames were stored keeps its pin; the panel captures
+    // the frame the first time it can measure the cards around it.
+    if (group.pinned === true) next.pinned = true;
+    out[id] = next;
+  }
+  return out;
+}
+
+/**
+ * Groups cleaned for storage, for a writer outside the panel (an agent through
+ * `world set`): the same normalisation a migrated record receives, exported so
+ * the headless tools cannot invent a second shape.
+ */
+export function cleanGroups(raw) {
+  return migratedGroups(raw);
+}
+
+/**
+ * The prose each table edit changed, by anchor: a map now, and a list of
+ * `{anchor, text}` entries in snapshots written before the map.
+ */
+function migratedTables(raw) {
+  if (Array.isArray(raw)) {
+    const out = {};
+    for (const entry of raw) {
+      if (!entry || typeof entry !== 'object') continue;
+      const anchor = entry.anchor ?? entry.id;
+      if (typeof anchor === 'string' && anchor) out[anchor] = String(entry.text ?? entry.body ?? '');
+    }
+    return out;
+  }
+  if (raw && typeof raw === 'object') {
+    return Object.fromEntries(
+      Object.entries(raw).filter(([anchor, text]) => Boolean(anchor) && typeof text === 'string'),
+    );
+  }
+  return null;
+}
+
+/**
+ * A vein's canvas record at the current shape: the legacy spellings of stack
+ * order and annotations are folded into their one form, groups are checked,
+ * the version is stamped, and everything else — including keys this version
+ * has never heard of — is carried through. Idempotent.
+ */
+export function migrateCanvasRecord(record) {
+  const raw = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
+  const next = {
+    ...raw,
+    schema: CANVAS_SCHEMA,
+    groups: migratedGroups(raw.groups),
+    stack: migratedStack(raw),
+  };
+  if (raw.stackOrder !== undefined) delete next.stackOrder;
+  if (raw.z !== undefined) delete next.z;
+  if (raw.annotations !== undefined || raw.marginNotes !== undefined) {
+    next.annotations = migratedAnnotations(raw);
+    if (raw.marginNotes !== undefined) delete next.marginNotes;
+  }
+  // History entries: a bare snapshot string is the shape from before a step
+  // had a name, and gains the default one. Everything else on an entry is left
+  // as it is, so a reload never rewrites a stack or drops what it cannot read;
+  // the snapshot inside a step migrates when restoreSnapshot reads it back.
+  if (raw.history) {
+    const entries = (list) => (Array.isArray(list)
+      ? list.map((entry) => (typeof entry === 'string' ? { name: DEFAULT_STEP_NAME, snap: entry } : entry))
+      : []);
+    next.history = { ...raw.history, past: entries(raw.history.past), future: entries(raw.history.future) };
+  }
+  return next;
+}
+
+/**
+ * A snapshot at the current shape, for a step written before a field existed.
+ * Strings are parsed; a snapshot that is not one comes back null. Unknown
+ * keys survive, and migrating twice changes nothing.
+ */
+export function migrateCanvasSnapshot(snapshot) {
+  let saved = snapshot;
+  if (typeof saved === 'string') {
+    try {
+      saved = JSON.parse(saved);
+    } catch {
+      return null;
+    }
+  }
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return null;
+  const next = { ...saved, schema: CANVAS_SCHEMA };
+  if (saved.groups !== undefined) next.groups = migratedGroups(saved.groups);
+  if (saved.stack !== undefined || saved.stackOrder !== undefined || saved.z !== undefined) {
+    next.stack = migratedStack(saved);
+  }
+  if (saved.stackOrder !== undefined) delete next.stackOrder;
+  if (saved.z !== undefined) delete next.z;
+  if (saved.annotations !== undefined || saved.marginNotes !== undefined) {
+    next.annotations = migratedAnnotations(saved);
+    if (saved.marginNotes !== undefined) delete next.marginNotes;
+  }
+  if (saved.tables !== undefined) {
+    const tables = migratedTables(saved.tables);
+    if (tables) next.tables = tables;
+    else delete next.tables;
+  }
+  return next;
+}
+
 /**
  * A snapshot put back as slices: parsed when it arrives as a string, and
  * pruned of references to anchors with no card on screen. Types, fields
@@ -1661,20 +1920,18 @@ export function cleanView(view, fallback = null) {
  * @returns {object|null} the slices, or null for a snapshot that is not one
  */
 export function restoreSnapshot(snap, live, current = {}) {
-  let saved = snap;
-  if (typeof saved === 'string') {
-    try {
-      saved = JSON.parse(saved);
-    } catch {
-      return null;
-    }
-  }
-  if (!saved || typeof saved !== 'object') return null;
-  const pruned = pruneSnapshotAnchors(saved, live);
+  // A step written before a field existed is brought up to this shape first,
+  // so an undo restores what the step knew and never loses what it did not:
+  // the migration is idempotent, so a step may pass through it any number of
+  // times on its way to a save and back.
+  const migrated = migrateCanvasSnapshot(snap);
+  if (!migrated) return null;
+  const pruned = pruneSnapshotAnchors(migrated, live);
   return {
     positions: cleanPositions(pruned.positions),
     groups: pruned.groups ?? {},
     relations: pruned.relations ?? {},
+    bondNotes: cleanBondNotes(pruned.bondNotes),
     folded: pruned.folded ?? {},
     types: pruned.types ?? current.types ?? {},
     fields: pruned.fields ?? current.fields ?? {},
@@ -1686,6 +1943,7 @@ export function restoreSnapshot(snap, live, current = {}) {
     cardModes: cleanCardModes(pruned.cardModes ?? current.cardModes),
     cardSizes: cleanCardSizes(pruned.cardSizes ?? current.cardSizes),
     cardDims: cleanCardDims(pruned.cardDims ?? current.cardDims),
+    stack: cleanStackOrder(pruned.stack ?? current.stack),
     collapsedGroups: cleanCollapsedGroups(pruned.collapsedGroups ?? current.collapsedGroups),
     annotations: pruned.annotations ?? cleanAnnotations(current.annotations),
     tables: pruned.tables ?? null,
@@ -1699,8 +1957,9 @@ export function restoreSnapshot(snap, live, current = {}) {
  * always; types, fields and colours only when the step carries them; the
  * camera only when the step has a usable view.
  */
-export function canvasRecordPatch({ positions = {}, groups = {}, relations = {}, folded = {}, types = null, fields = null, colors = null, images = null, resources = null, pinned = null, locked = null, cardModes = null, cardSizes = null, cardDims = null, collapsedGroups = null, annotations = null, view = null } = {}) {
-  const patch = { positions, groups, relations, folded };
+export function canvasRecordPatch({ positions = {}, groups = {}, relations = {}, bondNotes = null, folded = {}, types = null, fields = null, colors = null, images = null, resources = null, pinned = null, locked = null, cardModes = null, cardSizes = null, cardDims = null, stack = null, collapsedGroups = null, annotations = null, view = null } = {}) {
+  const patch = { schema: CANVAS_SCHEMA, positions, groups, relations, folded };
+  if (bondNotes) patch.bondNotes = cleanBondNotes(bondNotes);
   if (types) patch.types = types;
   if (fields) patch.fields = fields;
   if (colors) patch.colors = colors;
@@ -1711,6 +1970,7 @@ export function canvasRecordPatch({ positions = {}, groups = {}, relations = {},
   if (cardModes) patch.cardModes = cleanCardModes(cardModes);
   if (cardSizes) patch.cardSizes = cleanCardSizes(cardSizes);
   if (cardDims) patch.cardDims = cleanCardDims(cardDims);
+  if (stack) patch.stack = cleanStackOrder(stack);
   if (collapsedGroups) patch.collapsedGroups = cleanCollapsedGroups(collapsedGroups);
   if (annotations) patch.annotations = cleanAnnotations(annotations);
   const cleaned = cleanView(view);
@@ -1868,6 +2128,13 @@ export function renameAnchorIn(snap, before, after) {
     if (from === before || to === before) continue;
     relations[key] = kind;
   }
+  // A note explains a bond, and a renamed card's bonds do not carry over.
+  const bondNotes = {};
+  for (const [key, text] of Object.entries(cleanBondNotes(snap.bondNotes))) {
+    const [from, to] = key.split('->');
+    if (from === before || to === before) continue;
+    bondNotes[key] = text;
+  }
   const groups = {};
   for (const [id, group] of Object.entries(snap.groups ?? {})) {
     groups[id] = { ...group, members: (group.members ?? []).map((anchor) => (anchor === before ? after : anchor)) };
@@ -1879,7 +2146,9 @@ export function renameAnchorIn(snap, before, after) {
     cardModes: move(snap.cardModes),
     cardSizes: move(snap.cardSizes),
     cardDims: move(snap.cardDims),
+    stack: cleanStackOrder(snap.stack).map((anchor) => (anchor === before ? after : anchor)),
     relations,
+    bondNotes,
     groups,
     ...(snap.types ? { types: move(snap.types) } : {}),
     ...(snap.fields ? { fields: move(snap.fields) } : {}),
@@ -1906,9 +2175,148 @@ export function relationKey(from, to) {
   return `${from}->${to}`;
 }
 
+/* --------------------------------------------------------- forge palette -- */
+
+/** How many recent and pinned kinds the quick-forge palette keeps. */
+export const FORGE_SHORTLIST_LIMIT = 6;
+/** How many type pairs remember their last kind before the oldest is dropped. */
+export const FORGE_PAIR_LIMIT = 240;
+
+const RELATION_IDS = new Set(RELATION_KINDS.map((kind) => kind.id));
+
+/** The kind a forge remembers: its id, when it is one the canvas knows. */
+const forgeKind = (value) => (RELATION_IDS.has(value) ? value : '');
+
+/**
+ * A forge-preference record that can be trusted: known kinds only, no
+ * duplicates, a short shortlist and a bounded pair memory. State files are
+ * written by older versions and by hand, so nothing in them is assumed.
+ */
+export function cleanForgePrefs(raw) {
+  const list = (value, limit) => {
+    const out = [];
+    for (const id of Array.isArray(value) ? value : []) {
+      if (!forgeKind(id) || out.includes(id)) continue;
+      out.push(id);
+      if (out.length >= limit) break;
+    }
+    return out;
+  };
+  const pairs = {};
+  let kept = 0;
+  for (const [key, value] of Object.entries(raw?.pairs ?? {})) {
+    if (kept >= FORGE_PAIR_LIMIT) break;
+    if (!forgeKind(value)) continue;
+    if (!/^[a-z][a-z0-9-]*->[a-z][a-z0-9-]*$/.test(key)) continue;
+    pairs[key] = value;
+    kept += 1;
+  }
+  return {
+    recent: list(raw?.recent, FORGE_SHORTLIST_LIMIT),
+    favourite: list(raw?.favourite, FORGE_SHORTLIST_LIMIT),
+    pairs,
+  };
+}
+
+/**
+ * Record a kind just forged: it heads the recent list and becomes the kind
+ * this pair of node types will offer first next time.
+ */
+export function rememberForgeKind(prefs, { fromType = 'note', toType = 'note', kind } = {}) {
+  const clean = cleanForgePrefs(prefs);
+  const id = forgeKind(kind);
+  if (!id) return clean;
+  return cleanForgePrefs({
+    ...clean,
+    recent: [id, ...clean.recent],
+    pairs: { ...clean.pairs, [`${fromType}->${toType}`]: id },
+  });
+}
+
+/** Pin a kind in the shortlist, or unpin one that is already there. */
+export function toggleForgeFavourite(prefs, kind) {
+  const clean = cleanForgePrefs(prefs);
+  const id = forgeKind(kind);
+  if (!id) return clean;
+  const favourite = clean.favourite.includes(id)
+    ? clean.favourite.filter((entry) => entry !== id)
+    : [id, ...clean.favourite];
+  return cleanForgePrefs({ ...clean, favourite });
+}
+
+/**
+ * The quick-forge palette for one drag: the kind remembered for this pair of
+ * types first, then pinned kinds, then recent ones, then the rest in the
+ * canonical order from weakest to strongest. Every kind appears once and
+ * `section` says why a row sits where it does, so the menu can separate the
+ * shortlist from the full list. `query` matches the label and the id, spaces
+ * and hyphens ignored, so "member" and "tab of" both land.
+ */
+export function forgePalette({ fromType = 'note', toType = 'note', prefs = {}, query = '' } = {}) {
+  const clean = cleanForgePrefs(prefs);
+  const remembered = clean.pairs[`${fromType}->${toType}`] ?? null;
+  const squash = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const terms = String(query).toLowerCase().split(/\s+/).map(squash).filter(Boolean);
+  const matches = (kind) => {
+    if (!terms.length) return true;
+    const text = squash(`${kind.label} ${kind.id}`);
+    return terms.every((term) => text.includes(term));
+  };
+  const sectionOf = (id) => {
+    if (id === remembered) return 'remembered';
+    if (clean.favourite.includes(id)) return 'favourite';
+    if (clean.recent.includes(id)) return 'recent';
+    return 'other';
+  };
+  const rankOf = (id) => {
+    const section = sectionOf(id);
+    if (section === 'remembered') return 0;
+    if (section === 'favourite') return 10 + clean.favourite.indexOf(id);
+    if (section === 'recent') return 20 + clean.recent.indexOf(id);
+    return 100 + RELATION_KINDS.findIndex((kind) => kind.id === id);
+  };
+  const rows = RELATION_KINDS
+    .filter(matches)
+    .map((kind) => ({
+      id: kind.id,
+      label: kind.label,
+      section: sectionOf(kind.id),
+      remembered: kind.id === remembered,
+      favourite: clean.favourite.includes(kind.id),
+      recent: clean.recent.includes(kind.id),
+    }))
+    .sort((a, b) => rankOf(a.id) - rankOf(b.id));
+  return { remembered, rows };
+}
+
 /** The relations endpoint that names a group rather than a note. */
 export function groupEndpoint(groupId) {
   return `group:${groupId}`;
+}
+
+/**
+ * The groups a picked set of cards covers whole: every card the group holds,
+ * nested groups included, is in the set. A marquee that sweeps a box says it
+ * picked the box and not merely the cards inside it.
+ */
+export function coveredGroups(groups = {}, anchors = []) {
+  const picked = anchors instanceof Set ? anchors : new Set(anchors ?? []);
+  const out = [];
+  for (const group of Object.values(groups ?? {})) {
+    if (!group?.id) continue;
+    const members = new Set();
+    const visit = (id, seen = new Set()) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const current = groups[id];
+      if (!current) return;
+      (current.members ?? []).forEach((anchor) => members.add(anchor));
+      (current.children ?? []).forEach((child) => visit(child, seen));
+    };
+    visit(group.id);
+    if (members.size && [...members].every((anchor) => picked.has(anchor))) out.push(group.id);
+  }
+  return out;
 }
 
 /**
@@ -1944,6 +2352,35 @@ export function dropRelations(relations = {}, endpoint) {
     if (ends && (ends.from === endpoint || ends.to === endpoint)) delete next[key];
   }
   return next;
+}
+
+/** The longest bond note kept: a sentence or a citation, not an essay. */
+export const BOND_NOTE_MAX = 400;
+
+/**
+ * The notes bonds carry, cleaned of anything a bond cannot hold: a key that
+ * names two ends, and one line of text under the limit. Whichever wire the
+ * bond runs on — a prose link, a canvas bond or a group bond — its note is
+ * kept the same way.
+ *
+ * Notes for cards or groups that have left are pruned with the snapshot they
+ * belong to (`pruneSnapshotAnchors`) and with the bond they explain
+ * (`dropRelations` callers), not here, because this record is also written
+ * for a pair whose relationship was never asserted.
+ */
+export function cleanBondNotes(raw) {
+  const out = {};
+  let count = 0;
+  for (const [key, value] of Object.entries(raw ?? {})) {
+    if (count >= 500) break;
+    const ends = String(key).split('->');
+    if (ends.length !== 2 || !ends[0] || !ends[1]) continue;
+    const text = String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, BOND_NOTE_MAX);
+    if (!text) continue;
+    out[key] = text;
+    count += 1;
+  }
+  return out;
 }
 
 /**
@@ -2424,10 +2861,10 @@ export function relationshipDepths(model = {}, relations = {}, anchors = []) {
 
 /**
  * Search one vein's cards across titles, types, fields, colours and group
- * names. Every term must land somewhere on the card (terms are ANDed,
- * fields ORed). Returns matches in card order, title matches first, each
- * with the kinds of fields it matched (`title`, `type`, `field`,
- * `colour`, `group`).
+ * names, and the notes its bonds carry. Every term must land somewhere on
+ * the card (terms are ANDed, fields ORed). Returns matches in card order,
+ * title matches first, each with the kinds of fields it matched (`title`,
+ * `type`, `field`, `colour`, `group`, `bond note`).
  */
 export function canvasSearch(model = {}, record = {}, query = '') {
   const terms = String(query ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -2450,6 +2887,17 @@ export function canvasSearch(model = {}, record = {}, query = '') {
     for (const child of Array.isArray(group.children) ? group.children : []) collect(groups[child], seen);
   };
   for (const group of Object.values(groups)) collect(group, new Set());
+  // A bond's note explains a pair, so it is searchable from either end.
+  const notesByAnchor = new Map();
+  for (const [key, text] of Object.entries(cleanBondNotes(record.bondNotes))) {
+    const ends = splitRelationKey(key);
+    if (!ends) continue;
+    for (const end of [ends.from, ends.to]) {
+      const list = notesByAnchor.get(end) ?? [];
+      if (!list.includes(text)) list.push(text);
+      notesByAnchor.set(end, list);
+    }
+  }
   const matches = [];
   notes.forEach((note, index) => {
     const type = nodeTypeOf(types, note.anchor);
@@ -2481,6 +2929,7 @@ export function canvasSearch(model = {}, record = {}, query = '') {
       ...fieldTexts.map((text) => ({ kind: 'field', text })),
       ...[colors[note.anchor], type.color].filter(Boolean).map((color) => ({ kind: 'colour', text: String(color) })),
       ...(groupNames.get(note.anchor) ?? []).map((name) => ({ kind: 'group', text: name })),
+      ...(notesByAnchor.get(note.anchor) ?? []).map((text) => ({ kind: 'bond note', text })),
     ].map((entry) => ({ kind: entry.kind, text: entry.text.toLowerCase() }));
     if (!terms.every((term) => searchable.some((entry) => entry.text.includes(term)))) return;
     const reasons = [];
@@ -2499,14 +2948,24 @@ export function canvasSearch(model = {}, record = {}, query = '') {
  * relationship when there is one. The outline spine is a connector too,
  * so selection and tracing see exactly what is on screen.
  */
-export function connectorList(model = {}, groups = {}, relations = {}) {
+export function connectorList(model = {}, groups = {}, relations = {}, bondNotes = {}) {
   const notes = model.notes ?? [];
   const anchorOf = (index) => notes[index]?.anchor ?? null;
+  // A bond's note belongs to the pair, not to the direction it was written in.
+  const noteOf = (from, to) => bondNotes?.[relationKey(from, to)] ?? bondNotes?.[relationKey(to, from)] ?? '';
   return [
     ...hierarchyEdges(model).map((edge) => ({ from: anchorOf(edge.from), to: anchorOf(edge.to), kind: 'contains' })),
-    ...noteEdges(model, relations).map((edge) => ({ from: anchorOf(edge.from), to: anchorOf(edge.to), kind: edge.kind, relation: edge.relation })),
-    ...bondEdges(model, relations).map((edge) => ({ from: edge.from, to: edge.to, kind: 'bond', relation: edge.relation })),
-    ...groupRelationEdges(model, groups, relations).map((edge) => ({ from: edge.from, to: edge.to, kind: 'group', relation: edge.relation })),
+    ...noteEdges(model, relations).map((edge) => {
+      const from = anchorOf(edge.from);
+      const to = anchorOf(edge.to);
+      return { from, to, kind: edge.kind, relation: edge.relation, note: noteOf(from, to) };
+    }),
+    ...bondEdges(model, relations).map((edge) => ({
+      from: edge.from, to: edge.to, kind: 'bond', relation: edge.relation, note: noteOf(edge.from, edge.to),
+    })),
+    ...groupRelationEdges(model, groups, relations).map((edge) => ({
+      from: edge.from, to: edge.to, kind: 'group', relation: edge.relation, note: noteOf(edge.from, edge.to),
+    })),
   ].filter((edge) => edge.from && edge.to && edge.from !== edge.to);
 }
 
@@ -2529,6 +2988,97 @@ export function nextConnectorSelection(selected, key, additive = false) {
   }
   if (selected.size === 1 && selected.has(key)) return new Set();
   return new Set([key]);
+}
+
+/**
+ * The word a lens row shows for one connector, from the reader's side of it.
+ * A prose link's kind says what stands behind the wire; an asserted
+ * relationship names the bond itself. The outline spine is structural, so it
+ * reads as containment in the direction it is drawn.
+ */
+function lensEdgeLabel(edge, direction) {
+  if (edge.kind === 'contains') return direction === 'in' ? 'inside' : 'contains';
+  const relation = relationKind(edge.relation);
+  const asserted = relation && relation.id !== DEFAULT_RELATION ? relation.label.toLowerCase() : '';
+  if (edge.kind === 'bond') return asserted || 'bond';
+  if (edge.kind === 'group') return asserted ? `${asserted} · group` : 'group bond';
+  const base = edge.kind === 'section' ? 'section link' : 'mention';
+  return asserted ? `${base} · ${asserted}` : base;
+}
+
+/**
+ * The relationship lens around a selection: the selected cards, the group an
+ * exact selection of its members stands for, every connector touching that
+ * focus, and the endpoints one hop away.
+ *
+ * Nothing here is stored: the lens is a reading of connectors the canvas
+ * already draws. Prose links, canvas bonds, group bonds and the outline spine
+ * all count, so a selected card's neighbourhood is exactly what its wires
+ * say it is. Edges with both ends in the focus are inside the lens rather
+ * than neighbours, and each neighbour row names the kind from the reader's
+ * side: `out` leaves the focus, `in` arrives at it.
+ *
+ * `groupMembers` maps each group id to its effective member anchors (the
+ * caller expands nested groups), which is how a selection of every card a
+ * group holds is understood as selecting that group.
+ *
+ * @returns {{active: boolean, focus: Set<string>, groups: Set<string>,
+ *   endpoints: Set<string>, edges: Set<string>, neighbours: Set<string>,
+ *   neighbourGroups: Set<string>, asserted: Set<string>,
+ *   rows: Array<{key, endpoint, direction, kind, relation, label}>}}
+ */
+export function lensFocus(connectors = [], selected = [], groupMembers = {}) {
+  const focus = new Set([...(selected ?? [])].filter(Boolean));
+  const groups = new Set();
+  for (const [id, members] of Object.entries(groupMembers ?? {})) {
+    const list = members ?? [];
+    if (!list.length || list.length !== focus.size) continue;
+    if (list.every((anchor) => focus.has(anchor))) groups.add(id);
+  }
+  const endpoints = new Set([...focus]);
+  for (const id of groups) endpoints.add(`group:${id}`);
+
+  const edges = new Set();
+  const asserted = new Set();
+  const neighbours = new Set();
+  const neighbourGroups = new Set();
+  const rows = [];
+  for (const edge of connectors ?? []) {
+    if (!edge?.from || !edge?.to) continue;
+    const fromFocus = endpoints.has(edge.from);
+    const toFocus = endpoints.has(edge.to);
+    if (!fromFocus && !toFocus) continue;
+    const key = connectorKey(edge);
+    edges.add(key);
+    const relation = relationKind(edge.relation);
+    if (relation && relation.id !== DEFAULT_RELATION) asserted.add(key);
+    // Both ends in the focus: the wire is inside the lens, not a way out.
+    if (fromFocus && toFocus) continue;
+    const direction = fromFocus ? 'out' : 'in';
+    const endpoint = fromFocus ? edge.to : edge.from;
+    if (endpoint.startsWith('group:')) neighbourGroups.add(endpoint.slice('group:'.length));
+    else neighbours.add(endpoint);
+    rows.push({
+      key,
+      endpoint,
+      direction,
+      kind: edge.kind ?? 'bond',
+      relation: relation?.id ?? null,
+      label: lensEdgeLabel(edge, direction),
+      note: typeof edge.note === 'string' ? edge.note : '',
+    });
+  }
+  return {
+    active: focus.size > 0,
+    focus,
+    groups,
+    endpoints,
+    edges,
+    neighbours,
+    neighbourGroups,
+    asserted,
+    rows,
+  };
 }
 
 /**
@@ -2719,36 +3269,206 @@ export const ZOOM_MIN = 0.000001;
 export const ZOOM_MAX = 3;
 
 /**
- * At or below this scale each card is only its type icon. A wheel step that
- * displays as 12.5% can land a few millionths above the nominal scale
- * (0.125000066), so the check allows a tiny tolerance rather than leaving
- * that step in semantic mode.
+ * The canvas has one handoff per zoom mode, each named for the percentage at
+ * which it ends: at 75% cards stop being editable, below 65% the link port
+ * becomes a screen-sized corner ring, below 62% annotations drag as one
+ * surface, below 55% cards become screen-readable summaries, below 25% those
+ * summaries shrink with the canvas, and at 12.5% or below each card is only
+ * its type icon.
+ *
+ * Scale is not compared to these numbers directly. Wheel zoom multiplies
+ * exp(±0.2) steps, so a step that displays as 12.5% can land at 0.125000066;
+ * the badge rounds to 0.1%, and every mode is read from that same rounded
+ * percentage. A displayed 12.5% is therefore always icon zoom, and no class
+ * can disagree with the number the badge is showing.
  */
-export const ICON_ZOOM = 0.125;
-const ICON_ZOOM_EPSILON = 1e-6;
+export const ZOOM_DETAIL = 0.75;
+export const ZOOM_FORGE = 0.65;
+export const ZOOM_ANNOTATION = 0.62;
+export const ZOOM_SUMMARY = 0.55;
+export const ZOOM_COMPACT = 0.25;
+export const ZOOM_ICON = 0.125;
 
-/** True when a view scale is at the icon handoff, within wheel precision. */
-export function isIconZoom(scale) {
-  return scale <= ICON_ZOOM + ICON_ZOOM_EPSILON;
+/** The percentages the modes switch over at, as the badge rounds them. */
+export const ZOOM_PERCENT = Object.freeze({
+  detail: 75,
+  forge: 65,
+  annotation: 62,
+  summary: 55,
+  compact: 25,
+  icon: 12.5,
+});
+
+/**
+ * The percentage the zoom badge shows for a scale, at the precision it
+ * prints. This is the number every zoom mode is decided from.
+ */
+export function zoomPercent(scale) {
+  const percent = Number(scale) * 100;
+  if (!Number.isFinite(percent)) return 0;
+  const digits = percent >= 10 ? 1 : percent >= 1 ? 2 : 4;
+  return Number(percent.toFixed(digits));
+}
+
+/** The zoom badge's text for a scale. */
+export function zoomLabel(scale) {
+  return `${zoomPercent(scale)}%`;
 }
 
 /**
- * Below this scale the cards read as compact objects rather than editable
- * surfaces. Forging a relationship stays available there: the link dot is
- * redrawn at a constant screen size on the card's corner as long as the view
- * is this small. At the boundary itself the port still sits in the card head.
+ * Everything the canvas needs to know about one zoom scale: the badge text,
+ * the boolean modes, the stage classes they map to, and the two continuous
+ * sizes the semantic face is drawn with. Pure, so every handoff can be tested
+ * without a DOM.
  */
-export const FORGE_ZOOM = 0.65;
+export function zoomMode(scale) {
+  const value = Number(scale);
+  const s = Number.isFinite(value) && value > 0 ? value : 0;
+  const percent = zoomPercent(s);
+  const icon = percent <= ZOOM_PERCENT.icon;
+  const compact = percent < ZOOM_PERCENT.compact;
+  const semantic = percent < ZOOM_PERCENT.summary;
+  const annotationDrag = percent < ZOOM_PERCENT.annotation;
+  const forge = percent < ZOOM_PERCENT.forge;
+  const overview = percent < ZOOM_PERCENT.detail;
+  return {
+    scale: s,
+    percent,
+    label: `${percent}%`,
+    detail: !overview,
+    overview,
+    forge,
+    annotationDrag,
+    semantic,
+    compact,
+    icon,
+    /** How much of the semantic face's fixed size survives below 25%. */
+    semanticShrink: compact ? Math.max(0.5, s / ZOOM_COMPACT) : 1,
+    /** The type icon's screen size, shrinking to the 12.5% handoff. */
+    iconFont: 18 * Math.max(0.22, Math.min(1, s / ZOOM_ICON)),
+    classes: {
+      'is-zoomed-out': overview,
+      'is-forge-zoom': forge,
+      'is-annotation-drag': annotationDrag,
+      'is-semantic-zoom': semantic,
+      'is-icon-zoom': icon,
+    },
+  };
+}
+
+/**
+ * Endpoints in the order the canvas reads: down the rows, then across each
+ * row. `rowGap` is how far apart two cards may sit vertically and still count
+ * as one row — a strict y sort would interleave two columns whose cards are
+ * a few pixels out of line.
+ *
+ * @param {Array<{key: string, x: number, y: number}>} items
+ * @returns {Array<string>} keys, nearest the top-left first
+ */
+export function readingOrder(items, rowGap = 90) {
+  const list = (items ?? []).filter((item) => item && Number.isFinite(item.x) && Number.isFinite(item.y));
+  const rows = [];
+  for (const item of [...list].sort((a, b) => a.y - b.y || a.x - b.x)) {
+    const row = rows[rows.length - 1];
+    if (row && item.y - row.top < rowGap) row.items.push(item);
+    else rows.push({ top: item.y, items: [item] });
+  }
+  return rows
+    .flatMap((row) => row.items.sort((a, b) => a.x - b.x))
+    .map((item) => item.key);
+}
+
+/**
+ * The navigator's word for how the canvas is drawn at one zoom: the shape of
+ * the picture, not just its scale, so a size readout never stands alone.
+ */
+export function navigatorModeLabel(mode) {
+  if (!mode || !mode.scale) return 'No scale';
+  if (mode.icon) return 'Icons';
+  if (mode.compact) return 'Map';
+  if (mode.semantic) return 'Summary';
+  if (mode.overview) return 'Overview';
+  return 'Detail';
+}
+
+/**
+ * Where the whole canvas goes inside the navigator's little box: one scale for
+ * both axes, so the map keeps the canvas's proportions and its orientation.
+ * Returns the map's origin in world terms; null when there is nothing to fit.
+ */
+export function navigatorMap(content, width, height, padding = 7) {
+  if (!content || !(width > 0) || !(height > 0)) return null;
+  const w = content.maxX - content.minX;
+  const h = content.maxY - content.minY;
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+  const scale = Math.min((width - padding * 2) / Math.max(1, w), (height - padding * 2) / Math.max(1, h));
+  if (!Number.isFinite(scale) || !(scale > 0)) return null;
+  return {
+    scale,
+    x: (width - Math.max(1, w) * scale) / 2 - content.minX * scale,
+    y: (height - Math.max(1, h) * scale) / 2 - content.minY * scale,
+  };
+}
+
+/** A world rect in the navigator's coordinates. */
+export function navigatorProject(map, rect) {
+  if (!map || !rect) return null;
+  return {
+    x: map.x + rect.x * map.scale,
+    y: map.y + rect.y * map.scale,
+    width: rect.width * map.scale,
+    height: rect.height * map.scale,
+  };
+}
+
+/**
+ * The part of the map the stage is looking at, clipped to the map's box — a
+ * viewport larger than the canvas has nothing outside it to point at, and one
+ * panned past the edge would otherwise draw outside the little box.
+ */
+export function navigatorViewport(map, view, stageWidth, stageHeight, width, height) {
+  if (!map || !view || !(view.s > 0) || !(stageWidth > 0) || !(stageHeight > 0)) return null;
+  const world = {
+    x: -view.x / view.s,
+    y: -view.y / view.s,
+    width: stageWidth / view.s,
+    height: stageHeight / view.s,
+  };
+  const box = navigatorProject(map, world);
+  const left = Math.max(0, Math.min(width, box.x));
+  const top = Math.max(0, Math.min(height, box.y));
+  const right = Math.max(0, Math.min(width, box.x + box.width));
+  const bottom = Math.max(0, Math.min(height, box.y + box.height));
+  return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+}
+
+/**
+ * Put a mode's classes on the stage. Takes a classList-like object so the
+ * mapping can be exercised without a DOM; returns the mode it applied.
+ */
+export function applyZoomClasses(classList, mode) {
+  for (const [name, on] of Object.entries(mode.classes)) classList.toggle(name, on);
+  return mode;
+}
+
+/** Kept for callers that only care about the corner ring or the icon face. */
+export const FORGE_ZOOM = ZOOM_FORGE;
+export const ICON_ZOOM = ZOOM_ICON;
 
 /** True when a view scale calls for the screen-sized corner forge ring. */
 export function isForgeZoom(scale) {
-  return scale < FORGE_ZOOM;
+  return zoomMode(scale).forge;
+}
+
+/** True when a view scale is at the icon handoff. */
+export function isIconZoom(scale) {
+  return zoomMode(scale).icon;
 }
 
 /**
- * Toggle the compact-forge stage class for a scale. Takes a classList-like
- * object so the rule can be exercised without a DOM; returns whether the
- * class is on once the call is done.
+ * Toggle the compact-forge stage class for a scale, without the other modes.
+ * Takes a classList-like object so the rule can be exercised without a DOM;
+ * returns whether the class is on once the call is done.
  */
 export function syncForgeZoomClass(classList, scale) {
   const forge = isForgeZoom(scale);
@@ -2964,7 +3684,7 @@ function cutCubic(points, limit, steps = 64) {
  * arrangement scorer samples the prepared entry's `at`, so the curve scored is
  * always the curve drawn.
  */
-export function connectorCurve(from, to, { vertical = false, elbow = false, limit = Infinity } = {}) {
+function connectorCurveUncached(from, to, { vertical = false, elbow = false, limit = Infinity } = {}) {
   const unit = (x, y) => {
     const length = Math.hypot(x, y);
     return length ? { x: x / length, y: y / length } : { x: 0, y: 0 };
@@ -3029,6 +3749,44 @@ export function connectorCurve(from, to, { vertical = false, elbow = false, limi
     headAtStart,
     ...(trimmed ? { cut: trimmed.cut } : {}),
   };
+}
+
+/**
+ * The routing memo: the bend math above is pure, and the same wire is asked for
+ * its geometry again and again — once when it is drawn, once for its hit twin,
+ * once per arrangement candidate, and once more for every redraw while nothing
+ * about it has changed. A key from the two boxes and the flags is enough to
+ * hand back the curve that was already worked out, so a canvas of a thousand
+ * cards routes each unchanged wire once.
+ */
+const CURVE_CACHE = new Map();
+const CURVE_CACHE_LIMIT = 6000;
+
+/**
+ * A connector's curve from two boxes, with the memo in front of the bend math.
+ * Every argument is a number or a flag, so the key is exact: a moved card has a
+ * new key and is routed afresh, and a wire that has not moved is free.
+ */
+export function connectorCurve(from, to, options = {}) {
+  const { vertical = false, elbow = false, limit = Infinity } = options;
+  const key = `${from.x},${from.y},${from.width},${from.height}|${to.x},${to.y},${to.width},${to.height}|${vertical ? 1 : 0}${elbow ? 1 : 0}|${limit === Infinity ? 'i' : Math.round(limit)}`;
+  const hit = CURVE_CACHE.get(key);
+  if (hit) return hit;
+  const curve = connectorCurveUncached(from, to, options);
+  if (CURVE_CACHE.size >= CURVE_CACHE_LIMIT) CURVE_CACHE.clear();
+  CURVE_CACHE.set(key, curve);
+  return curve;
+}
+
+/** How many curves the routing memo is holding, and a way to empty it: for the
+ * perf harness, and for a caller that knows the canvas is about to change
+ * wholesale. */
+export function routingMemoSize() {
+  return CURVE_CACHE.size;
+}
+
+export function clearRoutingMemo() {
+  CURVE_CACHE.clear();
 }
 
 /**
@@ -3834,6 +4592,20 @@ export function* arrangeCandidateOrigins(layout, origin, { columns = 1, stepX = 
   } else if (layout === 'cascade') {
     for (let k = 0; ; k += 1) {
       yield { x: origin.x + k * 72, y: origin.y + k * 56 };
+    }
+  }
+}
+
+/**
+ * Candidate pairs for the untangle pass. Fixed units keep their assigned
+ * origins, so only two movable shapes may exchange grid slots.
+ */
+export function* arrangeSwapPairs(shapes = []) {
+  for (let a = 0; a < shapes.length; a += 1) {
+    if (shapes[a]?.fixed) continue;
+    for (let b = a + 1; b < shapes.length; b += 1) {
+      if (shapes[b]?.fixed) continue;
+      yield [a, b];
     }
   }
 }

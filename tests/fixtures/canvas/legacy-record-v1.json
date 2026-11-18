@@ -1,0 +1,39 @@
+{
+  "marked": true,
+  "positions": { "alpha": { "x": 40, "y": 40 }, "beta": { "x": 420, "y": 90 } },
+  "groups": {
+    "grp-origins": {
+      "id": "grp-origins",
+      "name": "Origins",
+      "members": ["alpha", "beta", "beta"],
+      "pinned": true,
+      "pinnedAt": "2025-03-04T10:00:00.000Z"
+    },
+    "grp-nested": {
+      "id": "grp-nested",
+      "name": "Nested",
+      "members": [],
+      "children": ["grp-origins", "grp-nested"]
+    }
+  },
+  "relations": { "alpha->beta": "leads to" },
+  "bondNotes": {},
+  "folded": {},
+  "types": { "alpha": "place" },
+  "fields": {},
+  "colors": {},
+  "images": {},
+  "resources": {},
+  "pinned": { "alpha": true },
+  "locked": {},
+  "stackOrder": ["beta", "alpha", "beta"],
+  "view": { "x": -20, "y": 10, "s": 0.8 },
+  "annotations": [
+    { "x": 120, "y": 240, "text": "The first crossing happens here." },
+    { "id": "ann-keep", "x": 300, "y": 120, "text": "Check the map table.", "color": "#ffcc00" }
+  ],
+  "history": {
+    "past": ["{\"positions\":{\"alpha\":{\"x\":0,\"y\":0}}}", { "name": "Move card", "snap": "{\"positions\":{}}" }],
+    "future": []
+  }
+}

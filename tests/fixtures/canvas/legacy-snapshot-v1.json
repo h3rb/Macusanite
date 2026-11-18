@@ -1,0 +1,28 @@
+{
+  "positions": { "alpha": { "x": 40, "y": 40 }, "beta": { "x": 420, "y": 90 } },
+  "groups": {
+    "grp-origins": {
+      "id": "grp-origins",
+      "name": "Origins",
+      "members": ["alpha", "beta"],
+      "pinned": true
+    }
+  },
+  "relations": { "alpha->beta": "leads to" },
+  "folded": { "beta": true },
+  "types": { "alpha": "place" },
+  "fields": {},
+  "colors": { "alpha": "#3b82f6" },
+  "images": {},
+  "resources": {},
+  "pinned": { "alpha": true },
+  "locked": {},
+  "stackOrder": ["alpha", "beta"],
+  "annotations": [
+    { "x": 120, "y": 240, "text": "The first crossing happens here." }
+  ],
+  "tables": [
+    { "anchor": "alpha", "text": "| who | where |\n| --- | --- |\n| Alda | north gate |" }
+  ],
+  "view": { "x": -20, "y": 10, "s": 0.8 }
+}

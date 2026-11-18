@@ -204,8 +204,12 @@ The window and the editor provide the following shortcuts:
 | `Ctrl+F` | search the whole vault |
 | `F3` / `Shift+F3` | next / previous search hit in the open vein |
 | `Shift+F10` / Menu key | open the focused card or group's canvas menu; arrows move through it and `→` / `←` open or leave a submenu |
+| `Enter` / `Space` on a focused card or group tab | select it — the selection is announced |
+| `Shift+R` on a focused card or group tab | start **Relate to…**: search a target in canvas reading order, then choose the kind |
 | `Alt+←` / `Alt+→` | back / forward through navigation history |
 | `Esc` | clear the search, close the search pane, or leave edit mode |
+
+The canvas is fully operable without a pointer at every zoom: a card and a group tab are focus stops of their own, `Enter` or `Space` selects the focused one, and `Shift+R` opens the relate flow described under [Wires and relationships](#wires-and-relationships). Typing filters the list, `↑` / `↓` move and `1`–`9` pick a row; the step, the chosen target and the forged bond are announced to assistive technology, and so is a cancelled flow, so nothing happens silently.
 
 ## Driving Macusanite without a window
 
@@ -219,7 +223,7 @@ node cli/macusanite.mjs --vault ./notes search "sieve series" --json
 node cli/macusanite.mjs vein write Home.md --text - < new-home.md
 ```
 
-Every command accepts `--json` for machine-readable output, `--vault <folder>` or `MACUSANITE_VAULT` to select a vault, and `--help` for its documentation. Output goes to stdout, diagnostics go to stderr, and a command that fails returns a non-zero exit code, so the CLI composes in a shell pipeline. Commands that write record an undo step unless `--no-undo` is passed.
+Every command accepts `--json` for machine-readable output, `--vault <folder>` or `MACUSANITE_VAULT` to select a vault, and `--help` for its documentation. Output goes to stdout, diagnostics go to stderr, and a command that fails returns a non-zero exit code, so the CLI composes in a shell pipeline. Commands that write a vein, a chamber, colours or settings record an undo step unless `--no-undo` is passed; the `world` commands keep the canvas's own stack instead, and `world set --no-history` leaves that stack alone. `world show`, `world set`, `world checkpoints` and `world jump` give an agent the same cards and checkpoints the window draws, without a second copy of the layout.
 
 ### MCP over stdio
 
@@ -249,15 +253,18 @@ This mode serves agents that cannot open a socket. A JSON-RPC request is written
 
 A vein marked as **Worldbuilding**, either with the switch at the top right of the centre pane or with **More ▾ → Mark as Worldbuilding** in the canvas toolbar, opens as cards on a canvas instead of as lines. Each card corresponds to one heading and edits the same markdown that the reader displays. Switching to **Markdown** preserves the layout, and unmarking a vein keeps every card's position and bonds until the vein is marked again.
 
-The canvas represents the vein itself. Typing in a card writes the prose under that heading, **+ Note** adds a section, and **✕** deletes one after a first click arms the control and a second click confirms the action; autosave and markdown undo behave exactly as they do in the editor. Because the layout is stored in `.macusanite/state.json` while the prose remains plain markdown, the same vein still reads correctly in the reader, on GitHub, through the CLI and over MCP.
+The canvas represents the vein itself. Typing in a card writes the prose under that heading, **+ Note** adds a section, and **✕** deletes one after a first click arms the control and a second click confirms the action; autosave and markdown undo behave exactly as they do in the editor. Because the layout is stored in `.macusanite/state.json` while the prose remains plain markdown, the same vein still reads correctly in the reader, on GitHub, through the CLI and over MCP. The headless tools work the canvas too: `world show` reports every card, group, bond, annotation and checkpoint, `world set` changes the record through a validated JSON patch and records one named canvas step, and `world checkpoints` and `world jump` list and return to those steps. A card's text is still markdown, so `vein write` and `vein section` remain the way to edit it.
 
 ### Gestures
 
 * **Drag** a card by its grip to move it, and snap guides align it with neighbouring cards. Dragging the background pans the canvas, the wheel zooms around the pointer, and a small badge reports the zoom percentage while it changes.
 * **Overlaps** produce a dashed warning outline and a small count while a drag covers another card. **Push aside** in the toolbar or **More ▾ → Push overlaps aside** moves free cards out of the way during a drag, while pinned and locked cards remain fixed. To resolve an overlap that already exists, select the affected cards and use **Resolve overlaps** in the inspector, which moves selected free cards clear while leaving pinned or locked cards in place.
-* **Zooming out from 1:1** preserves full cards for the first two wheel notches. At approximately 55%, which is the third notch, cards become semantic summaries in which the type, title, link count and word count remain at a readable screen size while full prose and fields step aside. Below 25%, the summary type and boxes continue to shrink with the canvas, and at 12.5% each card becomes its type icon. Further zooming, or **⤢ Fit**, frames the entire graph regardless of its size, and a collapsed group shows its name and card count. Card controls remain inert below 1:1, while dragging, folding, resizing, selection and connector selection continue to work, and editing resumes when the view returns to 1:1 or closer. Forging a relationship stays available at every zoom: the link dot keeps working even where the controls are inert, and from 65% down it is drawn as a screen-sized ring on the card’s corner so it is still easy to grab.
+* **Zooming out from 1:1** preserves full cards for the first two wheel notches. At approximately 55%, which is the third notch, cards become semantic summaries in which the type, title, link count and word count remain at a readable screen size while full prose and fields step aside. Below 25%, the summary type and boxes continue to shrink with the canvas, and at 12.5% each card becomes its type icon. Further zooming, or **⤢ Fit**, frames the entire graph regardless of its size, and a collapsed group shows its name and card count. Cards stay fully editable down to 75%: titles, prose, fields and tags take the pointer, and the relationship words work too. Below 75% the card's controls become inert and it turns into an object map, while dragging, folding, resizing, selection and connector selection continue to work, and editing resumes at 75% or closer. Forging a relationship stays available at every zoom: the link dot keeps working in the object map, and from 65% down it is drawn as a screen-sized ring on the card's corner so it is still easy to grab. The first time the canvas passes below 65%, a one-time **Object map: the rings still work** note names the three things that change is easy to hide: dragging a card's corner ring onto another card forges a bond (a click on the ring picks the card instead), the same ring on a group's tab or collapsed summary bonds the whole group, and a click picks while a drag moves. **Got it** retires the note for good, and this section keeps the same story.
+* **The navigator** sits in a corner of the canvas: it maps the whole vein, draws the part the stage is showing as a viewport rectangle, names the drawing mode beside the scale (Detail, Overview, Summary, Map, Icons), and frames either the **selection** or the **group** it belongs to in one click. It answers where a card went after a pan at 50% and which way the canvas runs at 12%. **Settings → Worldbuilding → Navigator** hides it, and its **×** hides it at once.
+* **Tablet gestures** — **Settings → Worldbuilding → Tablet gestures** — turn the canvas into a touch surface. A **long press** on a card or a group's tab or summary begins a forge from it: drag onto another card and release to choose the kind, exactly as dragging the ring does. A short press picks, a drag moves, and two fingers pinch to zoom and pan together, with the zoom badge reporting the scale. While the setting is on the rings, grip marks and resize corners grow to finger size, and with it off the canvas behaves as it does for a mouse.
 * **Right-click** a card to access every operation it supports, including linking, relating, colouring, assigning an image, choosing its type, folding, pinning and locking. Right-click a group for its own menu, or right-click a connector for its relationship and routing options.
 * **Ctrl+click** adds cards to a set that then drags as one, while **Shift+drag** on the background box-selects the cards it touches. **More ▾ → Quick select** provides predefined selections, and the selection's menu aligns and distributes the selected cards.
+* **Selecting** a card, or a whole group through its port, turns the canvas into a relationship lens: everything more than one wire away dims, the focused wires thicken, and the inspector lists each neighbour with the kind that reaches it, so a row walks the lens to that card or group. Prose links, canvas bonds, group bonds and the outline spine all count. From the summary zoom (below 55%), where the words drawn on the wires are only a few pixels tall, the focused bonds carry their kind in a screen-sized label; at 20% and below the overview keeps its lines and gains their relationships back.
 * **Arrange ▾** lays out the selection, a group, a connected component, one type or the whole vein.
 * **More ▾** contains the remaining tools: **Canvas gestures** opens a cheatsheet, **Legend** explains every wire and icon, and **Export** writes the canvas as SVG, PNG or Mermaid.
 
@@ -284,6 +291,10 @@ Every card corresponds to a heading of the vein. Its title is the heading text, 
 ### Height
 
 A full card either uses a fixed 260 px box with scrolling prose or **fits to content**, in which case the card grows to show the whole note without an inner scrollbar and the editing textarea grows as the user types. The choice is available per node under **Card height** in the right-click menu and for the selection in **Cards ▾**. The vault default is set in **Settings → Worldbuilding → Card height**, and a node's own choice overrides that default in either direction and is saved with the vein. Content height applies only to full cards, because compact and thumbnail cards retain their designed boxes. Every canvas measurement uses the real height, so connectors, group boxes, arrangement, untangle scoring and exports account for a taller card.
+
+### Order
+
+Clicking a card that shares space with another lifts it above the other, so the card being worked on is never left half buried. A card's right-click **Order** submenu, which acts on the selection when there is one, puts cards **Bring to Front** or **Send to Back**, or uses **Order by Size** to lay the whole stack out largest at the back and smallest in front so that each overlapping card keeps at least part of itself visible. The order is saved with the vein and undone by the canvas undo.
 
 ### Folding, tags and locks
 
@@ -322,7 +333,7 @@ Fast entry supports pasting a TSV or CSV block directly into a cell, with rows a
 
 ### Pins and locks
 
-* **Pin node** makes Arrange work around the card without preventing manual dragging, and **Pin group** does the same for a whole group.
+* **Pin node** makes Arrange work around the card without preventing manual dragging. **Pin group** pins the group's **frame**, not its cards: the frame keeps its place, an arrangement of the whole vein or of other cards works around it, and the cards inside still drag and arrange. When a card moves out beyond the frame the frame expands to hold it, and when the card comes back the frame contracts to the shape it was pinned with.
 * **Lock node content** makes the card read-only while leaving it movable, linkable and exportable. Locking a **group** is stronger, because its cards cannot move, be regrouped, edited or removed, although relationships into and out of the group still work. Clicking the padlock on a card, group tab or collapsed summary unlocks it.
 * **Freeze** in a card's or group's right-click menu turns the object **Static**, which behaves as locked but displays a blue snowflake instead of the gold padlock, and a frozen card is also immovable as well as read-only. The snowflake is not an unlock button, because only **Unfreeze** in the same menu clears Static.
 
@@ -334,7 +345,7 @@ A **tag** is never a canvas-only annotation, because it is parsed from the note'
 
 ### Wires and relationships
 
-Every wire can carry a **relationship**: associate, references/referenced by, member of, tab/tab of, template, parent/child, contains/contained by, controls/controlled by, affects/affected by, ally or foe. The wire thickens as the relationship strengthens, and clicking the word on the wire advances to the next kind. Right-clicking a connector provides **Cycle relationship**, **Reverse relationship**, **Remove asserted relationship**, curve style, end selection and **Trace upstream/downstream**. Dragging from a selected set's menu, using **Relate to…** in a card's menu, or dragging a **link dot** asserts a bond between cards or a group endpoint. A link dot is refused for a pair that a prose link already joins, so dashed and solid wires never duplicate each other.
+Every wire can carry a **relationship**: associate, references/referenced by, member of, tab/tab of, supplying/supplied by, template, parent/child, contains/contained by, controls/controlled by, affects/affected by, ally or foe. The wire thickens as the relationship strengthens, and clicking the word on the wire advances to the next kind. Right-clicking a connector provides **Cycle relationship**, **Reverse relationship**, **Remove asserted relationship**, curve style, end selection and **Trace upstream/downstream**. Dragging from a selected set's menu, using **Relate to…** in a card's menu, or dragging a **link dot** asserts a bond between cards or a group endpoint. A link dot is refused for a pair that a prose link already joins, so dashed and solid wires never duplicate each other. The chooser that opens on release is a **quick-forge palette**: the kind last used for that pair of node types is already active, so **Enter** repeats it, pinned and recent kinds sit above the full list, typing searches the kinds and **1–9** assert one directly, and ***** pins the active kind for later. Any wire can also carry a **bond note** — a sentence or a source citation saying why the bond holds — set from the wire's right-click menu; it appears under that neighbour in the inspector, in the wire's tooltip and in canvas search.
 
 ### Groups
 
@@ -353,7 +364,9 @@ Every wire can carry a **relationship**: associate, references/referenced by, me
 
 ### Selecting
 
-Clicking a card selects it, **Ctrl+click** toggles it in the set, and a picked set drags as one. **Shift+drag** on the background box-selects everything it touches. With connectors already selected, a **Shift+drag** marquee also adds every wire its rectangle crosses. **Select ▾** adds quick selections such as connected cards, ancestors, descendants, cards of the same type or colour, group members, pinned cards, locked cards, untyped cards and cards without images, while the selection's right-click menu aligns and distributes the selection. **Fit selection** zooms to the selected cards.
+Clicking a card selects it, **Ctrl+click** toggles it in the set, and a picked set drags as one. **Shift+drag** on the background box-selects everything it touches: the rectangle carries its own count as it grows — how many cards and whole groups it holds — which is the read that matters at the overview zoom, where a card is only an icon. With connectors already selected, a **Shift+drag** marquee also adds every wire its rectangle crosses. **Select ▾** adds quick selections such as connected cards, ancestors, descendants, cards of the same type or colour, group members, pinned cards, locked cards, untyped cards and cards without images, while the selection's right-click menu aligns and distributes the selection. **Fit selection** zooms to the selected cards.
+
+Two or more selected cards gain a bar above the canvas whose label counts the set — cards, the boxes it covers whole, and any locked cards — and whose buttons carry the count they would act on: **Group 12** stacks the set into a new group, **Pin 12** pins it where it stands (or unpins it once every card is pinned), **Arrange 12 ▾** opens the layouts for the selection alone, **Relate 12…** forges one kind from every selected card to a single target and reports how many bonds were written, already held or left to a prose link, and **Delete 12** asks once and removes those notes from the vein's markdown. Every one of them is one undo step, and the result is announced to assistive technology.
 
 ### Layouts
 
@@ -381,7 +394,7 @@ Dragging the background pans the canvas, and the wheel zooms around the pointer.
 
 ## Canvas history, exports and health
 
-The canvas maintains its **own undo history**, separate from the markdown editor's. A drag, a layout, a type, a colour, a bond, a fold, a card's mode or its height each forms one named step, and **Undo** and **Redo** name the change they would make. The shortcuts are `Ctrl+Z`, `Ctrl+Shift+Z` and `Ctrl+Y` while the canvas has focus. **History** opens the stack as a list with redo above the current point and undo below it, each row can be selected, and the stack is capped at 60 steps per vein.
+The canvas maintains its **own undo history**, separate from the markdown editor's. A drag, a layout, a type, a colour, a bond, a fold, a card's mode or its height each forms one named step, and **Undo** and **Redo** name the change they would make. The shortcuts are `Ctrl+Z`, `Ctrl+Shift+Z` and `Ctrl+Y` while the canvas has focus. **History** opens the stack as a list with redo above the current point and undo below it, each row can be selected, and the stack is capped at 60 steps per vein. The same stack is available without a window: `world checkpoints` lists it with each step's distance, and `world jump --back 2` or `--forward 1` returns to one in a single restore, leapfrogged steps and their names included.
 
 ### What a step restores
 
@@ -442,7 +455,7 @@ The sections form the manual's structure, and the help window groups them by top
 | [`vault.import.plan`](#vault-import-plan) | Preview an archive import without writing any files. | read |
 | [`vault.autobackup`](#vault-autobackup) | Arm the vault to upload after every write from the window, CLI and MCP, or change its upload settings. | write |
 | [`vault.state`](#vault-state) | Read the viewer state, including the last vein read, expanded chambers and panel widths. | read |
-| [`vault.state.set`](#vault-state-set) | Write viewer state. | write |
+| [`vault.state.set`](#vault-state-set) | Merge viewer state, keeping the canvas records the patch does not name. | write |
 | [`vault.log`](#vault-log) | Append one line to the session log. | write |
 | [`vault.logs`](#vault-logs) | Read the session log. | read |
 | [`vault.index`](#vault-index) | Report the state of the document index cache in `.macusanite/index.json`. | read |
@@ -781,11 +794,13 @@ macusanite vault state --json
 
 ### `vault.state.set`
 
-Write viewer state.
+Merge viewer state, keeping the canvas records the patch does not name.
+
+The state is bookkeeping stored in `.macusanite/state.json`. It also holds every vein's worldbuilding canvas under `world`, so the supplied object is merged over the current state rather than replacing it: setting `lastPath` or a panel width leaves the canvases alone, while naming `world` replaces that slice (the `world` commands edit one canvas safely). It is deliberately excluded from undo, and the window rewrites it as the user browses, so callers should treat it as a hint rather than as an authoritative record.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
-| `state` | json | yes | The state object to store. |
+| `state` | json | yes | The state keys to merge into the stored state. |
 
 **Returns** `{ path }`
 
@@ -1140,6 +1155,145 @@ macusanite vein resolve "Analytical Methods" --from Home.md --json
 ```
 
 
+### Worldbuilding
+
+| Command | What it does | Effect |
+| --- | --- | --- |
+| [`world.list`](#world-list) | List the veins that carry a worldbuilding canvas, with their cards, groups, bonds and checkpoints. | read |
+| [`world.show`](#world-show) | Show one vein's canvas: its cards, groups, bonds, annotations, saved views and checkpoints. | read |
+| [`world.mark`](#world-mark) | Mark a vein as Worldbuilding, or stop it opening as a canvas while keeping its layout. | write |
+| [`world.set`](#world-set) | Change a canvas record with a JSON patch and record one named canvas step. | write |
+| [`world.checkpoints`](#world-checkpoints) | List a canvas's undo and redo checkpoints, nearest first, without their snapshots. | read |
+| [`world.jump`](#world-jump) | Return a canvas to a checkpoint, N steps back or forward, in one restore. | write |
+
+### `world.list`
+
+List the veins that carry a worldbuilding canvas, with their cards, groups, bonds and checkpoints.
+
+A vein opens as a canvas when it is marked for Worldbuilding or when it has been arranged on one. The layout, groups, bonds, annotations and canvas history live in `.macusanite/state.json` under `world`, beside the plain markdown the cards edit, so the same vault reads in the window, the CLI and over MCP. This command reports one row per canvas vein with the counts an agent needs to decide what to open; `--all` includes veins that have no canvas record yet.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `all` | boolean | no | Include veins that have no canvas record. |
+
+**Returns** `{ boards: [{ path, exists, marked, cards, groups, bonds, annotations, steps }] }`
+
+**Kind** reads only · MCP tool `world_list`
+
+```bash
+macusanite world list
+macusanite world list --all --json
+```
+
+
+### `world.show`
+
+Show one vein's canvas: its cards, groups, bonds, annotations, saved views and checkpoints.
+
+The result is the canvas record as the window reads it, brought up to the current schema: every card with its anchor, title, type, structured fields, position, fold, pin, lock, display mode, height, colour and image; every group with its members and children; every asserted bond with its kind and note; the annotations, saved views, camera and connector routing; and the undo and redo checkpoints by name. A card's prose stays in the markdown, so `vein read` and `vein section` edit it and this command edits the canvas around it.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | Vault-relative path of the vein. |
+
+**Returns** `{ path, marked, schema, cards, groups, bonds, annotations, views, checkpoints, view, routing, pushAside }`
+
+**Kind** reads only · MCP tool `world_show`
+
+```bash
+macusanite world show Home.md
+macusanite world show "Chambers/Lab/Analytical Methods" --json
+```
+
+
+### `world.mark`
+
+Mark a vein as Worldbuilding, or stop it opening as a canvas while keeping its layout.
+
+The mark is what makes a vein open as cards instead of as lines; the canvas itself is kept either way, so unmarking is not a loss and marking again restores the graph. With neither flag the vein is marked, which is the common case; `--off` unmarks it and leaves the record in place as long as it holds positions, groups, bonds or any other canvas work.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | Vault-relative path of the vein. |
+| `on` | boolean | no | Mark the vein for Worldbuilding (the default). |
+| `off` | boolean | no | Unmark it, keeping its canvas record. |
+
+**Returns** `{ path, marked }`
+
+**Kind** writes to the vault · MCP tool `world_mark`
+
+```bash
+macusanite world mark Home.md
+macusanite world mark Home.md --off
+```
+
+
+### `world.set`
+
+Change a canvas record with a JSON patch and record one named canvas step.
+
+The patch may name any of `positions`, `groups`, `relations`, `bondNotes`, `folded`, `types`, `fields`, `colors`, `images`, `resources`, `pinned`, `locked`, `cardModes`, `cardSizes`, `cardDims`, `stack`, `collapsedGroups`, `annotations`, `savedViews`, `view`, `routing` and `pushAside`. Maps merge by card anchor (groups by id, bonds by `from->to`), so naming one card never disturbs the others; a `null` value removes that entry, and a `null` slice clears the whole slice. Arrays — stack order and saved views — replace, because their order is the value; `view`, `routing` and `pushAside` are preferences that merge or replace as one. Anchors must be headings that exist, types, fields and relationship kinds are checked against the same tables the canvas uses, and positions and sizes are rounded and clamped as a drag would be. The change lands on the canvas's own undo stack as one named step — the same stack the toolbar's undo and the checkpoints use, never the markdown undo — unless `--no-history` is passed. The step's name is derived from the patch (`Moved 3 cards`, `Changed 2 bonds`) or supplied with `--label`. An empty patch is refused, and a patch that changes nothing records no step.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | Vault-relative path of the vein. |
+| `patch` | json | yes | An object of canvas slices to replace, e.g. `{"positions":{"intro":{"x":40,"y":20}}}`. |
+| `label` | string | no | Name for the canvas step; derived from the patch when omitted. |
+| `no-history` | boolean | no | Do not add the change to the canvas undo stack. |
+
+**Returns** `{ path, changed, label, cards, groups, bonds, annotations, checkpoints }`
+
+**Kind** writes to the vault · MCP tool `world_set`
+
+```bash
+macusanite world set Home.md --patch '{"positions":{"intro":{"x":40,"y":20}}}'
+macusanite world set Home.md --patch '{"relations":{"intro->progression":"parent"}}' --label "Bonded the intro"
+macusanite world set Home.md --patch '{"types":{"intro":"person"},"fields":{"intro":{"level":"3"}}}'
+```
+
+
+### `world.checkpoints`
+
+List a canvas's undo and redo checkpoints, nearest first, without their snapshots.
+
+Every canvas change is one named checkpoint: a drag, a resize, a group, a bond, a type, a layout. This is the same stack the toolbar's `▾` opens, with each row reporting how many steps away it is; the snapshot behind a checkpoint stays in the vault, and `world jump` returns to it.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | Vault-relative path of the vein. |
+
+**Returns** `{ path, past: [{ name, stepsBack }], future: [{ name, stepsForward }], undo, redo }`
+
+**Kind** reads only · MCP tool `world_checkpoints`
+
+```bash
+macusanite world checkpoints Home.md
+macusanite world checkpoints Home.md --json
+```
+
+
+### `world.jump`
+
+Return a canvas to a checkpoint, N steps back or forward, in one restore.
+
+This is the headless equivalent of picking a row in the checkpoints popover: the whole canvas state of that step is put back — positions, groups, bonds, folds, types, fields, colours, images, pins, locks, display modes, heights and the camera — and the steps it leaps over move to the other stack with their names intact, so single-stepping still works from either end. A checkpoint that carried a table edit also restores the markdown table it changed. Pass exactly one of `--back` or `--forward`; asking for more steps than the stack holds is an error, not a silent clamp.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | Vault-relative path of the vein. |
+| `back` | integer | no | How many steps back to go (undo). |
+| `forward` | integer | no | How many steps forward to go (redo). |
+
+**Returns** `{ path, direction, steps, checkpoint, tables, checkpoints }`
+
+**Kind** writes to the vault · MCP tool `world_jump`
+
+```bash
+macusanite world jump Home.md --back 1
+macusanite world jump Home.md --forward 3 --json
+```
+
+
 ### Chambers
 
 | Command | What it does | Effect |
@@ -1460,4 +1614,4 @@ macusanite docs --sections
 
 ---
 
-49 commands · generated 2026-11-17
+55 commands · generated 2026-11-18

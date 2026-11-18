@@ -11,14 +11,17 @@ import {
   blankTable, normalizeTable, serializeTable, tableText, tableSummary, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_CELL_MAX_LENGTH, TABLE_ALIGNMENTS,
   splitMarkdownTableRow, markdownTableAt, markdownTables, tableFromMarkdown, markdownTableOnly, markdownFromTable, tableCaptionOf, replaceTableCaption, syncTableMarkdown,
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
-  ZOOM_MIN, ZOOM_MAX, clampView, zoomViewAt, snapZoomView, anchorOfView, viewOfAnchor,
+  ZOOM_MIN, ZOOM_MAX, CANVAS_SCHEMA, clampView, zoomViewAt, snapZoomView, anchorOfView, viewOfAnchor,
+  ZOOM_DETAIL, ZOOM_FORGE, ZOOM_ANNOTATION, ZOOM_SUMMARY, ZOOM_COMPACT, ZOOM_ICON,
+  zoomPercent, zoomLabel, zoomMode, applyZoomClasses,
+  navigatorMap, navigatorProject, navigatorViewport, navigatorModeLabel, readingOrder, coveredGroups,
   FORGE_ZOOM, isForgeZoom, syncForgeZoomClass, ICON_ZOOM, isIconZoom,
   DROP_MIN_PX, dropMembershipKind,
   canvasSnapshot, pruneSnapshotAnchors, renameAnchorIn,
   DEFAULT_STEP_NAME, normalizeHistoryEntry, cleanHistoryStack, historyJump, historyKey,
   cleanView, restoreSnapshot, canvasRecordPatch,
-  pushHistoryStep, rewriteHistoryStack, renameHistoryAnchor, pruneHistoryStack, dropAnchorFromGroups, fitView,
-  centreView, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, normalizeRouting, elbowPoints,   connectorCurve, sampleConnectorCurve, spreadConnectorCurves, prepareConnectorGeometry, CONNECTOR_LANE_PITCH, CONNECTOR_SPREAD, CONNECTOR_CUT_SPAN, cleanAnnotations,
+  pushHistoryStep, rewriteHistoryStack, renameHistoryAnchor, pruneHistoryStack, dropAnchorFromGroups, cleanGroupFrame, pinnedGroupFrame, capturePinnedGroupFrames, fitView,
+  centreView, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, normalizeRouting, elbowPoints,   connectorCurve, routingMemoSize, clearRoutingMemo, sampleConnectorCurve, spreadConnectorCurves, prepareConnectorGeometry, CONNECTOR_LANE_PITCH, CONNECTOR_SPREAD, CONNECTOR_CUT_SPAN, cleanAnnotations,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
   nodeImageMetaNames, nodeImageMetaNamesFromSnapshot, referencedNodeImageMetaNames, orphanedNodeImageMetaNames,
   NODE_IMAGE_MAX_SIDE, NODE_IMAGE_QUALITY, nodeImageSize,
@@ -26,9 +29,11 @@ import {
   referencedNodeFileMetaNames, orphanedNodeFileMetaNames, cleanNodeResources, normalizeWebUrl,
   lockedContentAnchors, sourceSectionRanges, enforceLockedSource, lockedRangeAt,
   connectedAnchors, lineageAnchors, anchorsInRect, curvesInRect, relationshipDepths, canvasSearch,
-  connectorList, connectorKey, nextConnectorSelection, pathAnchors, effectiveRouting, cleanCardModes, cleanCardDims, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
+  connectorList, connectorKey, nextConnectorSelection, lensFocus, pathAnchors, effectiveRouting, cleanCardModes, cleanCardDims, cleanStackOrder, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
+  forgePalette, cleanForgePrefs, rememberForgeKind, toggleForgeFavourite,
+  cleanBondNotes, BOND_NOTE_MAX,
   CARD_MIN_W, CARD_MIN_H, CARD_MAX_W, CARD_MAX_H,
-  arrangeCandidateOrigins, findArrangeOrigin,
+  arrangeCandidateOrigins, arrangeSwapPairs, findArrangeOrigin,
   progressionColumns, layoutProgressionColumns, placeConnectorLabels,
 } from '../../src/lib/worldbuild.js';
 
@@ -171,6 +176,12 @@ test('relationship kinds run weakest-first, in inverse pairs', () => {
   assert.equal(relationKind('tab-of').label, 'Tab Of');
   assert.equal(relationKind('tab-of').inverse, 'tab');
   assert.equal(relationKind('tab').rank, relationKind('member-of').rank);
+  // Supplying is a structural pair at the same low rank.
+  assert.equal(relationKind('supplying').label, 'Supplying');
+  assert.equal(relationKind('supplying').inverse, 'supplied-by');
+  assert.equal(relationKind('supplied-by').label, 'Supplied By');
+  assert.equal(relationKind('supplied-by').inverse, 'supplying');
+  assert.equal(relationKind('supplying').rank, relationKind('member-of').rank);
   // References is the lightest committed bond, and names its own inverse.
   assert.equal(relationKind('references').label, 'References');
   assert.equal(relationKind('references').inverse, 'referenced-by');
@@ -188,6 +199,15 @@ test('relationship kinds run weakest-first, in inverse pairs', () => {
   assert.equal(last.id, 'foe');
   assert.ok(last.rank > secondLast.rank);
   assert.ok(secondLast.rank >= relationKind('controls').rank);
+});
+
+test('supplying and supplied by are asserted like any other kind', () => {
+  const relations = setRelation({}, 'a', 'b', 'supplying');
+  assert.equal(relationOf(relations, 'a', 'b').id, 'supplying');
+  // A bond is directed: the other way round is not implied until asserted.
+  assert.equal(relationOf(relations, 'b', 'a').id, DEFAULT_RELATION);
+  const supplied = setRelation(relations, 'b', 'a', 'supplied-by');
+  assert.equal(relationOf(supplied, 'b', 'a').label, 'Supplied By');
 });
 
 test('references and referenced by are asserted like any other kind', () => {
@@ -401,6 +421,248 @@ test('connector clicks select, re-click to deselect, switch, and Ctrl/Cmd toggle
   assert.deepEqual([...added], [first, second]);
 });
 
+test('lensFocus lights a card, its wires and one hop away', () => {
+  const connectors = [
+    { kind: 'section', from: 'a', to: 'b', relation: 'associate' },
+    { kind: 'mention', from: 'c', to: 'a', relation: 'ally' },
+    { kind: 'bond', from: 'a', to: 'd', relation: 'parent' },
+    { kind: 'contains', from: 'p', to: 'a' },
+    { kind: 'group', from: 'group:g1', to: 'a', relation: 'ally' },
+    { kind: 'section', from: 'b', to: 'c', relation: 'associate' },
+  ];
+  const lens = lensFocus(connectors, ['a'], { g1: ['x', 'y'] });
+
+  assert.equal(lens.active, true);
+  assert.deepEqual([...lens.focus], ['a']);
+  assert.deepEqual([...lens.groups], [], 'one card is not a two-card group');
+  assert.deepEqual([...lens.neighbours].sort(), ['b', 'c', 'd', 'p']);
+  assert.deepEqual([...lens.neighbourGroups], ['g1']);
+  assert.deepEqual([...lens.edges].sort(), [
+    'bond:a->d',
+    'contains:p->a',
+    'group:group:g1->a',
+    'mention:c->a',
+    'section:a->b',
+  ]);
+  // Only asserted kinds get a word on the canvas; the default stays unmarked.
+  assert.deepEqual([...lens.asserted].sort(), ['bond:a->d', 'group:group:g1->a', 'mention:c->a']);
+
+  const rows = lens.rows.map((row) => `${row.direction} ${row.endpoint} ${row.label}`).sort();
+  assert.deepEqual(rows, [
+    'in c mention · ally',
+    'in group:g1 ally · group',
+    'in p inside',
+    'out b section link',
+    'out d parent',
+  ]);
+
+  // A wire with both ends in the lens is inside it, not a way out.
+  const both = lensFocus(connectors, ['a', 'b'], {});
+  assert.ok(both.edges.has('section:a->b'));
+  assert.equal(both.rows.some((row) => row.endpoint === 'b' && row.kind === 'section'), false);
+
+  const empty = lensFocus(connectors, [], {});
+  assert.equal(empty.active, false);
+  assert.equal(empty.rows.length, 0);
+  assert.equal(empty.edges.size, 0);
+});
+
+test('lensFocus reads an exact selection of a group as that group', () => {
+  const connectors = [
+    { kind: 'group', from: 'group:g1', to: 'a', relation: 'supplying' },
+    { kind: 'section', from: 'x', to: 'y', relation: 'associate' },
+    { kind: 'bond', from: 'x', to: 'b', relation: 'ally' },
+  ];
+  const groups = { g1: ['x', 'y'], g3: ['x', 'z'] };
+
+  const group = lensFocus(connectors, ['x', 'y'], groups);
+  assert.deepEqual([...group.groups], ['g1'], 'a same-sized group with other cards does not match');
+  assert.ok(group.endpoints.has('group:g1'), 'the group endpoint joins the focus');
+  assert.ok(group.edges.has('group:group:g1->a'));
+  assert.deepEqual([...group.neighbours].sort(), ['a', 'b']);
+  const out = group.rows.filter((row) => row.direction === 'out');
+  assert.deepEqual(out.map((row) => `${row.endpoint} ${row.label}`).sort(), [
+    'a supplying · group',
+    'b ally',
+  ]);
+  assert.equal(group.rows.some((row) => row.endpoint === 'x'), false, 'members are not neighbours');
+  assert.ok(group.edges.has('section:x->y'), 'a wire between two members stays in the lens');
+
+  // A partial selection is a card selection: the group's own bonds stay away.
+  const partial = lensFocus(connectors, ['x'], groups);
+  assert.deepEqual([...partial.groups], []);
+  assert.equal(partial.edges.has('group:group:g1->a'), false);
+  assert.deepEqual([...partial.neighbours].sort(), ['b', 'y']);
+});
+
+test('forgePalette puts the kind remembered for the pair first', () => {
+  const empty = cleanForgePrefs({});
+  const plain = forgePalette({ fromType: 'person', toType: 'place', prefs: empty });
+  assert.equal(plain.remembered, null);
+  assert.deepEqual(plain.rows.map((row) => row.id), RELATION_KINDS.map((kind) => kind.id),
+    'with no history every kind is listed once, weakest first');
+
+  const used = rememberForgeKind(empty, { fromType: 'person', toType: 'place', kind: 'controls' });
+  assert.deepEqual(used.recent, ['controls']);
+  assert.equal(used.pairs['person->place'], 'controls');
+
+  const palette = forgePalette({ fromType: 'person', toType: 'place', prefs: used });
+  assert.equal(palette.remembered, 'controls');
+  assert.equal(palette.rows[0].id, 'controls');
+  assert.equal(palette.rows[0].section, 'remembered');
+  assert.equal(palette.rows[0].remembered, true);
+  assert.equal(palette.rows.filter((row) => row.id === 'controls').length, 1, 'one row per kind');
+  assert.equal(palette.rows.length, RELATION_KINDS.length);
+
+  // The pair is directed, and another pair is unaffected.
+  assert.equal(forgePalette({ fromType: 'place', toType: 'person', prefs: used }).remembered, null);
+  assert.equal(forgePalette({ fromType: 'person', toType: 'place', prefs: used }).remembered, 'controls');
+
+  // Recent kinds follow the remembered one, most recent first; a repeat moves
+  // to the head rather than appearing twice.
+  const twice = rememberForgeKind(
+    rememberForgeKind(used, { fromType: 'person', toType: 'place', kind: 'ally' }),
+    { fromType: 'person', toType: 'place', kind: 'controls' },
+  );
+  assert.deepEqual(twice.recent, ['controls', 'ally']);
+  const ownPair = forgePalette({ fromType: 'person', toType: 'place', prefs: twice }).rows;
+  assert.deepEqual(ownPair.filter((row) => row.section === 'recent').map((row) => row.id), ['ally'],
+    'the remembered kind is not also listed as a recent row');
+  // Another pair has no memory, so the recents lead it instead.
+  const elsewhere = forgePalette({ fromType: 'group', toType: 'note', prefs: twice });
+  assert.equal(elsewhere.remembered, null);
+  assert.deepEqual(elsewhere.rows.slice(0, 2).map((row) => [row.id, row.section]), [
+    ['controls', 'recent'],
+    ['ally', 'recent'],
+  ]);
+});
+
+test('forgePalette shortlists pinned kinds and searches labels and ids', () => {
+  let prefs = toggleForgeFavourite(cleanForgePrefs({}), 'foe');
+  prefs = toggleForgeFavourite(prefs, 'references');
+  assert.deepEqual(prefs.favourite, ['references', 'foe'], 'newest pin first');
+
+  const rows = forgePalette({ prefs }).rows;
+  assert.deepEqual(rows.slice(0, 2).map((row) => [row.id, row.section]), [
+    ['references', 'favourite'],
+    ['foe', 'favourite'],
+  ]);
+  assert.equal(rows.filter((row) => row.id === 'foe').length, 1);
+  assert.equal(rows[1].favourite, true);
+
+  const unpinned = toggleForgeFavourite(prefs, 'foe');
+  assert.deepEqual(unpinned.favourite, ['references']);
+
+  // Labels and ids both match, spaces and hyphens ignored.
+  assert.deepEqual(forgePalette({ prefs, query: 'member' }).rows.map((row) => row.id), ['member-of']);
+  assert.deepEqual(forgePalette({ prefs, query: 'tab of' }).rows.map((row) => row.id), ['tab-of']);
+  assert.deepEqual(forgePalette({ prefs, query: 'suppl' }).rows.map((row) => row.id), ['supplying', 'supplied-by']);
+  assert.deepEqual(forgePalette({ prefs, query: 'nothing like this' }).rows, []);
+  // A search keeps the shortlist order for what still matches.
+  assert.deepEqual(forgePalette({ prefs, query: 'refer' }).rows.map((row) => row.id), ['references', 'referenced-by']);
+});
+
+test('cleanForgePrefs drops kinds and pairs it cannot trust', () => {
+  const clean = cleanForgePrefs({
+    recent: ['ally', 'ally', 'nonsense', 'foe', 7, 'supplying'],
+    favourite: ['controls', 'controls'],
+    pairs: {
+      'person->place': 'controls',
+      'bad key': 'ally',
+      'a->b': 'nope',
+      'place->place': 'foe',
+    },
+  });
+  assert.deepEqual(clean.recent, ['ally', 'foe', 'supplying']);
+  assert.deepEqual(clean.favourite, ['controls']);
+  assert.deepEqual(clean.pairs, { 'person->place': 'controls', 'place->place': 'foe' });
+  assert.deepEqual(cleanForgePrefs(null), { recent: [], favourite: [], pairs: {} });
+  assert.deepEqual(cleanForgePrefs('nope'), { recent: [], favourite: [], pairs: {} });
+
+  // Both shortlists are bounded, newest first.
+  const capped = cleanForgePrefs({ recent: RELATION_KINDS.map((kind) => kind.id) });
+  assert.equal(capped.recent.length, 6);
+  assert.deepEqual(capped.recent, RELATION_KINDS.slice(0, 6).map((kind) => kind.id));
+
+  // Remembering an unknown kind changes nothing.
+  assert.deepEqual(rememberForgeKind({}, { fromType: 'person', toType: 'place', kind: 'nope' }),
+    { recent: [], favourite: [], pairs: {} });
+});
+
+test('bond notes clean to one sentence under the limit', () => {
+  const clean = cleanBondNotes({
+    'a->b': '  The river\n\tsupplies the mill.  ',
+    'a->': 'no second end',
+    'a->b->c': 'too many ends',
+    'c->d': '   ',
+    7: 'not a pair',
+  });
+  assert.deepEqual(clean, { 'a->b': 'The river supplies the mill.' });
+  assert.deepEqual(cleanBondNotes(null), {});
+  assert.deepEqual(cleanBondNotes('nope'), {});
+  const long = cleanBondNotes({ 'a->b': 'x'.repeat(BOND_NOTE_MAX + 40) })['a->b'];
+  assert.equal(long.length, BOND_NOTE_MAX);
+});
+
+test('connectorList carries each bond note on its wire', () => {
+  const model = parseNotes('# A\n\nSee [[#B]].\n\n## B\n\nEnd.\n\n## C\n\nEnd.\n');
+  const relations = { 'a->b': 'supplying', 'b->c': 'foe', 'group:g->b': 'controls' };
+  const groups = { g: { members: ['a', 'c'] } };
+  const bondNotes = {
+    'a->b': 'The mill town depends on the river.',
+    'b->c': 'Old border dispute.',
+    'group:g->b': 'The garrison answers to the group.',
+  };
+  const byKey = new Map(connectorList(model, groups, relations, bondNotes).map((edge) => [connectorKey(edge), edge]));
+  assert.equal(byKey.get('section:a->b')?.note, 'The mill town depends on the river.');
+  assert.equal(byKey.get('bond:b->c')?.note, 'Old border dispute.');
+  assert.equal(byKey.get('group:group:g->b')?.note, 'The garrison answers to the group.');
+  assert.equal(byKey.get('contains:a->c')?.note, undefined, 'the outline spine carries no note');
+
+  // A note written the other way round still reads on the wire.
+  const reversed = connectorList(model, groups, relations, { 'b->a': 'The mill town depends on the river.' });
+  assert.equal(reversed.find((edge) => edge.kind === 'section')?.note, 'The mill town depends on the river.');
+});
+
+test('a lens row carries the note its bond holds', () => {
+  const lens = lensFocus([
+    { kind: 'bond', from: 'a', to: 'b', relation: 'foe', note: 'Old border dispute.' },
+    { kind: 'section', from: 'a', to: 'c', relation: 'associate' },
+  ], ['a'], {});
+  const row = lens.rows.find((entry) => entry.endpoint === 'b');
+  assert.equal(row.note, 'Old border dispute.');
+  assert.equal(lens.rows.find((entry) => entry.endpoint === 'c').note, '');
+});
+
+test('canvasSearch finds a card by a note its bond carries', () => {
+  const model = parseNotes('# A\n\nBody.\n\n## B\n\nBody.\n');
+  const record = { bondNotes: { 'a->b': 'The mill grinds the river salt.' } };
+  const matches = canvasSearch(model, record, 'salt');
+  assert.deepEqual(matches.map((match) => match.anchor), ['a', 'b'], 'both ends of the bond match');
+  assert.deepEqual(matches[0].reasons, ['bond note']);
+  assert.deepEqual(canvasSearch(model, record, 'salt mill').map((match) => match.anchor), ['a', 'b']);
+  assert.deepEqual(canvasSearch(model, record, 'nothing'), []);
+});
+
+test('canvas snapshots and renames keep bond notes with their bonds', () => {
+  const snap = canvasSnapshot({
+    positions: { a: { x: 1, y: 1 }, b: { x: 2, y: 2 }, gone: { x: 3, y: 3 } },
+    relations: { 'a->b': 'ally', 'a->gone': 'foe' },
+    bondNotes: { 'a->b': 'Friends since the siege.', 'a->gone': 'Lost when the card left.' },
+  });
+  const pruned = pruneSnapshotAnchors(JSON.parse(snap), new Set(['a', 'b']));
+  assert.deepEqual(pruned.relations, { 'a->b': 'ally' });
+  assert.deepEqual(pruned.bondNotes, { 'a->b': 'Friends since the siege.' });
+
+  const restored = restoreSnapshot(snap, new Set(['a', 'b']));
+  assert.deepEqual(restored.bondNotes, { 'a->b': 'Friends since the siege.' });
+
+  // Renaming a card drops the bonds it was an end of, notes included.
+  const renamed = renameAnchorIn(JSON.parse(snap), 'b', 'b2');
+  assert.deepEqual(renamed.relations, { 'a->gone': 'foe' });
+  assert.deepEqual(renamed.bondNotes, { 'a->gone': 'Lost when the card left.' });
+});
+
 test('proseLinkBetween reports the markdown link a bond removal leaves behind', () => {
   const model = parseNotes('# A\n\nSee [[#B]].\n\n## B\n\nEnd.\n');
   assert.equal(proseLinkBetween(model, 'a', 'b')?.kind, 'section');
@@ -476,6 +738,26 @@ test('cleanCardDims keeps dragged boxes, rounded and inside the draggable range'
   assert.deepEqual(cleanCardDims({ a: { width: 300, height: 260, left: 10 } }), { a: { width: 300, height: 260 } });
   assert.deepEqual(cleanCardDims(null), {});
   assert.deepEqual(cleanCardDims(), {});
+});
+
+test('cleanStackOrder keeps anchors once, bottom to top', () => {
+  assert.deepEqual(cleanStackOrder(['b', 'a', 'b', '', 3, null, 'a']), ['b', 'a']);
+  assert.deepEqual(cleanStackOrder('a'), []);
+  assert.deepEqual(cleanStackOrder(), []);
+});
+
+test('the card stack survives a snapshot, a prune and a rename', () => {
+  const snap = canvasSnapshot({
+    positions: { a: { x: 1, y: 2 }, b: { x: 3, y: 4 }, gone: { x: 5, y: 6 } },
+    stack: ['b', 'gone', 'a'],
+  });
+  assert.deepEqual(restoreSnapshot(snap, new Set(['a', 'b']), {}).stack, ['b', 'a']);
+  assert.deepEqual(pruneSnapshotAnchors(JSON.parse(snap), new Set(['a', 'b'])).stack, ['b', 'a']);
+  assert.deepEqual(renameAnchorIn(JSON.parse(snap), 'a', 'c').stack, ['b', 'gone', 'c']);
+  // A snapshot written before the stack existed restores the order in hand.
+  const legacy = JSON.stringify({ positions: { a: { x: 1, y: 2 } } });
+  assert.deepEqual(restoreSnapshot(legacy, new Set(['a']), { stack: ['a'] }).stack, ['a']);
+  assert.deepEqual(canvasRecordPatch({ stack: ['b', 'a'] }).stack, ['b', 'a']);
 });
 
 test('cleanCollapsedGroups keeps only true entries', () => {
@@ -556,6 +838,16 @@ test('canvas snapshots carry dragged card sizes through an undo and a prune', ()
     { a: { width: 300, height: 260 } },
   );
   assert.deepEqual(restoreSnapshot(legacy, new Set(['a'])).cardDims, {});
+});
+
+test('untangle never swaps a fixed pinned or locked unit with a free unit', () => {
+  const shapes = [
+    { fixed: true }, // pinned or locked
+    { fixed: false },
+    { fixed: true }, // another fixed unit
+    { fixed: false },
+  ];
+  assert.deepEqual([...arrangeSwapPairs(shapes)], [[1, 3]]);
 });
 
 test('arrangement search keeps going past a huge blocker', () => {
@@ -1111,13 +1403,199 @@ test('snapZoomView leaves 100 and far crossings untouched', () => {
   assert.equal(snapZoomView({ x: 0, y: 0, s: 0.25 }, 0, 0, Math.exp(2)).s, Math.exp(2) * 0.25);
 });
 
-test('forge zoom starts below 65% and toggles its stage class', () => {
+test('zoom labels round the way the badge prints them', () => {
+  assert.equal(zoomPercent(1), 100);
+  assert.equal(zoomLabel(1), '100%');
+  assert.equal(zoomLabel(0.55), '55%');
+  assert.equal(zoomLabel(0.5), '50%');
+  assert.equal(zoomLabel(0.0749), '7.49%');
+  assert.equal(zoomLabel(0.0001), '0.01%');
+  // A wheel step targeting 12.5% lands a few millionths high; the badge must
+  // still read 12.5%, because that label is what the icon mode is read from.
+  assert.equal(zoomLabel(0.12500006666670221), '12.5%');
+  assert.equal(zoomMode(0.12500006666670221).icon, true);
+});
+
+test('zoomMode switches every handoff at the percentage its badge shows', () => {
+  assert.deepEqual(
+    [ZOOM_DETAIL, ZOOM_FORGE, ZOOM_ANNOTATION, ZOOM_SUMMARY, ZOOM_COMPACT, ZOOM_ICON],
+    [0.75, 0.65, 0.62, 0.55, 0.25, 0.125],
+  );
+
+  // 75%: the cards are editable at the boundary and an object map just below.
+  const detail = zoomMode(0.75);
+  assert.equal(detail.label, '75%');
+  assert.equal(detail.detail, true);
+  assert.equal(detail.overview, false);
+  assert.equal(zoomMode(0.7494).label, '74.9%');
+  assert.equal(zoomMode(0.7494).overview, true);
+
+  // 65%: the port stays in the card head at the boundary, and a badge that
+  // still prints 65.0% belongs to that side too.
+  assert.equal(zoomMode(0.65).forge, false);
+  assert.equal(zoomMode(0.6499).label, '65%');
+  assert.equal(zoomMode(0.6499).forge, false);
+  assert.equal(zoomMode(0.6494).label, '64.9%');
+  assert.equal(zoomMode(0.6494).forge, true);
+
+  // 62%: annotations stay editable at the boundary, drag as one surface below.
+  assert.equal(zoomMode(0.62).annotationDrag, false);
+  assert.equal(zoomMode(0.6199).annotationDrag, false);
+  assert.equal(zoomMode(0.6194).label, '61.9%');
+  assert.equal(zoomMode(0.6194).annotationDrag, true);
+
+  // 55%: full cards at the boundary, screen-readable summaries below.
+  assert.equal(zoomMode(0.55).semantic, false);
+  assert.equal(zoomMode(0.5499).semantic, false);
+  assert.equal(zoomMode(0.5494).label, '54.9%');
+  assert.equal(zoomMode(0.5494).semantic, true);
+
+  // 25%: summaries hold their screen size at the boundary, shrink below.
+  assert.equal(zoomMode(0.25).compact, false);
+  assert.equal(zoomMode(0.2499).compact, false);
+  assert.equal(zoomMode(0.2494).label, '24.9%');
+  assert.equal(zoomMode(0.2494).compact, true);
+
+  // 12.5%: icon zoom starts at the boundary and every displayed 12.5%.
+  assert.equal(zoomMode(0.1256).label, '12.6%');
+  assert.equal(zoomMode(0.1256).icon, false);
+  assert.equal(zoomMode(0.1254).label, '12.5%');
+  assert.equal(zoomMode(0.1254).icon, true);
+  assert.equal(zoomMode(0.125).icon, true);
+  assert.equal(zoomMode(0.12).icon, true);
+
+  // The continuous sizes share those thresholds.
+  assert.equal(zoomMode(0.25).semanticShrink, 1);
+  assert.equal(zoomMode(0.2).semanticShrink, 0.8);
+  assert.equal(zoomMode(0.125).semanticShrink, 0.5);
+  assert.equal(zoomMode(0.05).semanticShrink, 0.5);
+  assert.equal(zoomMode(0.125).iconFont, 18);
+  assert.equal(zoomMode(0.05).iconFont, 7.2);
+});
+
+test('zoomMode supplies the stage classes the modes map to', () => {
+  const classesOf = (mode) => Object.entries(mode.classes).filter(([, on]) => on).map(([name]) => name);
+  assert.deepEqual(classesOf(zoomMode(1)), []);
+  assert.deepEqual(classesOf(zoomMode(0.75)), []);
+  assert.deepEqual(classesOf(zoomMode(0.7)), ['is-zoomed-out']);
+  assert.deepEqual(classesOf(zoomMode(0.6)), ['is-zoomed-out', 'is-forge-zoom', 'is-annotation-drag']);
+  assert.deepEqual(
+    classesOf(zoomMode(0.2)),
+    ['is-zoomed-out', 'is-forge-zoom', 'is-annotation-drag', 'is-semantic-zoom'],
+  );
+  assert.deepEqual(
+    classesOf(zoomMode(0.125)),
+    ['is-zoomed-out', 'is-forge-zoom', 'is-annotation-drag', 'is-semantic-zoom', 'is-icon-zoom'],
+  );
+
+  // Applying a mode clears classes left by an earlier one — the stale-class
+  // case that made a zoomed-in canvas keep its icon face.
+  const classes = new Set(['is-icon-zoom', 'is-semantic-zoom', 'is-forge-zoom']);
+  const classList = {
+    contains: (name) => classes.has(name),
+    toggle: (name, force) => (force ? classes.add(name) : classes.delete(name)),
+  };
+  assert.equal(applyZoomClasses(classList, zoomMode(1)).scale, 1);
+  assert.equal(classes.size, 0);
+  applyZoomClasses(classList, zoomMode(0.6));
+  assert.deepEqual([...classes].sort(), ['is-annotation-drag', 'is-forge-zoom', 'is-zoomed-out']);
+});
+
+test('a marquee covers a group only when it takes every card in it', () => {
+  const groups = {
+    a: { id: 'a', members: ['one', 'two'] },
+    b: { id: 'b', members: ['three'], children: ['a'] },
+    c: { id: 'c', members: [], children: ['b'] },
+  };
+  // One card of two is a partial pick: the box is not covered.
+  assert.deepEqual(coveredGroups(groups, ['one']), []);
+  assert.deepEqual(coveredGroups(groups, ['one', 'two']), ['a']);
+  // Covering a nested group's members covers its parent too, and a wrapper
+  // that holds only children counts once everything under it is picked.
+  assert.deepEqual(coveredGroups(groups, new Set(['one', 'two', 'three'])), ['a', 'b', 'c']);
+  assert.deepEqual(coveredGroups(groups, ['one', 'two', 'three']), ['a', 'b', 'c']);
+  // A group with no cards of its own and no cards under it has nothing to cover.
+  assert.deepEqual(coveredGroups(groups, []), []);
+  assert.deepEqual(coveredGroups({ empty: { id: 'empty', members: [] } }, ['one']), []);
+  assert.deepEqual(coveredGroups({}, ['one']), []);
+});
+
+test('readingOrder walks the canvas rows before its columns', () => {
+  const items = [
+    { key: 'c', x: 40, y: 260 },
+    { key: 'a', x: 40, y: 40 },
+    { key: 'b', x: 420, y: 48 },
+    { key: 'd', x: 420, y: 268 },
+    { key: 'e', x: 40, y: 520 },
+  ];
+  assert.deepEqual(readingOrder(items), ['a', 'b', 'c', 'd', 'e']);
+
+  // A row is a band, not a pixel line: the left card sits 60px lower and
+  // still comes first because it is left of the other.
+  assert.deepEqual(
+    readingOrder([{ key: 'right', x: 400, y: 10 }, { key: 'left', x: 20, y: 70 }]),
+    ['left', 'right'],
+  );
+
+  // A row far enough down starts a new band, even when it starts to the left.
+  assert.deepEqual(
+    readingOrder([{ key: 'right', x: 400, y: 10 }, { key: 'left', x: 20, y: 200 }]),
+    ['right', 'left'],
+  );
+
+  assert.deepEqual(readingOrder([]), []);
+  assert.deepEqual(readingOrder([{ key: 'x', x: NaN, y: 0 }, { key: 'y', x: 0, y: 0 }]), ['y']);
+});
+
+test('the navigator names the drawing mode at every handoff', () => {
+  assert.equal(navigatorModeLabel(zoomMode(1)), 'Detail');
+  assert.equal(navigatorModeLabel(zoomMode(0.8)), 'Detail');
+  assert.equal(navigatorModeLabel(zoomMode(0.6)), 'Overview');
+  assert.equal(navigatorModeLabel(zoomMode(0.5)), 'Summary');
+  assert.equal(navigatorModeLabel(zoomMode(0.2)), 'Map');
+  assert.equal(navigatorModeLabel(zoomMode(0.12)), 'Icons');
+  assert.equal(navigatorModeLabel(zoomMode(0)), 'No scale');
+});
+
+test('the navigator fits the canvas into its box and frames the viewport', () => {
+  // A 1000×500 canvas in a 200×100 box with 10 padding: the height is the
+  // tighter axis, so the scale is 0.16 and the map is centred with one scale.
+  const map = navigatorMap({ minX: 0, minY: 0, maxX: 1000, maxY: 500 }, 200, 100, 10);
+  assert.equal(map.scale, 0.16);
+  const corner = navigatorProject(map, { x: 0, y: 0, width: 500, height: 250 });
+  assert.deepEqual(corner, { x: 20, y: 10, width: 80, height: 40 });
+  const bottomRight = navigatorProject(map, { x: 500, y: 250, width: 500, height: 250 });
+  assert.equal(bottomRight.x + bottomRight.width, 180);
+  assert.equal(bottomRight.y + bottomRight.height, 90);
+
+  // A stage showing the top-left quarter draws that quarter on the map.
+  const stage = 500;
+  const topLeft = navigatorViewport(map, { x: 0, y: 0, s: 1 }, stage, 400, 200, 100);
+  assert.deepEqual(topLeft, { x: 20, y: 10, width: 80, height: 64 });
+
+  // Panned far right, the rectangle is clipped to the map instead of drawing
+  // outside it.
+  const panned = navigatorViewport(map, { x: -1000, y: -100, s: 1 }, stage, 400, 200, 100);
+  assert.equal(panned.x, 180);
+  assert.equal(panned.width, 20);
+  assert.equal(panned.y, 26);
+
+  // Zoomed out past the content, the rectangle spans the whole map.
+  const wide = navigatorViewport(map, { x: 100, y: 50, s: 0.2 }, stage, 400, 200, 100);
+  assert.deepEqual(wide, { x: 0, y: 0, width: 200, height: 100 });
+
+  // Nothing to fit, or no view, yields nothing to draw.
+  assert.equal(navigatorMap(null, 200, 100), null);
+  assert.equal(navigatorMap({ minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }, 200, 100), null);
+  assert.equal(navigatorViewport(map, null, 500, 400, 200, 100), null);
+  assert.equal(navigatorViewport(map, { x: 0, y: 0, s: 0 }, 500, 400, 200, 100), null);
+});
+
+test('forge handoff keeps the boundary port and toggles only its class', () => {
   assert.equal(FORGE_ZOOM, 0.65);
-  // At the boundary the port stays in the card head; only below it is the
-  // screen-sized corner ring used.
   assert.equal(isForgeZoom(0.65), false);
   assert.equal(isForgeZoom(0.6501), false);
-  assert.equal(isForgeZoom(0.6499), true);
+  assert.equal(isForgeZoom(0.6494), true);
 
   const classes = new Set();
   const classList = {
@@ -1136,13 +1614,13 @@ test('forge zoom starts below 65% and toggles its stage class', () => {
   assert.equal(classes.has('is-forge-zoom'), false);
 });
 
-test('icon zoom engages at the displayed 12.5% wheel step', () => {
+test('icon zoom covers every displayed 12.5%', () => {
   assert.equal(ICON_ZOOM, 0.125);
-  // A wheel step that displays as 12.5% can land just above the nominal scale.
   assert.equal(isIconZoom(0.12500006666670221), true);
   assert.equal(isIconZoom(0.125), true);
   assert.equal(isIconZoom(0.12), true);
-  assert.equal(isIconZoom(0.12501), false);
+  assert.equal(isIconZoom(0.1254), true);
+  assert.equal(isIconZoom(0.1256), false);
   assert.equal(isIconZoom(0.13), false);
 });
 
@@ -1353,7 +1831,7 @@ test('canvasSnapshot carries every canvas slice, node types, fields and colours 
   // Missing slices default, camera included.
   const bare = JSON.parse(canvasSnapshot());
   assert.deepEqual(bare, {
-    positions: {}, groups: {}, relations: {}, folded: {}, types: {}, fields: {}, colors: {}, images: {}, resources: {}, pinned: {}, locked: {}, cardModes: {}, cardSizes: {}, cardDims: {}, collapsedGroups: {}, annotations: {}, view: { x: 0, y: 0, s: 1 },
+    schema: CANVAS_SCHEMA, positions: {}, groups: {}, relations: {}, bondNotes: {}, folded: {}, types: {}, fields: {}, colors: {}, images: {}, resources: {}, pinned: {}, locked: {},     cardModes: {}, cardSizes: {}, cardDims: {}, stack: [], collapsedGroups: {}, annotations: {}, view: { x: 0, y: 0, s: 1 },
   });
 });
 
@@ -1794,12 +2272,12 @@ test('canvasRecordPatch writes a step whole, or not at all', () => {
     view: { x: 1, y: 2, s: 99 },
   });
   assert.deepEqual(patch, {
-    positions: { a: { x: 1, y: 2 } }, groups: {}, relations: {}, folded: {},
+    schema: CANVAS_SCHEMA, positions: { a: { x: 1, y: 2 } }, groups: {}, relations: {}, folded: {},
     types: { a: 'stat' }, fields: {}, colors: { a: '#ff0000' }, images: { a: 'data:image/png;base64,AAA' }, pinned: { a: true }, annotations: { note: { id: 'note', x: 1, y: 3, text: 'check later', folded: true } }, view: { x: 1, y: 2, s: ZOOM_MAX },
   });
   // No types, fields, colours, images or view in the step: none are written.
   const bare = canvasRecordPatch({});
-  assert.deepEqual(bare, { positions: {}, groups: {}, relations: {}, folded: {} });
+  assert.deepEqual(bare, { schema: CANVAS_SCHEMA, positions: {}, groups: {}, relations: {}, folded: {} });
   assert.equal('types' in bare, false);
   assert.equal('colors' in bare, false);
   assert.equal('images' in bare, false);
@@ -2037,6 +2515,61 @@ test('canvas history restores node type and structured field edits on undo and r
   assert.equal(nodeFieldOf(current.fields, 'a', 'value'), '7');
 });
 
+test('a pinned group frame keeps its place and stretches around moved cards', () => {
+  const frame = cleanGroupFrame({ x: 100, y: 50, width: 400, height: 300 });
+  assert.deepEqual(frame, { x: 100, y: 50, width: 400, height: 300 });
+  // Cards still inside the frame leave it exactly as it was pinned.
+  assert.deepEqual(
+    pinnedGroupFrame(frame, { x: 150, y: 90, width: 200, height: 120 }),
+    { x: 100, y: 50, width: 400, height: 300 },
+  );
+  // A card dragged past the right and bottom edges expands the frame, whose
+  // top-left never moves.
+  const stretched = pinnedGroupFrame(frame, { x: 150, y: 90, width: 420, height: 340 });
+  assert.deepEqual(stretched, { x: 100, y: 50, width: 470, height: 380 });
+  // Moving that card back contracts the frame to the pinned shape again.
+  assert.deepEqual(
+    pinnedGroupFrame(frame, { x: 150, y: 90, width: 200, height: 120 }),
+    frame,
+  );
+  // A card moved above or left of the frame expands it on that side too.
+  assert.deepEqual(
+    pinnedGroupFrame(frame, { x: 60, y: 20, width: 100, height: 80 }),
+    { x: 60, y: 20, width: 440, height: 330 },
+  );
+  // Older records and junk fall back safely instead of drawing nonsense.
+  assert.deepEqual(pinnedGroupFrame(null, { x: 1, y: 2, width: 3, height: 4 }), { x: 1, y: 2, width: 3, height: 4 });
+  assert.deepEqual(pinnedGroupFrame(frame, null), frame);
+  assert.equal(cleanGroupFrame({ x: 0, y: 0, width: -1, height: 10 }), null);
+  assert.equal(cleanGroupFrame({ x: '1', y: 0, width: 10, height: 10 }), null);
+  assert.equal(cleanGroupFrame(null), null);
+});
+
+test('an old pinned group gains its frame on load, without touching anything else', () => {
+  const groups = {
+    legacy: { id: 'legacy', members: ['a', 'b'], pinned: true },
+    fresh: { id: 'fresh', members: ['c', 'd'], pinned: true, frame: { x: 5, y: 6, width: 200, height: 100 } },
+    plain: { id: 'plain', members: ['e', 'f'] },
+  };
+  const hull = { x: 40, y: 50, width: 320, height: 620 };
+  const { groups: next, changed } = capturePinnedGroupFrames(groups, () => hull);
+  assert.equal(changed, true);
+  assert.deepEqual(next.legacy.frame, { x: 40, y: 50, width: 320, height: 620 });
+  // A pin that already has its frame keeps it, and an unpinned group gains none.
+  assert.deepEqual(next.fresh, groups.fresh);
+  assert.equal('frame' in next.plain, false);
+  // The original record is not mutated.
+  assert.equal('frame' in groups.legacy, false);
+  // Nothing to capture leaves the same object and reports no change; an
+  // unmeasurable hull (fewer than two cards, say) does the same.
+  const already = { g: { id: 'g', members: ['a', 'b'], pinned: true, frame: { x: 1, y: 1, width: 2, height: 2 } } };
+  const none = capturePinnedGroupFrames(already, () => hull);
+  assert.equal(none.changed, false);
+  assert.equal(none.groups, already);
+  const thin = { thin: { id: 'thin', members: ['a'], pinned: true } };
+  assert.deepEqual(capturePinnedGroupFrames(thin, () => null), { groups: thin, changed: false });
+});
+
 test('dropAnchorFromGroups drops one card and dissolves thin groups', () => {
   const { groups, dissolved } = dropAnchorFromGroups({
     trio: { members: ['a', 'b', 'gone'] },
@@ -2235,6 +2768,24 @@ test('the occlusion sampler is the drawn curve: sampled points lie on the SVG pa
   // The bend itself: 45% of the side gap, floored at 36px — one definition,
   // pinned here so a change is a deliberate, visible edit.
   const wide = connectorCurve({ x: 0, y: 0, width: 100, height: 50 }, { x: 300, y: 100, width: 100, height: 50 });
+  // Routing is memoised: the same two boxes hand back the same curve, a moved
+  // card is routed afresh, and clearing the memo changes neither answer.
+  {
+    const from = { x: 0, y: 0, width: 300, height: 260 };
+    const to = { x: 600, y: 40, width: 300, height: 260 };
+    clearRoutingMemo();
+    const first = connectorCurve(from, to);
+    assert.equal(routingMemoSize(), 1);
+    assert.equal(connectorCurve(from, to), first);
+    assert.equal(routingMemoSize(), 1);
+    const moved = connectorCurve(from, { ...to, x: 640 });
+    assert.notEqual(moved, first);
+    assert.notEqual(moved.path, first.path);
+    assert.deepEqual(connectorCurve(from, { ...to, x: 640 }, { elbow: true }).path === first.path, false);
+    clearRoutingMemo();
+    assert.equal(routingMemoSize(), 0);
+    assert.equal(connectorCurve(from, to).path, first.path);
+  }
   assert.match(wide.path, /^M 100 25 C 190 25 210 125 300 125$/);
   const narrow = connectorCurve({ x: 0, y: 0, width: 100, height: 50 }, { x: 130, y: 0, width: 100, height: 50 });
   assert.match(narrow.path, /^M 100 25 C 136 25 94 25 130 25$/);

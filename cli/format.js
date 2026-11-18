@@ -366,6 +366,98 @@ export function formatResult(command, result, { color = false } = {}) {
       break;
     }
 
+    case 'world.list': {
+      const boards = result.boards ?? [];
+      lines.push(table(boards.map((board) => ({
+        path: board.path,
+        world: board.marked ? 'yes' : '',
+        cards: board.cards,
+        groups: board.groups,
+        bonds: board.bonds,
+        notes: board.annotations,
+        steps: board.steps,
+        missing: board.exists ? '' : 'missing',
+      })), ['path', 'world', 'cards', 'groups', 'bonds', 'notes', 'steps', 'missing'], paint)
+        || paint.dim('no canvases yet — mark one with `macusanite world mark <path>`'));
+      break;
+    }
+
+    case 'world.show': {
+      const counts = `${plural(result.cards?.length ?? 0, 'card')} · ${plural(result.groups?.length ?? 0, 'group')} · ${plural(result.bonds?.length ?? 0, 'bond')} · ${plural(result.annotations?.length ?? 0, 'annotation')}`;
+      lines.push(`${paint.bold(result.path)}${result.marked ? paint.dim(' · Worldbuilding') : ''}`);
+      lines.push(paint.dim(counts));
+      const cards = (result.cards ?? []).map((card) => ({
+        card: card.title,
+        type: card.type,
+        at: card.position ? `${card.position.x},${card.position.y}` : '',
+        state: [
+          card.pinned ? 'pinned' : '',
+          card.locked === 'frozen' ? 'frozen' : (card.locked ? 'locked' : ''),
+          card.folded ? 'folded' : '',
+          card.mode && card.mode !== 'full' ? card.mode : '',
+        ].filter(Boolean).join(' '),
+        group: card.group ?? '',
+      }));
+      if (cards.length) lines.push(table(cards, ['card', 'type', 'at', 'state', 'group'], paint));
+      if (result.groups?.length) {
+        lines.push(paint.dim('groups'));
+        lines.push(table(result.groups.map((group) => ({
+          id: group.id,
+          name: group.name,
+          members: group.members.length,
+          children: group.children.length,
+          collapsed: group.collapsed ? 'yes' : '',
+        })), ['id', 'name', 'members', 'children', 'collapsed'], paint));
+      }
+      if (result.bonds?.length) {
+        lines.push(paint.dim('bonds'));
+        lines.push(table(result.bonds.map((bond) => ({
+          from: bond.from,
+          kind: bond.kind,
+          to: bond.to,
+          note: bond.note ?? '',
+        })), ['from', 'kind', 'to', 'note'], paint));
+      }
+      const checkpoints = result.checkpoints ?? { past: [], future: [], undo: 0, redo: 0 };
+      lines.push(paint.dim(`checkpoints ${plural(checkpoints.undo, 'step')} back · ${plural(checkpoints.redo, 'step')} forward`));
+      for (const row of checkpoints.future ?? []) lines.push(`  ↷ ${row.name} ${paint.dim(`${plural(row.stepsForward, 'step')} forward`)}`);
+      for (const row of checkpoints.past ?? []) lines.push(`  ↶ ${row.name} ${paint.dim(`${plural(row.stepsBack, 'step')} back`)}`);
+      break;
+    }
+
+    case 'world.mark':
+      lines.push(result.marked
+        ? `${paint.green('marked as Worldbuilding')} ${result.path}`
+        : `${paint.yellow('unmarked')} ${result.path} ${paint.dim('— its canvas is kept')}`);
+      break;
+
+    case 'world.set': {
+      lines.push(result.changed
+        ? `${paint.green('canvas updated')} ${paint.dim(result.label)}`
+        : paint.dim('nothing changed'));
+      const checkpoints = result.checkpoints ?? { undo: 0, redo: 0 };
+      lines.push(paint.dim(`${plural(result.cards ?? 0, 'card')} · ${plural(result.groups ?? 0, 'group')} · ${plural(result.bonds ?? 0, 'bond')} · ${plural(checkpoints.undo, 'step')} back · ${plural(checkpoints.redo, 'step')} forward`));
+      break;
+    }
+
+    case 'world.checkpoints': {
+      const checkpoints = result;
+      lines.push(`${paint.bold(result.path)} ${paint.dim(`${plural(checkpoints.undo, 'step')} back · ${plural(checkpoints.redo, 'step')} forward`)}`);
+      if (!checkpoints.undo && !checkpoints.redo) lines.push(paint.dim('nothing to undo on this canvas yet'));
+      for (const row of checkpoints.future ?? []) lines.push(`  ↷ ${row.name} ${paint.dim(`${plural(row.stepsForward, 'step')} forward`)}`);
+      if (checkpoints.undo || checkpoints.redo) lines.push(`  ${paint.dim('⦿ now')}`);
+      for (const row of checkpoints.past ?? []) lines.push(`  ↶ ${row.name} ${paint.dim(`${plural(row.stepsBack, 'step')} back`)}`);
+      break;
+    }
+
+    case 'world.jump': {
+      const checkpoints = result.checkpoints ?? { undo: 0, redo: 0 };
+      lines.push(`${paint.green(`went ${plural(result.steps, 'step')} ${result.direction}`)} — ${result.checkpoint}`);
+      if (result.tables) lines.push(paint.dim(`restored the prose of ${plural(result.tables, 'table')}`));
+      lines.push(paint.dim(`${plural(checkpoints.undo, 'step')} back · ${plural(checkpoints.redo, 'step')} forward`));
+      break;
+    }
+
     case 'color.set':
       lines.push(`${paint.green('colour set')} ${result.kind} ${paint.dim(result.key)} → ${result.color}`);
       break;

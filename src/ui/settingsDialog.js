@@ -193,6 +193,8 @@ export function createSettingsDialog({ app }) {
               el('option', { value: 'fixed', text: 'Fixed — prose scrolls in the card', selected: settings.worldbuild?.cardSize !== 'content' ? '' : null }),
               el('option', { value: 'content', text: 'Fit to content — the card grows to the note', selected: settings.worldbuild?.cardSize === 'content' ? '' : null }),
             ]), 'The default for every full card in this vault. Each node can override it from its right-click menu, or the Cards menu for a selection — overrides are kept with the vein.'),
+            field('Navigator', checkbox(settings.worldbuild?.navigator !== false, (v) => app.updateSettings({ worldbuild: { navigator: v } })), 'A minimap of the whole canvas with the viewport drawn on it, the current drawing mode, and Fit selection and Fit group.'),
+            field('Tablet gestures', checkbox(settings.worldbuild?.touch === true, (v) => app.updateSettings({ worldbuild: { touch: v } })), 'Long-press a card or group to forge a relationship from it, larger rings and grips to aim at, and two-finger pinch and pan on the canvas. Off for a mouse, which keeps drag-to-forge and the wheel.'),
           ]),
         ]),
 

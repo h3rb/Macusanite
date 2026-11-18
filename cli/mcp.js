@@ -104,6 +104,7 @@ const INSTRUCTIONS = [
   'Read the manual with the `docs` tool (or the `macusanite://manual` resource) before assuming how something works.',
   '`vein_read` returns a vein as written; `vein_info` returns its headings, links and tags without the prose.',
   'Writing tools are undoable: `undo` reverses the last recorded change, and the window\'s Ctrl+Z shares the same stack.',
+  'A vein can also be a Worldbuilding canvas: `world_show` reads its cards, groups, bonds, annotations and named checkpoints, `world_set` changes the canvas with one validated JSON patch and records one canvas step, and `world_jump` returns to a checkpoint. Card prose stays markdown, so `vein_write` and `vein_section` still edit it.',
   '`ghosts` lists wiki links that point at veins which do not exist yet — usually the most useful thing to fix first.',
   'Pass `--vault` (or call `vault_open`) to work in a vault; without one only `docs` and the vault-management tools work.',
 ].join('\n');
@@ -242,6 +243,7 @@ export function createServer({ api, version = '0.1.0', log = () => {} }) {
       text: () => [
         'You are working in a Macusanite vault.',
         'Call `vault_info` and `vault_stats` for identity and scale, `vault_tree` for the shape, `tags` for themes, `ghosts` for links that point nowhere, and `docs` (section "what-macusanite-is") if you need the rules of the format.',
+        'Call `world_list` to see which veins carry a Worldbuilding canvas, and `world_show` for the cards, groups, bonds and checkpoints of one that matters.',
         'Then summarise: what the vault is about, how it is organised, and the three most useful next actions.',
       ].join('\n'),
     },
@@ -422,6 +424,7 @@ export function createServer({ api, version = '0.1.0', log = () => {} }) {
 /** Which manual section documents a command — used in tool descriptions. */
 function manualSectionFor(command) {
   if (command === 'docs' || command === 'help') return 'agents';
+  if (command.startsWith('world')) return 'worldbuilding-history';
   if (command.startsWith('vault')) return 'vault-on-disk';
   return 'agents';
 }

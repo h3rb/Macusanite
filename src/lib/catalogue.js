@@ -60,6 +60,7 @@ export const LIST_TYPES = new Set(['string[]', 'number[]']);
 export const GROUPS = [
   'Vault',
   'Documents',
+  'Worldbuilding',
   'Chambers',
   'Search and graph',
   'Colours',
@@ -301,9 +302,10 @@ Credentials are never stored in the setting. A direct upload reads \`AWS_ACCESS_
 
   'vault.state.set': {
     group: 'Vault',
-    summary: 'Write viewer state.',
+    summary: 'Merge viewer state, keeping the canvas records the patch does not name.',
+    description: `The state is bookkeeping stored in \`.macusanite/state.json\`. It also holds every vein's worldbuilding canvas under \`world\`, so the supplied object is merged over the current state rather than replacing it: setting \`lastPath\` or a panel width leaves the canvases alone, while naming \`world\` replaces that slice (the \`world\` commands edit one canvas safely). It is deliberately excluded from undo, and the window rewrites it as the user browses, so callers should treat it as a hint rather than as an authoritative record.`,
     params: [
-      { name: 'state', type: 'json', required: true, positional: true, description: 'The state object to store.' },
+      { name: 'state', type: 'json', required: true, positional: true, description: 'The state keys to merge into the stored state.' },
     ],
     returns: '`{ path }`',
     examples: ['macusanite vault state set \'{"lastPath":"Home.md"}\''],
@@ -514,6 +516,88 @@ Credentials are never stored in the setting. A direct upload reads \`AWS_ACCESS_
     ],
     returns: '`{ ok, path, anchor, candidates, ghost?, suggestedPath? }`',
     examples: ['macusanite vein resolve "Analytical Methods" --from Home.md --json'],
+  },
+
+  /* ── Worldbuilding ───────────────────────────────────────────────────── */
+
+  'world.list': {
+    group: 'Worldbuilding',
+    summary: 'List the veins that carry a worldbuilding canvas, with their cards, groups, bonds and checkpoints.',
+    description: `A vein opens as a canvas when it is marked for Worldbuilding or when it has been arranged on one. The layout, groups, bonds, annotations and canvas history live in \`.macusanite/state.json\` under \`world\`, beside the plain markdown the cards edit, so the same vault reads in the window, the CLI and over MCP. This command reports one row per canvas vein with the counts an agent needs to decide what to open; \`--all\` includes veins that have no canvas record yet.`,
+    params: [
+      { name: 'all', type: 'boolean', description: 'Include veins that have no canvas record.' },
+    ],
+    returns: '`{ boards: [{ path, exists, marked, cards, groups, bonds, annotations, steps }] }`',
+    examples: ['macusanite world list', 'macusanite world list --all --json'],
+  },
+
+  'world.show': {
+    group: 'Worldbuilding',
+    summary: 'Show one vein\'s canvas: its cards, groups, bonds, annotations, saved views and checkpoints.',
+    description: `The result is the canvas record as the window reads it, brought up to the current schema: every card with its anchor, title, type, structured fields, position, fold, pin, lock, display mode, height, colour and image; every group with its members and children; every asserted bond with its kind and note; the annotations, saved views, camera and connector routing; and the undo and redo checkpoints by name. A card's prose stays in the markdown, so \`vein read\` and \`vein section\` edit it and this command edits the canvas around it.`,
+    params: [
+      { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path of the vein.' },
+    ],
+    returns: '`{ path, marked, schema, cards, groups, bonds, annotations, views, checkpoints, view, routing, pushAside }`',
+    examples: ['macusanite world show Home.md', 'macusanite world show "Chambers/Lab/Analytical Methods" --json'],
+  },
+
+  'world.mark': {
+    group: 'Worldbuilding',
+    summary: 'Mark a vein as Worldbuilding, or stop it opening as a canvas while keeping its layout.',
+    description: `The mark is what makes a vein open as cards instead of as lines; the canvas itself is kept either way, so unmarking is not a loss and marking again restores the graph. With neither flag the vein is marked, which is the common case; \`--off\` unmarks it and leaves the record in place as long as it holds positions, groups, bonds or any other canvas work.`,
+    params: [
+      { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path of the vein.' },
+      { name: 'on', type: 'boolean', description: 'Mark the vein for Worldbuilding (the default).' },
+      { name: 'off', type: 'boolean', description: 'Unmark it, keeping its canvas record.' },
+    ],
+    returns: '`{ path, marked }`',
+    examples: ['macusanite world mark Home.md', 'macusanite world mark Home.md --off'],
+    mutates: true,
+  },
+
+  'world.set': {
+    group: 'Worldbuilding',
+    summary: 'Change a canvas record with a JSON patch and record one named canvas step.',
+    description: `The patch may name any of \`positions\`, \`groups\`, \`relations\`, \`bondNotes\`, \`folded\`, \`types\`, \`fields\`, \`colors\`, \`images\`, \`resources\`, \`pinned\`, \`locked\`, \`cardModes\`, \`cardSizes\`, \`cardDims\`, \`stack\`, \`collapsedGroups\`, \`annotations\`, \`savedViews\`, \`view\`, \`routing\` and \`pushAside\`. Maps merge by card anchor (groups by id, bonds by \`from->to\`), so naming one card never disturbs the others; a \`null\` value removes that entry, and a \`null\` slice clears the whole slice. Arrays — stack order and saved views — replace, because their order is the value; \`view\`, \`routing\` and \`pushAside\` are preferences that merge or replace as one. Anchors must be headings that exist, types, fields and relationship kinds are checked against the same tables the canvas uses, and positions and sizes are rounded and clamped as a drag would be. The change lands on the canvas's own undo stack as one named step — the same stack the toolbar's undo and the checkpoints use, never the markdown undo — unless \`--no-history\` is passed. The step's name is derived from the patch (\`Moved 3 cards\`, \`Changed 2 bonds\`) or supplied with \`--label\`. An empty patch is refused, and a patch that changes nothing records no step.`,
+    params: [
+      { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path of the vein.' },
+      { name: 'patch', type: 'json', required: true, description: 'An object of canvas slices to replace, e.g. `{"positions":{"intro":{"x":40,"y":20}}}`.' },
+      { name: 'label', type: 'string', description: 'Name for the canvas step; derived from the patch when omitted.' },
+      { name: 'no-history', type: 'boolean', description: 'Do not add the change to the canvas undo stack.' },
+    ],
+    returns: '`{ path, changed, label, cards, groups, bonds, annotations, checkpoints }`',
+    examples: [
+      'macusanite world set Home.md --patch \'{"positions":{"intro":{"x":40,"y":20}}}\'',
+      'macusanite world set Home.md --patch \'{"relations":{"intro->progression":"parent"}}\' --label "Bonded the intro"',
+      'macusanite world set Home.md --patch \'{"types":{"intro":"person"},"fields":{"intro":{"level":"3"}}}\'',
+    ],
+    mutates: true,
+  },
+
+  'world.checkpoints': {
+    group: 'Worldbuilding',
+    summary: 'List a canvas\'s undo and redo checkpoints, nearest first, without their snapshots.',
+    description: `Every canvas change is one named checkpoint: a drag, a resize, a group, a bond, a type, a layout. This is the same stack the toolbar's \`▾\` opens, with each row reporting how many steps away it is; the snapshot behind a checkpoint stays in the vault, and \`world jump\` returns to it.`,
+    params: [
+      { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path of the vein.' },
+    ],
+    returns: '`{ path, past: [{ name, stepsBack }], future: [{ name, stepsForward }], undo, redo }`',
+    examples: ['macusanite world checkpoints Home.md', 'macusanite world checkpoints Home.md --json'],
+  },
+
+  'world.jump': {
+    group: 'Worldbuilding',
+    summary: 'Return a canvas to a checkpoint, N steps back or forward, in one restore.',
+    description: `This is the headless equivalent of picking a row in the checkpoints popover: the whole canvas state of that step is put back — positions, groups, bonds, folds, types, fields, colours, images, pins, locks, display modes, heights and the camera — and the steps it leaps over move to the other stack with their names intact, so single-stepping still works from either end. A checkpoint that carried a table edit also restores the markdown table it changed. Pass exactly one of \`--back\` or \`--forward\`; asking for more steps than the stack holds is an error, not a silent clamp.`,
+    params: [
+      { name: 'path', type: 'string', required: true, positional: true, description: 'Vault-relative path of the vein.' },
+      { name: 'back', type: 'integer', description: 'How many steps back to go (undo).' },
+      { name: 'forward', type: 'integer', description: 'How many steps forward to go (redo).' },
+    ],
+    returns: '`{ path, direction, steps, checkpoint, tables, checkpoints }`',
+    examples: ['macusanite world jump Home.md --back 1', 'macusanite world jump Home.md --forward 3 --json'],
+    mutates: true,
   },
 
   /* ── Chambers ────────────────────────────────────────────────────────── */

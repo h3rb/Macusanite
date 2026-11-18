@@ -22,10 +22,13 @@ import { parseCache, serializeCache, cacheRecord, planIndex, stubEntry, createIn
 import { parseFrontmatter, documentMeta } from './lib/frontmatter.js';
 import {
   setRelation, dropRelations, relationKey, setNodeType, setNodeField, dropNodeField,
-  cleanHistoryStack, canvasRecordPatch, cleanView, cleanPositions, dropAnchorFromGroups, renameAnchorIn, cleanAnnotations, normalizeRouting, cleanCardModes, cleanCardSizes, cleanCardDims, cleanNodeResources, referencedNodeFileMetaNames, cleanCollapsedGroups, cleanSavedViews,
+  cleanHistoryStack, canvasRecordPatch, cleanView, cleanPositions, dropAnchorFromGroups, renameAnchorIn, cleanAnnotations, normalizeRouting, cleanCardModes, cleanCardSizes, cleanCardDims, cleanStackOrder, cleanNodeResources, referencedNodeFileMetaNames, cleanCollapsedGroups, cleanSavedViews,
+  migrateCanvasRecord,
   lockedContentAnchors as lockedAnchorsOf, enforceLockedSource,
   referencedNodeImageMetaNames,
   normalizeUnit, rememberUnit,
+  cleanForgePrefs, rememberForgeKind as forgePrefsAfterUse, toggleForgeFavourite as forgePrefsAfterPin,
+  cleanBondNotes,
 } from './lib/worldbuild.js';
 import { resolveTarget } from './lib/wikilinks.js';
 import { dirname, join, basename, titleFromPath, slugify, isMarkdown } from './lib/path.js';
@@ -402,8 +405,12 @@ const app = {
     // is also the one the index pass should read first.
     const saved = await readMetaJson(META.state, null);
     state.nav = NavHistory.fromJSON(saved?.nav ?? null);
+    // A record written by an older version is brought to the current canvas
+    // shape as it loads, once, so nothing has to guess later whether a key is
+    // missing because it was never set or because that version had no such
+    // field. The migration is idempotent and keeps keys it does not know.
     state.world = (saved?.world && typeof saved.world === 'object' && !Array.isArray(saved.world))
-      ? saved.world
+      ? Object.fromEntries(Object.entries(saved.world).map(([path, record]) => [path, migrateCanvasRecord(record)]))
       : {};
     if (saved?.ui?.expanded) state.ui.expanded = { ...saved.ui.expanded };
     if (saved?.ui?.mode === 'edit') state.ui.mode = 'edit';
@@ -1048,8 +1055,16 @@ const app = {
   markWorld(path, marked) {
     if (!path) return null;
     const record = { ...state.world[path], marked: Boolean(marked) };
-    const keepsWork = ['positions', 'relations', 'types', 'fields', 'folded', 'view', 'groups', 'colors', 'images', 'resources', 'pinned', 'locked', 'annotations', 'routing', 'pushAside', 'history', 'cardModes', 'cardSizes', 'cardDims', 'collapsedGroups', 'savedViews']
-      .some((part) => record[part]);
+    // A migration leaves empty containers behind (`groups: {}` and the like),
+    // and those are not work: only something actually in the record is.
+    const holdsSomething = (value) => {
+      if (value === null || value === undefined || value === false || value === '') return false;
+      if (Array.isArray(value)) return value.length > 0;
+      if (typeof value === 'object') return Object.keys(value).length > 0;
+      return true;
+    };
+    const keepsWork = ['positions', 'relations', 'bondNotes', 'types', 'fields', 'folded', 'view', 'groups', 'colors', 'images', 'resources', 'pinned', 'locked', 'annotations', 'routing', 'pushAside', 'history', 'cardModes', 'cardSizes', 'cardDims', 'stack', 'collapsedGroups', 'savedViews']
+      .some((part) => holdsSomething(record[part]));
     if (record.marked || keepsWork) state.world[path] = record;
     else delete state.world[path];
     app.scheduleStatePersist();
@@ -1105,9 +1120,33 @@ const app = {
     if (!path || !fromEndpoint || !toEndpoint) return {};
     const relations = { ...(state.world[path]?.relations ?? {}) };
     delete relations[relationKey(fromEndpoint, toEndpoint)];
-    state.world[path] = { ...state.world[path], relations };
+    // The note explained this bond; with the bond gone it has nothing to say.
+    const bondNotes = { ...(state.world[path]?.bondNotes ?? {}) };
+    delete bondNotes[relationKey(fromEndpoint, toEndpoint)];
+    delete bondNotes[relationKey(toEndpoint, fromEndpoint)];
+    state.world[path] = { ...state.world[path], relations, bondNotes: cleanBondNotes(bondNotes) };
     app.scheduleStatePersist();
     return relations;
+  },
+
+  /**
+   * The sentence or citation a bond carries, or nothing when it has none.
+   * Keyed by the pair, so a note written from either end of the wire reads
+   * back from both; an empty text removes it.
+   */
+  setWorldBondNote(path, fromEndpoint, toEndpoint, text) {
+    if (!path || !fromEndpoint || !toEndpoint) return {};
+    const record = state.world[path] ?? {};
+    const key = relationKey(fromEndpoint, toEndpoint);
+    const bondNotes = { ...(record.bondNotes ?? {}) };
+    const clean = cleanBondNotes({ [key]: text })[key] ?? '';
+    // One note per pair: writing the other way round replaces, never doubles.
+    delete bondNotes[relationKey(toEndpoint, fromEndpoint)];
+    if (clean) bondNotes[key] = clean;
+    else delete bondNotes[key];
+    state.world[path] = { ...record, bondNotes: cleanBondNotes(bondNotes) };
+    app.scheduleStatePersist();
+    return state.world[path].bondNotes;
   },
 
   /**
@@ -1138,7 +1177,12 @@ const app = {
   /** Forget every asserted relationship touching a deleted endpoint. */
   dropWorldRelations(path, endpoint) {
     const relations = dropRelations(state.world[path]?.relations ?? {}, endpoint);
-    state.world[path] = { ...state.world[path], relations };
+    const bondNotes = Object.fromEntries(Object.entries(state.world[path]?.bondNotes ?? {})
+      .filter(([key]) => {
+        const [from, to] = key.split('->');
+        return from !== endpoint && to !== endpoint;
+      }));
+    state.world[path] = { ...state.world[path], relations, bondNotes: cleanBondNotes(bondNotes) };
     app.scheduleStatePersist();
     return relations;
   },
@@ -1367,6 +1411,21 @@ const app = {
     return all;
   },
 
+  /**
+   * The cards' stacking order, bottom to top, by note anchor. Unlike a card's
+   * box this is not geometry: it decides which card paints over which, and it
+   * is saved with the vein so an ordered stack reopens as it was left.
+   */
+  saveWorldStack(path, stack) {
+    if (!path) return [];
+    const next = cleanStackOrder(stack);
+    const record = { ...state.world[path], stack: next };
+    if (!next.length) delete record.stack;
+    state.world[path] = record;
+    app.scheduleStatePersist();
+    return next;
+  },
+
   /** Replace the set of groups collapsed on this canvas (saved lenses use this). */
   saveWorldCollapsedGroups(path, collapsed) {
     if (!path) return null;
@@ -1464,6 +1523,7 @@ const app = {
     const cardModes = { ...(state.world[path]?.cardModes ?? {}) };
     const cardSizes = { ...(state.world[path]?.cardSizes ?? {}) };
     const cardDims = { ...(state.world[path]?.cardDims ?? {}) };
+    const stack = (state.world[path]?.stack ?? []).filter((name) => name !== anchor);
     const resources = { ...(state.world[path]?.resources ?? {}) };
     delete fields[anchor];
     delete folded[anchor];
@@ -1473,7 +1533,7 @@ const app = {
     delete cardSizes[anchor];
     delete cardDims[anchor];
     delete resources[anchor];
-    state.world[path] = { ...state.world[path], fields, folded, pinned, locked, cardModes, cardSizes, cardDims, resources };
+    state.world[path] = { ...state.world[path], fields, folded, pinned, locked, cardModes, cardSizes, cardDims, stack, resources };
     app.scheduleStatePersist();
     return fields;
   },
@@ -1503,6 +1563,7 @@ const app = {
       cardModes: moved.cardModes ?? {},
       cardSizes: moved.cardSizes ?? {},
       cardDims: moved.cardDims ?? {},
+      stack: moved.stack ?? [],
       resources: moved.resources ?? {},
       groups: moved.groups ?? {},
     };
@@ -1795,6 +1856,44 @@ const app = {
     if (next.length === current.length && next.every((value, index) => value === current[index])) return;
     state.settings.worldbuild = { ...(state.settings.worldbuild ?? {}), units: next };
     app.persistSettings({ record: false });
+  },
+
+  /**
+   * The quick-forge palette's shortlist and its memory of the last kind used
+   * for each source→target type pair. It lives in settings because it follows
+   * the writer between veins rather than belonging to any one canvas.
+   */
+  forgePrefs() {
+    return cleanForgePrefs(state.settings.worldbuild?.forge);
+  },
+
+  setForgePrefs(prefs) {
+    const next = cleanForgePrefs(prefs);
+    state.settings.worldbuild = { ...(state.settings.worldbuild ?? {}), forge: next };
+    app.persistSettings({ record: false });
+    return next;
+  },
+
+  /** Whether the one-time object-map note has already been shown. */
+  lowZoomTipSeen() {
+    return state.settings.worldbuild?.lowZoomTipSeen === true;
+  },
+
+  /** Retire the object-map note: it is shown once, on the first pass below 65%. */
+  markLowZoomTipSeen() {
+    state.settings.worldbuild = { ...(state.settings.worldbuild ?? {}), lowZoomTipSeen: true };
+    app.persistSettings({ record: false });
+    return true;
+  },
+
+  /** Remember one forged kind: recent head, and first for this pair of types. */
+  rememberForgeKind(fromType, toType, kind) {
+    return app.setForgePrefs(forgePrefsAfterUse(app.forgePrefs(), { fromType, toType, kind }));
+  },
+
+  /** Pin or unpin a kind in the palette's shortlist. */
+  toggleForgeFavourite(kind) {
+    return app.setForgePrefs(forgePrefsAfterPin(app.forgePrefs(), kind));
   },
 
   async updateSettings(patch) {
@@ -2963,6 +3062,13 @@ function applyIcons() {
 
 function applyLayout() {
   resizers?.apply();
+  // The canvas navigator is chrome, not canvas state: hiding it in Settings
+  // (or from its own ×) takes effect at once, with no rebuild of the vein.
+  document.body.classList.toggle('hide-canvas-navigator', state.settings.worldbuild?.navigator === false);
+  // Touch gestures are a way of operating the canvas, not canvas state: the
+  // panel reads this class on every pointer event, so the setting takes
+  // effect at once and never needs a rebuild of the vein.
+  document.body.classList.toggle('is-touch-canvas', state.settings.worldbuild?.touch === true);
   const show = state.settings.layout.showGraph;
   qs('#workspace').classList.toggle('is-graph-folded', !show);
   qs('#graph-panel').classList.remove('hidden');
@@ -3393,15 +3499,36 @@ function pickBrowserArchive() {
 // Handy for debugging and for scripted smoke checks in the browser.
 globalThis.macusanite = app;
 
-app.init().catch(async (error) => {
-  console.error(error);
-  const host = qs('#toasts');
-  if (host) host.append(el('div', { class: 'toast toast-error', text: `Startup failed: ${error.message}` }));
-  try {
-    await backend.log('error', `startup failed: ${error.message}`);
-  } catch {
-    /* nothing else to do */
+/**
+ * `?wb-smoke=zoom` runs the canvas zoom smoke test against the harness and
+ * `?wb-perf=1000` runs the canvas performance budget at that many cards; both
+ * report through the console and the page title. Development only: the dynamic
+ * import is dropped from a production build.
+ */
+async function runRequestedSmoke() {
+  if (!import.meta.env.DEV) return;
+  const params = new URLSearchParams(location.search);
+  if (params.get('wb-smoke') === 'zoom') {
+    const { runZoomSmoke } = await import('../tests/harness/zoomSmoke.js');
+    await runZoomSmoke();
   }
-});
+  if (params.get('wb-perf')) {
+    const { runPerfBudget } = await import('../tests/harness/perfBudget.js');
+    await runPerfBudget(location.search);
+  }
+}
+
+app.init()
+  .then(() => runRequestedSmoke().catch((error) => console.error('zoom smoke could not run', error)))
+  .catch(async (error) => {
+    console.error(error);
+    const host = qs('#toasts');
+    if (host) host.append(el('div', { class: 'toast toast-error', text: `Startup failed: ${error.message}` }));
+    try {
+      await backend.log('error', `startup failed: ${error.message}`);
+    } catch {
+      /* nothing else to do */
+    }
+  });
 
 export default app;

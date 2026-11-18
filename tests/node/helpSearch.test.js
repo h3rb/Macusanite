@@ -55,7 +55,7 @@ test('the sidebar tree covers every section exactly once, grouped by topic', () 
 test('a section’s ### headings become the tree’s third tier', () => {
   const tree = manualTree(sections);
   const cards = tree.flatMap((topic) => topic.sections).find((section) => section.slug === 'worldbuilding-cards');
-  assert.deepEqual(cards.headings, ['Modes', 'Height', 'Folding, tags and locks']);
+  assert.deepEqual(cards.headings, ['Modes', 'Height', 'Order', 'Folding, tags and locks']);
   // Fenced code and heading backticks are handled, not guessed at.
   assert.deepEqual(
     sectionHeadings('### One\n```\n### not a heading\n```\n### `Two`\n'),
