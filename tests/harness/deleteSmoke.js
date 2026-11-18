@@ -15,7 +15,8 @@
  *
  * The first visit seeds the fixture vein and reloads; the second runs it. The
  * results also land on `globalThis.wbDeleteSmoke` and in the console, and the
- * page title reports the run. The run ends with the fixture whole again.
+ * page title reports the run. The smoke covers both marquee-set Delete and a
+ * card's own ✕, undoing each and leaving the fixture whole again.
  */
 
 const STORAGE_KEY = 'macusanite.virtual-vault.v1';
@@ -114,7 +115,9 @@ function cardOf(anchor) {
 }
 
 function cardAnchors() {
-  return [...document.querySelectorAll('.wb-card')].map((card) => card.dataset.anchor);
+  return [...document.querySelectorAll('.wb-card')]
+    .sort((left, right) => Number(left.dataset.note) - Number(right.dataset.note))
+    .map((card) => card.dataset.anchor);
 }
 
 function selectedAnchors() {
@@ -411,7 +414,9 @@ async function sweepDeleteUndoRedo(app, results) {
     if (now.text !== ctx.before.text) fail(`the markdown came back different:\n${diffSummary(ctx.before.text, now.text)}`);
     if (now.codes !== ctx.before.codes) fail(`the canvas record came back different (${diffKeys(ctx.before.codes, now.codes)})`);
     if (!sameSet(now.cards, ctx.before.cards)) fail(`the cards are ${list(now.cards)}, were ${list(ctx.before.cards)}`);
-    if (now.cards.join('|') !== ctx.before.cards.join('|')) fail('the cards came back in a different order');
+    if (now.cards.join('|') !== ctx.before.cards.join('|')) {
+      fail(`the cards came back in a different order: ${list(now.cards)}; expected ${list(ctx.before.cards)}`);
+    }
     if (undo.disabled !== true) fail('undo is still offered with nothing left to undo');
     const redo = toolbarButton('Redo');
     if (!redo || redo.disabled) fail('redo is not offered after undoing the delete');
@@ -448,6 +453,46 @@ async function sweepDeleteUndoRedo(app, results) {
     if (now.text !== ctx.before.text) fail(`the markdown differs after the second undo:\n${diffSummary(ctx.before.text, now.text)}`);
     if (now.codes !== ctx.before.codes) fail(`the record differs after the second undo (${diffKeys(ctx.before.codes, now.codes)})`);
     return { detail: 'the fixture is whole again' };
+  });
+
+  await record(results, 'card ✕ undo restores its prose, bonds and saved position', async () => {
+    const before = snapshotOf(app, path);
+    const savedPosition = canvasRecord(app, path).positions?.alpha;
+    if (!savedPosition) fail('Alpha has no saved canvas position');
+    if (canvasRecord(app, path).relations?.['alpha->beta'] !== 'ally') fail('Alpha has no fixture bond to Beta');
+    if (canvasRecord(app, path).relations?.['alpha->echo'] !== 'mentor') fail('Alpha has no fixture bond to Echo');
+
+    const remove = cardOf('alpha')?.querySelector('.wb-card-del');
+    if (!remove) fail('Alpha has no card ✕ control');
+    remove.click();
+    if (!(await waitFor(() => remove.classList.contains('is-armed'), 500))) fail('the first ✕ click did not arm deletion');
+    remove.click();
+
+    const gone = await waitFor(() => !cardOf('alpha'), 2000);
+    if (!gone) fail('the ✕ did not remove Alpha from the canvas');
+    if ((app.state.draft ?? '').includes(PROSE.alpha)) fail('the ✕ left Alpha’s prose in the markdown');
+    const deleted = canvasRecord(app, path);
+    if (deleted.positions?.alpha) fail('the ✕ kept Alpha’s saved canvas position');
+    for (const key of Object.keys(deleted.relations ?? {})) {
+      if (key.split('->').includes('alpha')) fail(`the ✕ left Alpha’s bond ${key}`);
+    }
+    const undo = toolbarButton('Undo');
+    if (!undo || undo.disabled || !undo.title.startsWith('Undo: Delete “Alpha”')) fail(`the ✕ produced an unexpected step: ${undo?.title ?? 'none'}`);
+
+    undo.click();
+    const restored = await waitFor(() => cardOf('alpha'), 2000);
+    if (!restored) fail('undo did not restore Alpha’s card');
+    const now = snapshotOf(app, path);
+    if (now.text !== before.text) fail(`undo did not restore Alpha’s prose exactly: ${diffSummary(before.text, now.text)}`);
+    if (now.codes !== before.codes) fail(`undo did not restore Alpha’s bonds and canvas state exactly (${diffKeys(before.codes, now.codes)})`);
+    if (stable(canvasRecord(app, path).positions?.alpha) !== stable(savedPosition)) {
+      fail(`undo restored Alpha at ${JSON.stringify(canvasRecord(app, path).positions?.alpha)}, expected ${JSON.stringify(savedPosition)}`);
+    }
+    if (!sameSet(now.cards, before.cards)) fail(`undo restored ${list(now.cards)}, expected ${list(before.cards)}`);
+    if (now.cards.join('|') !== before.cards.join('|')) {
+      fail(`undo restored Alpha in a different card order: ${list(now.cards)}; expected ${list(before.cards)}`);
+    }
+    return { detail: 'Alpha’s prose, both bonds, saved position and card order restored exactly' };
   });
 }
 

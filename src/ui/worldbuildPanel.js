@@ -3683,9 +3683,7 @@ export function createWorldbuildPanel({ app, root }) {
       // the card back together and its redo takes them away again.
       const label = model.notes[at].title || gone;
       const before = canvasSnapshot(false, null, [gone]);
-      model = removeNote(model, at);
-      forgetDeletedCard(gone);
-      pendingRemovals().add(gone);
+      if (!removeNotesFromCanvas([gone]).length) return;
       // Prune the older steps before pushing this one: its snapshot deliberately
       // keeps the card that is no longer on the canvas.
       pruneHistorySnapshots(new Set(model.notes.map((liveNote) => liveNote.anchor)));
@@ -6567,6 +6565,20 @@ export function createWorldbuildPanel({ app, root }) {
     groups = app.dropWorldGroups(currentPath, anchor) ?? groups;
   }
 
+  /** Remove notes and their canvas records through the same path for ✕ and Delete. */
+  function removeNotesFromCanvas(anchors) {
+    const removed = [];
+    for (const anchor of anchors ?? []) {
+      const index = (model?.notes ?? []).findIndex((note) => note.anchor === anchor);
+      if (index < 0) continue;
+      model = removeNote(model, index);
+      forgetDeletedCard(anchor);
+      pendingRemovals().add(anchor);
+      removed.push(anchor);
+    }
+    return removed;
+  }
+
   /**
    * Delete every selected card, asking once with the counts on the button.
    * The same bookkeeping as a card's own ✕: the prose leaves the vein's
@@ -6596,26 +6608,20 @@ export function createWorldbuildPanel({ app, root }) {
     // these note objects, while the after-state records their absence for a
     // redo. The snapshot is taken before the canvas record loses their boxes.
     const before = canvasSnapshot(false, null, deletable);
-    for (const anchor of deletable) {
-      const index = (model?.notes ?? []).findIndex((note) => note.anchor === anchor);
-      if (index < 0) continue;
-      model = removeNote(model, index);
-      forgetDeletedCard(anchor);
-    }
+    const removed = removeNotesFromCanvas(deletable);
+    if (!removed.length) return;
     setSelection([]);
-    const pending = pendingRemovals();
-    for (const anchor of deletable) pending.add(anchor);
     // Prune the older steps before pushing this one: its snapshot deliberately
     // keeps the cards that are no longer on the canvas.
     pruneHistorySnapshots(new Set((model?.notes ?? []).map((liveNote) => liveNote.anchor)));
-    pushStep(before, `Delete ${deletable.length} note${deletable.length === 1 ? '' : 's'}`);
+    pushStep(before, `Delete ${removed.length} note${removed.length === 1 ? '' : 's'}`);
     savePositions();
     commit();
     build();
     // Once no card and no snapshot here or elsewhere names the files, they go.
     void cleanupOrphanedNodeImages().catch(() => {});
     void cleanupOrphanedAttachments().catch(() => {});
-    const message = `Deleted ${deletable.length} note${deletable.length === 1 ? '' : 's'}${lockedCount ? ` — ${lockedCount} locked card${lockedCount === 1 ? '' : 's'} left alone` : ''}`;
+    const message = `Deleted ${removed.length} note${removed.length === 1 ? '' : 's'}${lockedCount ? ` — ${lockedCount} locked card${lockedCount === 1 ? '' : 's'} left alone` : ''}`;
     app.toast(message, 'ok', 2600);
     announce(message);
   }
