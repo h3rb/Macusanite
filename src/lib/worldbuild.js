@@ -335,8 +335,18 @@ export function nodeTypeOf(types = {}, anchor) {
  * @returns {object} a new types object — the same object for an unknown type
  */
 export function setNodeType(types = {}, anchor, type) {
+  if (!anchor) return types;
+  // A null or empty type forgets the entry, the way a deleted card's colour and
+  // image are forgotten: no live card wears a type it no longer has, and no
+  // dead anchor keeps one in the record.
+  if (type === null || type === '') {
+    if (!(anchor in types)) return types;
+    const cleared = { ...types };
+    delete cleared[anchor];
+    return cleared;
+  }
   const known = nodeType(type);
-  if (!known || !anchor) return types;
+  if (!known) return types;
   return { ...types, [anchor]: known.id };
 }
 

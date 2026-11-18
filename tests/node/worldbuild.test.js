@@ -1180,6 +1180,11 @@ test('node types default to note and validate on the way in', () => {
   types = setNodeType(types, 'a', 'ability');
   assert.equal(types.a, 'ability');
   assert.equal(setNodeType(types, 'a', 'nope'), types);
+  // A deleted card's type is cleared, not left on a dead anchor; nothing to
+  // clear answers with the same record.
+  assert.deepEqual(setNodeType({ a: 'skill', b: 'stat' }, 'a', null), { b: 'stat' });
+  assert.deepEqual(setNodeType({ a: 'skill' }, 'a', ''), {});
+  assert.equal(setNodeType({ b: 'stat' }, 'a', null).a, undefined);
 });
 
 test('non-note types take structured fields; notes take none', () => {

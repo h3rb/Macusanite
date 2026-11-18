@@ -1559,9 +1559,23 @@ export function createWorldbuildPanel({ app, root }) {
   /* -------------------------------------------------------------- history -- */
 
   // Notes whose absence belongs to a deletion step still on the history
-  // stacks. Every snapshot while they are absent records that absence, so a
-  // redo can take the prose away again after an undo restored it.
-  let noteRemovalAnchors = new Set();
+  // stacks, per vein — keyed like the stacks themselves. Every snapshot while
+  // they are absent records that absence, so a redo can take the prose away
+  // again after an undo restored it. Scoped per vein so a pending deletion in
+  // one canvas can never fold its anchors, or the note order that comes with
+  // them, into another canvas's steps.
+  const noteRemovalsByPath = new Map();
+
+  /** The pending-deletion anchors of the vein on screen. */
+  function pendingRemovals() {
+    const key = historyKey(app.state?.vault?.path, currentPath);
+    let anchors = noteRemovalsByPath.get(key);
+    if (!anchors) {
+      anchors = new Set();
+      noteRemovalsByPath.set(key, anchors);
+    }
+    return anchors;
+  }
 
   // The canvas state an undo step puts back: every slice the canvas owns is
   // in it, so an undo of any change — a drag, an arrange, a type — brings the
@@ -1569,7 +1583,7 @@ export function createWorldbuildPanel({ app, root }) {
   // at each restore (see the lib helpers they call).
   function canvasSnapshot(includeTables = false, tableAnchors = null, noteAnchors = null) {
     const anchors = tableAnchors ? new Set(tableAnchors) : null;
-    const noteKeys = new Set([...(noteAnchors ?? []), ...noteRemovalAnchors]);
+    const noteKeys = new Set([...(noteAnchors ?? []), ...pendingRemovals()]);
     let notes = null;
     if (noteKeys.size) {
       const byAnchor = new Map((model?.notes ?? []).map((note) => [note.anchor, note]));
@@ -1791,7 +1805,7 @@ export function createWorldbuildPanel({ app, root }) {
           notes.splice(index, 1);
           changed = true;
         }
-        noteRemovalAnchors.add(anchor);
+        pendingRemovals().add(anchor);
       }
       const savedNoteOrder = Array.isArray(saved.noteOrder)
         ? saved.noteOrder.filter((anchor) => typeof anchor === 'string')
@@ -1806,7 +1820,7 @@ export function createWorldbuildPanel({ app, root }) {
       for (const anchor of additions) {
         const note = addedEntries.get(anchor);
         if (notes.some((currentNote) => currentNote.anchor === anchor)) {
-          noteRemovalAnchors.delete(anchor);
+          pendingRemovals().delete(anchor);
           continue;
         }
         let at = notes.length;
@@ -1828,7 +1842,7 @@ export function createWorldbuildPanel({ app, root }) {
           at = Math.max(0, Math.min(notes.length, note.index));
         }
         notes.splice(at, 0, { ...note, anchor, index: at });
-        noteRemovalAnchors.delete(anchor);
+        pendingRemovals().delete(anchor);
         changed = true;
       }
       if (changed) {
@@ -3659,30 +3673,30 @@ export function createWorldbuildPanel({ app, root }) {
       }
       clearTimeout(armed);
       armed = 0;
-      const gone = model.notes[index]?.anchor;
-      if (gone && nodeImages[gone]) seenNodeImageRefs.add(nodeImages[gone]);
-      if (gone) {
-        for (const file of nodeResources[gone]?.files ?? []) seenAttachmentRefs.add(file.ref);
-      }
-      model = removeNote(model, index);
-      if (gone) {
-        positions.delete(gone);
-        relations = app.dropWorldRelations(currentPath, gone) ?? relations;
-        fieldValues = app.dropWorldFields(currentPath, gone) ?? fieldValues;
-        delete nodeResources[gone];
-        delete pinned[gone];
-        nodeColors = app.setWorldNodeColor(currentPath, gone, null) ?? nodeColors;
-        nodeImages = app.setWorldNodeImage(currentPath, gone, null) ?? nodeImages;
-        groups = app.dropWorldGroups(currentPath, gone) ?? groups;
-        pruneHistorySnapshots(new Set(model.notes.map((liveNote) => liveNote.anchor)));
-        savePositions();
-      }
+      // The card's own anchor, not the index it was built at: deleting an
+      // earlier note shifts the list under a card that is still on screen.
+      const gone = note.anchor;
+      const at = model.notes.findIndex((candidate) => candidate.anchor === gone);
+      if (at < 0) return;
+      // One card is deleted the same way a picked set is: capture the note and
+      // the canvas before either is gone, so the step's undo puts the prose and
+      // the card back together and its redo takes them away again.
+      const label = model.notes[at].title || gone;
+      const before = canvasSnapshot(false, null, [gone]);
+      model = removeNote(model, at);
+      forgetDeletedCard(gone);
+      pendingRemovals().add(gone);
+      // Prune the older steps before pushing this one: its snapshot deliberately
+      // keeps the card that is no longer on the canvas.
+      pruneHistorySnapshots(new Set(model.notes.map((liveNote) => liveNote.anchor)));
+      // A selection that still named the card would outlive it; the others stay.
+      if (selected.has(gone)) setSelection([...selected].filter((anchor) => anchor !== gone));
+      pushStep(before, `Delete “${label}”`);
+      savePositions();
       commit();
       build();
-              // Deleting a note is not a canvas step, so it sweeps for itself: the
-        // files go once no snapshot here or in another vein names them.
-        void cleanupOrphanedNodeImages().catch(() => {});
-        void cleanupOrphanedAttachments().catch(() => {});
+      void cleanupOrphanedNodeImages().catch(() => {});
+      void cleanupOrphanedAttachments().catch(() => {});
     });
 
         wireCardGestures(card, head, { index, note });
@@ -6534,6 +6548,26 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
+   * Forget everything the canvas stores about one deleted card: its box, its
+   * bonds, its fields, fold, pin, lock, mode, height, size, type, colour,
+   * image, group memberships and attachments. The prose belongs to the model
+   * and is removed by the caller, which carries the note in its undo step.
+   */
+  function forgetDeletedCard(anchor) {
+    if (nodeImages[anchor]) seenNodeImageRefs.add(nodeImages[anchor]);
+    for (const file of nodeResources[anchor]?.files ?? []) seenAttachmentRefs.add(file.ref);
+    positions.delete(anchor);
+    relations = app.dropWorldRelations(currentPath, anchor) ?? relations;
+    fieldValues = app.dropWorldFields(currentPath, anchor) ?? fieldValues;
+    nodeTypes = app.setWorldNodeType(currentPath, anchor, null) ?? nodeTypes;
+    delete nodeResources[anchor];
+    delete pinned[anchor];
+    nodeColors = app.setWorldNodeColor(currentPath, anchor, null) ?? nodeColors;
+    nodeImages = app.setWorldNodeImage(currentPath, anchor, null) ?? nodeImages;
+    groups = app.dropWorldGroups(currentPath, anchor) ?? groups;
+  }
+
+  /**
    * Delete every selected card, asking once with the counts on the button.
    * The same bookkeeping as a card's own ✕: the prose leaves the vein's
    * markdown and the card's bonds, fields, pin, colour, image and group box go
@@ -6565,20 +6599,12 @@ export function createWorldbuildPanel({ app, root }) {
     for (const anchor of deletable) {
       const index = (model?.notes ?? []).findIndex((note) => note.anchor === anchor);
       if (index < 0) continue;
-      if (nodeImages[anchor]) seenNodeImageRefs.add(nodeImages[anchor]);
-      for (const file of nodeResources[anchor]?.files ?? []) seenAttachmentRefs.add(file.ref);
       model = removeNote(model, index);
-      positions.delete(anchor);
-      relations = app.dropWorldRelations(currentPath, anchor) ?? relations;
-      fieldValues = app.dropWorldFields(currentPath, anchor) ?? fieldValues;
-      delete nodeResources[anchor];
-      delete pinned[anchor];
-      nodeColors = app.setWorldNodeColor(currentPath, anchor, null) ?? nodeColors;
-      nodeImages = app.setWorldNodeImage(currentPath, anchor, null) ?? nodeImages;
-      groups = app.dropWorldGroups(currentPath, anchor) ?? groups;
+      forgetDeletedCard(anchor);
     }
     setSelection([]);
-    noteRemovalAnchors = new Set([...noteRemovalAnchors, ...deletable]);
+    const pending = pendingRemovals();
+    for (const anchor of deletable) pending.add(anchor);
     // Prune the older steps before pushing this one: its snapshot deliberately
     // keeps the cards that are no longer on the canvas.
     pruneHistorySnapshots(new Set((model?.notes ?? []).map((liveNote) => liveNote.anchor)));
