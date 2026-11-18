@@ -429,3 +429,96 @@ test('the CLI routes the three mcp modes and documents them', async () => {
   assert.equal(lines[0].result.protocolVersion, '2025-11-25');
   assert.match(stdio.stderr, /stdio transport ready/);
 });
+
+test('a headless client hanging up stops the stdio server cleanly, not as a crash', async () => {
+  const { spawn } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'macusanite.mjs');
+  const root = tempDir('hangup');
+  await openVault(root, { create: true, name: 'Hangup Vault' });
+
+  const child = spawn(process.execPath, [cli, '--vault', root, 'mcp', 'stdio'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+
+  const firstLine = new Promise((resolve) => {
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      if (stdout.includes('\n')) resolve();
+    });
+  });
+  child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } })}\n`);
+  await firstLine;
+
+  // What a client restart, a stopped agent or a dropped pipe looks like from the
+  // server's side: its end of stdout goes away while the process is still live.
+  child.stdout.destroy();
+  for (let i = 0; i < 200; i += 1) {
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: i + 2, method: 'tools/list' })}\n`);
+  }
+
+  const code = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`the server did not stop after the client hung up\n${stderr}`));
+    }, 6000);
+    child.once('exit', (status) => { clearTimeout(timer); resolve(status); });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+  });
+
+  assert.equal(code, 0, `a hangup is a normal stop\n${stderr}`);
+  assert.match(stderr, /stdout closed — stopping/);
+  // One log line, not a crash report: no Node banner and no stack frames.
+  assert.doesNotMatch(stderr, /Node\.js v\d/);
+  assert.doesNotMatch(stderr, /^\s+at /m, `a closed pipe must not surface as an uncaught error\n${stderr}`);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a supervisor signal stops the stdio transport instead of killing it mid-request', async () => {
+  const { spawn } = await import('node:child_process');
+  const { fileURLToPath, pathToFileURL } = await import('node:url');
+  const cliDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli');
+  const mcpUrl = pathToFileURL(path.join(cliDir, 'mcp.js')).href;
+  // The transport on its own, with an open stdin: only the signal can end it,
+  // which is what a container runtime or a service manager sends when it stops
+  // a headless process. Exiting 0 with a log line is the proof it was handled;
+  // a default signal termination would end the process without either.
+  const script = [
+    `const { serveStdio } = await import(${JSON.stringify(mcpUrl)});`,
+    'const logs = [];',
+    'const started = serveStdio({ handle: async () => null }, { log: (_level, message) => logs.push(message) });',
+    'setTimeout(() => process.emit("SIGTERM"), 40);',
+    'await started;',
+    'process.stdout.write(JSON.stringify(logs));',
+  ].join('\n');
+
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+
+  const code = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`the transport ignored SIGTERM\n${stdout}\n${stderr}`));
+    }, 8000);
+    child.once('exit', (status) => { clearTimeout(timer); resolve(status); });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+  });
+  child.stdin.destroy();
+
+  assert.equal(code, 0, `a signal is a normal stop\n${stderr}`);
+  const logs = JSON.parse(stdout);
+  assert.ok(logs.some((line) => line.includes('SIGTERM')), `the stop should be logged: ${logs.join(' | ')}`);
+});

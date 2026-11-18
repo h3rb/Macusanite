@@ -17,8 +17,9 @@
  *
  * The budget, and what the measurements were when it was set (1,000 cards,
  * this machine): canvas DOM under 12,000 nodes at detail zoom and under 8,000
- * at icon zoom, one wire path at icon zoom instead of one per connector, a
- * first frame of the canvas under 1.5s, and a pan that holds 30 frames a second
+ * at icon zoom, a bounded batch layer of wire paths at icon zoom (one per tone
+ * and state, sixteen at most) instead of one per connector, a first frame of
+ * the canvas under 1.5s, and a pan that holds 30 frames a second
  * at either zoom. Everything here is one number per thing that would otherwise
  * rot silently: a new per-card node, a per-wire path, a full rebuild per tick.
  */

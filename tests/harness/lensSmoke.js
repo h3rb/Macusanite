@@ -163,21 +163,39 @@ async function bringIntoView(stage, element, margin = 10) {
 }
 
 /** Wheel the canvas to a scale, keeping one screen point still. */
+/**
+ * Wait until the canvas shows the zoom the last wheel asked for. The panel
+ * applies a wheel on the next frame, so on a heavy canvas a fixed wait would
+ * read the previous scale and send another full step on top of it.
+ */
+async function settleZoom(canvas, from, timeout = 1500) {
+  const until = performance.now() + timeout;
+  while (performance.now() < until) {
+    const now = scaleOf(canvas);
+    if (Number.isFinite(now) && now !== from) return now;
+    await wait(10);
+  }
+  return scaleOf(canvas);
+}
+
 async function zoomTo(stage, canvas, target, anchor) {
   const point = anchor ?? blankPoint(stage) ?? centreOf(stage.getBoundingClientRect());
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const current = scaleOf(canvas);
     if (!Number.isFinite(current)) return current;
     if (Math.abs(current - target) <= ZOOM_TOLERANCE) return current;
+    // One event is one step, so ask only for a ratio a single step can land:
+    // a vast delta clamps at ZOOM_MIN or ZOOM_MAX instead of arriving.
+    const ratio = Math.min(4, Math.max(0.25, target / current));
     stage.dispatchEvent(new WheelEvent('wheel', {
       bubbles: true,
       cancelable: true,
       deltaMode: 0,
-      deltaY: -Math.log(target / current) / 0.002,
+      deltaY: -Math.log(ratio) / 0.002,
       clientX: point.x,
       clientY: point.y,
     }));
-    await wait(16);
+    if ((await settleZoom(canvas, current)) === current) break;
   }
   return scaleOf(canvas);
 }
@@ -397,13 +415,21 @@ export async function runLensSmoke() {
     return finish(results);
   }
 
-  if (!app.state?.current) {
+  /** Open the sample vault's fixture vein, whichever vein was open before. */
+  const openFixture = async () => {
     try {
       await app.openPath('Home.md');
+      if (app.state.ui.mode !== 'world') app.setMode('world');
+      await wait(200);
+      return true;
     } catch {
-      results.push({ name: 'setup', status: 'fail', detail: 'no vein is open and Home.md could not be opened' });
-      return finish(results);
+      return false;
     }
+  };
+
+  if (!app.state?.current && !(await openFixture())) {
+    results.push({ name: 'setup', status: 'fail', detail: 'no vein is open and Home.md could not be opened' });
+    return finish(results);
   }
   if (app.state.ui.mode !== 'world') app.setMode('world');
   await wait(200);
@@ -412,13 +438,20 @@ export async function runLensSmoke() {
     return finish(results);
   }
 
-  const path = app.state.current.path;
-  const original = scaleOf(canvas);
-  const candidates = focusCandidates(stage, app, path);
+  // Another harness run (the perf budget, say) can leave its own vein open;
+  // these checks need the sample vault's authored bonds, so use the fixture
+  // rather than reporting its absence as a lens failure.
+  let path = app.state.current.path;
+  let candidates = focusCandidates(stage, app, path);
+  if (!candidates.length && path !== 'Home.md' && (await openFixture())) {
+    path = app.state.current.path;
+    candidates = focusCandidates(stage, app, path);
+  }
   if (!candidates.length) {
     results.push({ name: 'setup', status: 'fail', detail: 'no card with an authored bond could be selected' });
     return finish(results);
   }
+  const original = scaleOf(canvas);
 
   let focus = null;
   try {

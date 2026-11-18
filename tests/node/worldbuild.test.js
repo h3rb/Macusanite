@@ -11,7 +11,7 @@ import {
   blankTable, normalizeTable, serializeTable, tableText, tableSummary, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_CELL_MAX_LENGTH, TABLE_ALIGNMENTS,
   splitMarkdownTableRow, markdownTableAt, markdownTables, tableFromMarkdown, markdownTableOnly, markdownFromTable, tableCaptionOf, replaceTableCaption, syncTableMarkdown,
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
-  ZOOM_MIN, ZOOM_MAX, CANVAS_SCHEMA, clampView, zoomViewAt, snapZoomView, anchorOfView, viewOfAnchor,
+  ZOOM_MIN, ZOOM_MAX, CANVAS_SCHEMA, clampView, zoomViewAt, snapZoomView, pinchZoomStarted, anchorOfView, viewOfAnchor,
   ZOOM_DETAIL, ZOOM_FORGE, ZOOM_ANNOTATION, ZOOM_SUMMARY, ZOOM_COMPACT, ZOOM_ICON,
   zoomPercent, zoomLabel, zoomMode, applyZoomClasses,
   navigatorMap, navigatorProject, navigatorViewport, navigatorWorldPoint, navigatorModeLabel, readingOrder, coveredGroups, tightestGroup,
@@ -29,7 +29,7 @@ import {
   referencedNodeFileMetaNames, orphanedNodeFileMetaNames, cleanNodeResources, normalizeWebUrl,
   lockedContentAnchors, sourceSectionRanges, enforceLockedSource, lockedRangeAt,
   connectedAnchors, lineageAnchors, anchorsInRect, curvesInRect, relationshipDepths, canvasSearch,
-  connectorList, connectorKey, nextConnectorSelection, lensFocus, pathAnchors, effectiveRouting, cleanCardModes, cleanCardDims, cleanStackOrder, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
+  connectorList, connectorKey, nextConnectorSelection, lensFocus, iconEdgeClass, iconEdgeTone, pathAnchors, effectiveRouting, cleanCardModes, cleanCardDims, cleanStackOrder, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
   forgePalette, cleanForgePrefs, rememberForgeKind, toggleForgeFavourite, FORGE_PAIR_LIMIT,
   cleanBondNotes, BOND_NOTE_MAX,
   CARD_MIN_W, CARD_MIN_H, CARD_MAX_W, CARD_MAX_H,
@@ -461,6 +461,60 @@ test('connector clicks select, re-click to deselect, switch, and Ctrl/Cmd toggle
   // The helper is pure: the caller's selection is left untouched.
   assert.deepEqual([...selected], [first]);
   assert.deepEqual([...added], [first, second]);
+});
+
+test('icon-zoom wires batch by colour and state, not by relationship kind', () => {
+  const link = (relation, extra = {}) => ({ kind: 'section', from: 'a', to: 'b', relation, ...extra });
+
+  // Kinds that differ only in weight or dash share one path at icon zoom: the
+  // weight is sub-pixel there, and the colour is what reads.
+  const plain = new Set(RELATION_KINDS
+    .filter((kind) => kind.id !== 'ally' && kind.id !== 'foe')
+    .map((kind) => iconEdgeClass(link(kind.id))));
+  assert.deepEqual([...plain], ['wb-edge wb-edge-batch']);
+
+  // The three colours the legend names: green for allies and mentions, red for
+  // a foe, faint for the outline spine. Nothing else carries a tone.
+  assert.equal(iconEdgeClass(link('ally')), 'wb-edge wb-edge-batch wb-edge-tone-ok');
+  assert.equal(iconEdgeClass({ kind: 'mention', from: 'a', to: 'b', relation: 'associate' }),
+    'wb-edge wb-edge-batch wb-edge-tone-ok');
+  assert.equal(iconEdgeClass(link('foe')), 'wb-edge wb-edge-batch wb-edge-tone-error');
+  assert.equal(iconEdgeClass({ kind: 'contains', from: 'a', to: 'b' }),
+    'wb-edge wb-edge-batch wb-edge-tone-faint');
+  assert.equal(iconEdgeTone({ kind: 'bond', relation: 'ally' }), 'ok');
+  assert.equal(iconEdgeTone({ kind: 'bond', relation: 'ally', to: 'group:g1' }), 'ok',
+    'a group end folds into its tone, not into another path');
+
+  // One state each, strongest first: a pick outranks the lens, and a dimmed
+  // wire is never picked.
+  assert.equal(iconEdgeClass(link('associate'), { selected: true }),
+    'wb-edge wb-edge-batch is-selected');
+  assert.equal(iconEdgeClass(link('associate'), { lensActive: true, lensFocused: true }),
+    'wb-edge wb-edge-batch is-lens');
+  assert.equal(iconEdgeClass(link('associate'), { lensActive: true }),
+    'wb-edge wb-edge-batch is-dimmed');
+  assert.equal(iconEdgeClass(link('associate'), { lensActive: true, selected: true }),
+    'wb-edge wb-edge-batch is-selected', 'an explicit pick outranks the lens dimming');
+  assert.equal(iconEdgeClass(link('foe'), { lensActive: true, lensFocused: true, selected: true }),
+    'wb-edge wb-edge-batch wb-edge-tone-error is-selected', 'a picked wire keeps its colour');
+
+  // The batch layer is a bounded layer: four tones by four states, whatever
+  // the vein holds. Enumerate every combination and hold it to that count.
+  const buckets = new Set();
+  for (const kind of ['section', 'mention', 'bond', 'contains']) {
+    for (const relation of [...RELATION_KINDS.map((entry) => entry.id), undefined]) {
+      for (const from of ['a', 'group:g1']) {
+        for (const selected of [false, true]) {
+          for (const lensFocused of [false, true]) {
+            for (const lensActive of [false, true]) {
+              buckets.add(iconEdgeClass({ kind, from, to: 'b', relation }, { selected, lensFocused, lensActive }));
+            }
+          }
+        }
+      }
+    }
+  }
+  assert.equal(buckets.size, 16, `four tones by four states, got ${buckets.size}`);
 });
 
 test('lensFocus lights a card, its wires and one hop away', () => {
@@ -1479,6 +1533,20 @@ test('zoomViewAt keeps the canvas point under the pointer fixed', () => {
   assert.equal(next.y + 2 * 200, 150);
   assert.equal(zoomViewAt(view, 200, 150, 100).s, ZOOM_MAX);
   assert.equal(zoomViewAt(view, 200, 150, 0.0000001).s, ZOOM_MIN);
+});
+
+test('a two-finger pan ignores small spread changes until the pinch is intentional', () => {
+  // The harness saw a pan drift 4% (1.5 → 1.56 in scale); that stays a pan.
+  assert.equal(pinchZoomStarted(200, 208), false);
+  assert.equal(pinchZoomStarted(200, 192), false);
+  assert.equal(pinchZoomStarted(200, 210), true);
+  assert.equal(pinchZoomStarted(200, 190), true);
+  // The 10px floor keeps a short two-finger span from zooming on noise.
+  assert.equal(pinchZoomStarted(100, 109), false);
+  assert.equal(pinchZoomStarted(100, 110), true);
+  // A wide span gets the same 5% threshold, not 10px.
+  assert.equal(pinchZoomStarted(400, 419), false);
+  assert.equal(pinchZoomStarted(400, 420), true);
 });
 
 test('snapZoomView makes 100% a detent when a wheel step crosses it', () => {

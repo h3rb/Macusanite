@@ -191,7 +191,7 @@ The CLI provides 49 commands in seven groups: identity and settings, documents, 
 node cli/macusanite.mjs --vault ./notes mcp stdio
 ```
 
-The server reads one JSON-RPC message per line from stdin and writes one message per line to stdout, while logs go to stderr. This is the interface an MCP client expects when it is configured with a local command.
+The server reads one JSON-RPC message per line from stdin and writes one message per line to stdout, while logs go to stderr. This is the interface an MCP client expects when it is configured with a local command. No window, display or other process is involved, so a vault can be served on a machine with no desktop session at all. A client that hangs up and a supervisor that sends `SIGTERM` are both normal stops: the server logs the stop, exits 0 and flushes a pending automatic upload, rather than reporting a closed pipe as a crash.
 
 ### MCP over HTTP, headless
 
@@ -285,7 +285,7 @@ tests/node/     unit tests for everything under src/lib plus the renderers
 ### Tests
 
 ```bash
-npm test                                  # 457 JS tests
+npm test                                  # 462 JS tests
 cargo test --manifest-path src-tauri/Cargo.toml   # 44 Rust tests
 ```
 

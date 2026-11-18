@@ -84,6 +84,14 @@ test('settings merge over defaults and reject junk', () => {
   assert.equal(merged.graph.showSections, DEFAULT_SETTINGS.graph.showSections, 'nested defaults survive');
 });
 
+test('tutorial notes are on unless the settings turn them off', () => {
+  assert.equal(DEFAULT_SETTINGS.tutorials, true);
+  assert.equal(mergeSettings(DEFAULT_SETTINGS, { tutorials: false }).tutorials, false);
+  assert.equal(mergeSettings(DEFAULT_SETTINGS, { tutorials: 'yes' }).tutorials, true,
+    'only an explicit false turns them off');
+  assert.equal(mergeSettings(DEFAULT_SETTINGS, {}).tutorials, true, 'older settings files keep them on');
+});
+
 test('every colour default starts white', () => {
   assert.equal(DEFAULT_SETTINGS.defaultPageColor, '#ffffff');
   assert.equal(DEFAULT_SETTINGS.defaultLinkColor, '#ffffff');

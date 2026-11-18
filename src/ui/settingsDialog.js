@@ -162,6 +162,7 @@ export function createSettingsDialog({ app }) {
             ])),
             field('Button icons', checkbox(settings.icons !== false, (v) => app.updateSettings({ icons: v })), 'Show a small symbol or emoji beside button labels. Off leaves plain text buttons.'),
             field('Autosave', checkbox(settings.autosave, (v) => app.updateSettings({ autosave: v })), 'Save the open vein shortly after you stop typing.'),
+            field('Tutorial notes', checkbox(settings.tutorials !== false, (v) => app.updateSettings({ tutorials: v })), 'The one-time object-map note on the canvas, the search tip and the editor’s shortcut hint. Off keeps teaching notes out of the way; Help has the same story either way.'),
           ]),
         ]),
 

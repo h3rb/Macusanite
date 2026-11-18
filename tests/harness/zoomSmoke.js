@@ -197,6 +197,22 @@ async function bringIntoView(stage, element, margin = 10) {
   return inside(s, element.getBoundingClientRect(), 0);
 }
 
+/**
+ * Wait until the canvas shows the zoom the last wheel asked for. The panel
+ * applies a wheel on the next frame, so on a heavy canvas (a thousand cards)
+ * a fixed wait would read the previous scale and send another full step on top
+ * of it — several steps compounding into one runaway zoom past the limits.
+ */
+async function settleZoom(canvas, from, timeout = 1500) {
+  const until = performance.now() + timeout;
+  while (performance.now() < until) {
+    const now = scaleOf(canvas);
+    if (Number.isFinite(now) && now !== from) return now;
+    await wait(10);
+  }
+  return scaleOf(canvas);
+}
+
 /** Wheel the canvas to a scale, keeping one screen point still. */
 async function zoomTo(stage, canvas, target, anchor) {
   const point = anchor ?? blankPoint(stage) ?? centreOf(stage.getBoundingClientRect());
@@ -204,15 +220,18 @@ async function zoomTo(stage, canvas, target, anchor) {
     const current = scaleOf(canvas);
     if (!Number.isFinite(current)) return current;
     if (Math.abs(current - target) <= ZOOM_TOLERANCE) return current;
+    // One event is one step, so ask only for a ratio a single step can land:
+    // a vast delta clamps at ZOOM_MIN or ZOOM_MAX instead of arriving.
+    const ratio = Math.min(4, Math.max(0.25, target / current));
     stage.dispatchEvent(new WheelEvent('wheel', {
       bubbles: true,
       cancelable: true,
       deltaMode: 0,
-      deltaY: -Math.log(target / current) / 0.002,
+      deltaY: -Math.log(ratio) / 0.002,
       clientX: point.x,
       clientY: point.y,
     }));
-    await wait(16);
+    if ((await settleZoom(canvas, current)) === current) break;
   }
   return scaleOf(canvas);
 }

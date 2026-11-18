@@ -3091,6 +3091,45 @@ export function connectorKey(edge) {
 }
 
 /**
+ * The colour a wire reads by at icon zoom: `ok` for mentions and allies,
+ * `error` for a foe, `faint` for the outline spine, and no tone (the accent)
+ * for everything else — the same reading the legend gives, in three words.
+ */
+export function iconEdgeTone(edge) {
+  const kind = typeof edge?.kind === 'string' ? edge.kind : '';
+  if (kind === 'contains') return 'faint';
+  const relation = relationKind(edge?.relation)?.id;
+  if (relation === 'foe') return 'error';
+  if (kind === 'mention' || relation === 'ally') return 'ok';
+  return '';
+}
+
+/**
+ * The class one wire carries on the icon-zoom batch layer.
+ *
+ * Below the icon handoff a wire is a hairline: a relationship's weight is a
+ * fraction of a pixel, its dash is shorter than one, and its word is under six
+ * pixels tall. A path per relation kind would spend the canvas's node budget
+ * on strokes that all read alike, so the batch layer keeps only what survives
+ * that scale — the tone above, and whether the wire is picked, held by the lens
+ * or dimmed by it. That is four tones by four states, sixteen paths at most
+ * however many relationship kinds and connectors a vein holds. The detail zoom
+ * still draws each wire on its own, with its weight, dash, word, tooltip and
+ * hit twin.
+ */
+export function iconEdgeClass(edge, { selected = false, lensFocused = false, lensActive = false } = {}) {
+  const classes = ['wb-edge', 'wb-edge-batch'];
+  const tone = iconEdgeTone(edge);
+  if (tone) classes.push(`wb-edge-tone-${tone}`);
+  // One state each, strongest first: a wire the reader picked keeps its
+  // warning colour even inside the lens, and a dimmed wire is never picked.
+  if (selected) classes.push('is-selected');
+  else if (lensFocused) classes.push('is-lens');
+  else if (lensActive) classes.push('is-dimmed');
+  return classes.join(' ');
+}
+
+/**
  * The next connector selection after a canvas click. A plain click picks one
  * connector, and a second plain click on that sole pick clears it. Ctrl/Cmd
  * toggles the clicked connector without dropping the others.
@@ -4289,6 +4328,22 @@ export function zoomViewAt(view, px, py, factor) {
 
 /** How near a crossing wheel step must land to be pulled onto 100%. */
 const ZOOM_SNAP_RADIUS = 0.3;
+
+/** Finger-distance drift a two-finger pan tolerates before it becomes a pinch. */
+export const PINCH_ZOOM_SLOP_PX = 10;
+export const PINCH_ZOOM_RATIO = 0.05;
+
+/**
+ * Whether a two-finger gesture's spread has changed enough to be a pinch.
+ * A pan's fingers drift by a few pixels, so scale stays put until the distance
+ * changes by 5% (but never less than 10px). Once this is true, the caller
+ * keeps treating the rest of the gesture as a pinch.
+ */
+export function pinchZoomStarted(startDistance, distance) {
+  if (!(Number.isFinite(startDistance) && startDistance > 0) || !Number.isFinite(distance)) return false;
+  const change = Math.abs(distance - startDistance);
+  return change >= Math.max(PINCH_ZOOM_SLOP_PX, startDistance * PINCH_ZOOM_RATIO);
+}
 
 /**
  * Zoom around a pointer, with 100% as a detent. A wheel step that crosses

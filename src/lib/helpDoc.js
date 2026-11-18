@@ -248,7 +248,7 @@ Every command accepts \`--json\` for machine-readable output, \`--vault <folder>
 node cli/macusanite.mjs mcp stdio --vault ./notes
 \`\`\`
 
-The server reads one JSON-RPC message per line from stdin and writes one message per line to stdout, while logs go to stderr. This is the interface an MCP client expects when it is configured with a local command.
+The server reads one JSON-RPC message per line from stdin and writes one message per line to stdout, while logs go to stderr. This is the interface an MCP client expects when it is configured with a local command. No window, display or other process is involved: a vault that can be read from a shell can be read over MCP, including on a machine with no desktop session at all. A client that hangs up and a supervisor that sends \`SIGTERM\` are both treated as normal stops — the server logs the stop, exits 0 and flushes a pending automatic upload — so a closed pipe is never reported as a crash.
 
 ### MCP over HTTP, headless
 

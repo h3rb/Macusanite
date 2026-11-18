@@ -3069,6 +3069,10 @@ function applyLayout() {
   // panel reads this class on every pointer event, so the setting takes
   // effect at once and never needs a rebuild of the vein.
   document.body.classList.toggle('is-touch-canvas', state.settings.worldbuild?.touch === true);
+  // Tutorial notes are teaching chrome, not content: Settings turns the
+  // object-map note, the search tip and the editor hint off in one step, and a
+  // note already on screen goes with them.
+  document.body.classList.toggle('hide-tutorials', state.settings.tutorials === false);
   const show = state.settings.layout.showGraph;
   qs('#workspace').classList.toggle('is-graph-folded', !show);
   qs('#graph-panel').classList.remove('hidden');

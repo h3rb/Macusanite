@@ -23,7 +23,7 @@ import {
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
   TABLE_ALIGNMENTS, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_HEADER_MAX_LENGTH, TABLE_CELL_MAX_LENGTH,
   dropMembershipKind,
-  clampView, snapZoomView, zoomMode, applyZoomClasses, fitView, centreView, readingOrder, coveredGroups, tightestGroup,
+  clampView, snapZoomView, pinchZoomStarted, zoomMode, applyZoomClasses, fitView, centreView, readingOrder, coveredGroups, tightestGroup, iconEdgeClass,
   navigatorMap, navigatorProject, navigatorViewport, navigatorWorldPoint, navigatorModeLabel, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, arrangeCandidateOrigins, arrangeSwapPairs, findArrangeOrigin, anchorOfView, viewOfAnchor,
   normalizeRouting, prepareConnectorGeometry, cleanAnnotations, makeAnnotationId,
   placeConnectorLabels,
@@ -475,11 +475,48 @@ export function createWorldbuildPanel({ app, root }) {
   // edges and to the arrangement passes that ask about it.
   let cardWidths = [];
   let cardHeights = [];
-  // The pending animation frame that mounts the cards in view, and the one
-  // that paints the camera. Both are coalesced: a stream of wheel or pointer
-  // events does one frame of work, not one per event.
-  let windowFrame = 0;
-  let viewFrame = 0;
+  // The pending paint that mounts the cards in view and the one that paints
+  // the camera. Visible pages use animation frames; hidden pages use timers so
+  // scripted view changes still get applied while rAF is suspended.
+  const windowFrame = { pending: false, frame: 0, timer: 0, callback: null };
+  const viewFrame = { pending: false, frame: 0, timer: 0, callback: null };
+  const scheduledPaints = new Set();
+
+  function runScheduledPaint(job) {
+    if (!job.pending) return;
+    job.pending = false;
+    job.frame = 0;
+    job.timer = 0;
+    scheduledPaints.delete(job);
+    job.callback();
+  }
+
+  function queueScheduledPaint(job) {
+    if (!job.pending) return;
+    if (document.hidden) {
+      if (job.frame) cancelAnimationFrame(job.frame);
+      job.frame = 0;
+      if (!job.timer) job.timer = setTimeout(() => runScheduledPaint(job), 16);
+      return;
+    }
+    if (job.timer) clearTimeout(job.timer);
+    job.timer = 0;
+    if (!job.frame) job.frame = requestAnimationFrame(() => runScheduledPaint(job));
+  }
+
+  // A queued rAF can be suspended if the tab is backgrounded after scheduling;
+  // move that work to a timer, and restore frame scheduling when it is visible.
+  document.addEventListener('visibilitychange', () => {
+    scheduledPaints.forEach(queueScheduledPaint);
+  });
+
+  function schedulePaint(job, callback) {
+    if (job.pending) return;
+    job.pending = true;
+    job.callback = callback;
+    scheduledPaints.add(job);
+    queueScheduledPaint(job);
+  }
   // The camera as last painted, so a repaint of the same view is recognised.
   let lastAppliedView = '';
   // Whether the wires were last drawn at the icon level, so the crossing into
@@ -865,14 +902,9 @@ export function createWorldbuildPanel({ app, root }) {
     }
   }
 
-  /** Mount the cards in view on the next frame, once per frame however fast the
-   * camera moves. */
+  /** Mount the cards in view once per visible frame, or by timer in a hidden tab. */
   function scheduleCardWindow() {
-    if (windowFrame) return;
-    windowFrame = requestAnimationFrame(() => {
-      windowFrame = 0;
-      syncCardWindow();
-    });
+    schedulePaint(windowFrame, syncCardWindow);
   }
 
   /* ------------------------------------------------------------ toolbar -- */
@@ -2956,31 +2988,44 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
+   * A card's press-time work, whatever the pointer type: lift it above any
+   * card it overlaps, and let the selection modifier pick it without starting
+   * a drag. Returns true when the press was a pick and must not continue into
+   * a drag or touch hold.
+   */
+  function cardPress(event, anchor) {
+    if (event.button !== 0) return false;
+    // The lift is view state: it lasts this visit and never joins the vein's
+    // record or its history. A buried card is never left half hidden while it
+    // is being worked on.
+    if (overlapsAnotherCard(anchor)) raiseCard(anchor);
+    // Ctrl+click — Cmd+click on a Mac, where Ctrl+click is the secondary click
+    // — picks this card from anywhere on it, title and prose included. The
+    // press is taken in the capture phase so the field under the pointer never
+    // starts an edit: picking a card is not typing in it.
+    if (!selectionClick(event)) return false;
+    if (event.target.closest?.('.wb-resize, button, a, select')) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    toggleSelected(anchor);
+    return true;
+  }
+
+  /** At overview zoom a press picks the card before it moves or forges. */
+  function pickOverviewCard(anchor) {
+    if (!isOverviewZoom() || selected.has(anchor)) return;
+    setSelection([anchor]);
+  }
+
+  /**
    * The pointer gestures a card and its head share, whichever form the card was
    * built in: rise above what it overlaps, Ctrl+click to pick it, drag it (and
    * its selection), double-click to centre it. The icon form passes itself as
    * its own head, so the same gestures survive the low-zoom handoff.
    */
   function wireCardGestures(card, head, { index, note }) {
-    // A card sharing space with another rises above it on a press, so the
-    // card being worked on is never left half buried. The lift is view state:
-    // it lasts this visit and never joins the vein's record or its history.
     card.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0) return;
-      if (!overlapsAnotherCard(note.anchor)) return;
-      raiseCard(note.anchor);
-    }, true);
-
-    // Ctrl+click — Cmd+click on a Mac, where Ctrl+click is the secondary click
-    // — picks this card from anywhere on it, title and prose included. The
-    // press is taken in the capture phase so the field under the pointer never
-    // starts an edit: picking a card is not typing in it.
-    card.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0 || !selectionClick(event)) return;
-      if (event.target.closest?.('.wb-resize, button, a, select')) return;
-      event.preventDefault();
-      event.stopPropagation();
-      toggleSelected(model.notes[index]?.anchor ?? note.anchor);
+      cardPress(event, model.notes[index]?.anchor ?? note.anchor);
     }, true);
 
     /** Start a card grab: a drag carries it (and the picked set it belongs to).
@@ -2989,7 +3034,7 @@ export function createWorldbuildPanel({ app, root }) {
     function grabCard(event) {
       if (event.button !== 0) return;
       if (event.target.closest?.('input, button, select, textarea')) return;
-      if (isOverviewZoom() && !selected.has(note.anchor)) setSelection(new Set([note.anchor]));
+      pickOverviewCard(note.anchor);
       // A picked card can carry the whole selection with it; a solo card
       // moves on its own, and dropping it inside or outside a group's box
       // decides its membership. The tab is the handle that moves a nest.
@@ -3887,16 +3932,11 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
-   * Paint the camera on the next frame. A wheel fling or a drag of the
-   * background arrives as a stream of events; the view is updated on each one,
-   * and the canvas is repainted once per frame instead of once per event.
+   * Paint the camera once per visible frame, or by timer while the tab is
+   * hidden. A wheel or pan stream still coalesces instead of painting per event.
    */
   function scheduleView() {
-    if (viewFrame) return;
-    viewFrame = requestAnimationFrame(() => {
-      viewFrame = 0;
-      applyView();
-    });
+    schedulePaint(viewFrame, applyView);
   }
 
   /** Put the current view on the canvas, clamped to the viewport with a
@@ -3946,13 +3986,15 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   // One answer per visit: 'unasked' until the canvas first goes below 65%,
-  // then 'asked' whether the note opened or the settings said it was seen.
+  // then 'asked' whether the note opened, tutorials were off, or the settings
+  // said it was seen.
   let zoomTipState = 'unasked';
 
   /** The first pass below 65% opens the object-map note, once ever. */
   function maybeShowZoomTip(mode) {
     if (zoomTipState !== 'unasked' || !mode?.forge || !model) return;
     zoomTipState = 'asked';
+    if (app.state.settings?.tutorials === false) return;
     if (app.lowZoomTipSeen()) return;
     zoomTip.classList.remove('hidden');
     announce('Object map: drag a card’s corner ring to bond it to another card or group; a click picks instead. This note opens once.');
@@ -7475,31 +7517,48 @@ export function createWorldbuildPanel({ app, root }) {
     downloadFile(new Blob([markdown], { type: 'text/markdown' }), `${canvasExportName(currentPath, 'graph')}.md`);
     app.toast('Canvas exported as Mermaid markdown', 'ok', 1600);
   }
-  /** One history entry, as a jump target. */
+  /** One history entry as a jump target: its name and how far it is from now. */
   function historyRow(entry, kind, glyph, steps) {
+    const direction = kind === 'undo' ? 'back' : 'forward';
+    const restore = kind === 'undo' ? 'before' : 'after';
+    const count = `${steps} step${steps === 1 ? '' : 's'} ${direction}`;
     return el('button', {
-      class: 'wb-history-row',
+      class: 'wb-checkpoint',
       type: 'button',
-      text: `${glyph} ${entry.name}`,
-      title: `${kind === 'undo' ? 'Undo' : 'Redo'} ${steps} step${steps === 1 ? '' : 's'}: ${entry.name}`,
+      title: `Return to the canvas as it was ${restore} this step — ${count}`,
       onclick: () => jumpHistory(kind, steps - 1),
-    });
+    }, [
+      el('span', { class: 'wb-checkpoint-glyph', text: glyph, 'aria-hidden': 'true' }),
+      el('span', { class: 'wb-checkpoint-name', text: entry.name }),
+      el('span', { class: 'wb-checkpoint-steps', text: count }),
+    ]);
   }
 
-  /** Every step of this vein's canvas history, nearest to now first. */
-  function historyRows() {
+  /**
+   * Every step of this vein's canvas history, nearest to now first: the same
+   * rows for the History browser and the checkpoints popover. `heading` and
+   * `hint` are for the popover's extra context; the steps themselves are
+   * always built here, so the two lists cannot drift apart.
+   */
+  function historyRows({ heading = null, hint = null } = {}) {
     const stack = historyFor(currentPath);
     const rows = [];
+    if (heading) rows.push(el('span', { class: 'wb-menu-label', text: heading }));
+    if (hint) rows.push(el('span', { class: 'wb-checkpoint-hint', text: hint }));
     if (stack.future.length) {
-      rows.push(el('span', { class: 'wb-menu-label', text: 'Redo' }));
+      rows.push(el('span', { class: 'wb-menu-label', text: 'Ahead' }));
       [...stack.future].reverse().forEach((entry, i) => rows.push(historyRow(entry, 'redo', '↷', i + 1)));
     }
-    rows.push(el('span', { class: 'wb-history-now', text: '⦿ now' }));
+    rows.push(el('span', {
+      class: 'wb-checkpoint-now',
+      text: stack.past.length
+        ? `⦿ now — ${stack.past.length} step${stack.past.length === 1 ? '' : 's'} behind`
+        : '⦿ now — nothing behind yet',
+    }));
     if (stack.past.length) {
-      rows.push(el('span', { class: 'wb-menu-label', text: 'Undo' }));
+      rows.push(el('span', { class: 'wb-menu-label', text: 'Behind' }));
       [...stack.past].reverse().forEach((entry, i) => rows.push(historyRow(entry, 'undo', '↶', i + 1)));
-    }
-    if (!stack.future.length && !stack.past.length) {
+    } else if (!stack.future.length) {
       rows.push(el('span', { class: 'wb-history-empty', text: 'Nothing to undo on this canvas yet.' }));
     }
     return rows;
@@ -7512,56 +7571,12 @@ export function createWorldbuildPanel({ app, root }) {
     toggleDropdown(button, 'wb-history', 'Canvas history', historyRows());
   }
 
-  /** One checkpoint: a named state, `steps` away from where the canvas is now. */
-  function checkpointRow(entry, kind, glyph, steps) {
-    const direction = kind === 'undo' ? 'back' : 'forward';
-    const count = `${steps} step${steps === 1 ? '' : 's'} ${direction}`;
-    return el('button', {
-      class: 'wb-menu-item wb-checkpoint',
-      type: 'button',
-      title: `Return to the canvas as it was before this step — ${count}`,
-      onclick: () => jumpHistory(kind, steps - 1),
-    }, [
-      el('span', { class: 'wb-checkpoint-glyph', text: glyph, 'aria-hidden': 'true' }),
-      el('span', { class: 'wb-checkpoint-name', text: entry.name }),
-      el('span', { class: 'wb-checkpoint-steps', text: count }),
-    ]);
-  }
-
-  /**
-   * The canvas's checkpoints, nearest to now first: what the canvas looked like
-   * before each step, each one a place to come back to. A drag is one step and
-   * a resize is one step, so the list reads as the layout work that was done
-   * rather than as a count of pointer events.
-   */
-  function checkpointRows() {
-    const stack = historyFor(currentPath);
-    const rows = [
-      el('span', { class: 'wb-menu-label', text: 'Canvas checkpoints' }),
-      el('span', { class: 'wb-checkpoint-hint', text: 'Every drag, resize and layout change is one step. Pick one to return to the canvas as it was then.' }),
-    ];
-    if (stack.future.length) {
-      rows.push(el('span', { class: 'wb-menu-label', text: 'Ahead' }));
-      [...stack.future].reverse().forEach((entry, i) => rows.push(checkpointRow(entry, 'redo', '↷', i + 1)));
-    }
-    rows.push(el('span', {
-      class: 'wb-checkpoint-now',
-      text: stack.past.length
-        ? `⦿ now — ${stack.past.length} step${stack.past.length === 1 ? '' : 's'} behind`
-        : '⦿ now — nothing behind yet',
-    }));
-    if (stack.past.length) {
-      rows.push(el('span', { class: 'wb-menu-label', text: 'Behind' }));
-      [...stack.past].reverse().forEach((entry, i) => rows.push(checkpointRow(entry, 'undo', '↶', i + 1)));
-    } else {
-      rows.push(el('span', { class: 'wb-history-empty', text: 'Nothing to undo on this canvas yet.' }));
-    }
-    return rows;
-  }
-
   /** The checkpoints popover, opened from the caret beside undo. */
   function toggleCheckpoints(button) {
-    toggleDropdown(button, 'wb-checkpoints', 'Canvas checkpoints', checkpointRows());
+    toggleDropdown(button, 'wb-checkpoints', 'Canvas checkpoints', historyRows({
+      heading: 'Canvas checkpoints',
+      hint: 'Every drag, resize and layout change is one step. Pick one to return to the canvas as it was then.',
+    }));
   }
 
   /** The health panel as a drop-down below the toolbar, on the menu's own
@@ -8747,7 +8762,7 @@ export function createWorldbuildPanel({ app, root }) {
     }
     // Zoomed out, a touch on a card also picks it: its content no longer takes
     // the finger, so the press is the only way to say “this one”.
-    if (zoomMode(view.s).overview && !selected.has(hold.endpoint)) setSelection([hold.endpoint]);
+    pickOverviewCard(hold.endpoint);
     if (isAnchorLocked(hold.endpoint) || isAnchorFrozen(hold.endpoint)) return;
     const picking = selected.has(hold.endpoint) && selected.size > 1;
     const anchors = (picking ? [...selected] : [hold.endpoint])
@@ -8795,18 +8810,31 @@ export function createWorldbuildPanel({ app, root }) {
     cancelTouchMove();
     const pair = pinchPair();
     if (!pair) return;
-    pinch = pair;
+    pinch = { ...pair, startDistance: pair.distance, zooming: false };
   }
 
-  /** Two fingers: zoom around their midpoint and pan with it, in one move. */
+  /**
+   * Two fingers: pan with their midpoint, and zoom once their spread changes
+   * enough to be intentional. Small drift during a pan must not move scale.
+   */
   function stepPinch() {
     const pair = pinchPair();
     if (!pinch || !pair) return;
-    const rect = stage.getBoundingClientRect();
-    view = snapZoomView(view, pair.midX - rect.left, pair.midY - rect.top, pair.distance / pinch.distance);
+    if (!pinch.zooming && pinchZoomStarted(pinch.startDistance, pair.distance)) {
+      // Re-anchor at the threshold, so crossing it does not jump the scale by
+      // the drift the pan was allowed to ignore.
+      pinch.zooming = true;
+      pinch.distance = pair.distance;
+    }
+    if (pinch.zooming) {
+      const rect = stage.getBoundingClientRect();
+      view = snapZoomView(view, pair.midX - rect.left, pair.midY - rect.top, pair.distance / pinch.distance);
+      pinch.distance = pair.distance;
+    }
     view.x += pair.midX - pinch.midX;
     view.y += pair.midY - pinch.midY;
-    pinch = pair;
+    pinch.midX = pair.midX;
+    pinch.midY = pair.midY;
     applyView();
     showZoomHud();
   }
@@ -8828,6 +8856,14 @@ export function createWorldbuildPanel({ app, root }) {
     }
     const at = touchEndpoint(event.target);
     if (!at) return;
+    if (at.kind === 'card') {
+      // This capture handler took the press before the card's own listeners
+      // could run. Do their press-time work here, before deciding whether the
+      // touch becomes a hold: raise a buried card, and honour the selection
+      // modifier. An overview press also picks the card before it moves.
+      if (cardPress(event, at.endpoint)) return;
+      pickOverviewCard(at.endpoint);
+    }
     event.preventDefault();
     event.stopPropagation();
     const hold = { ...at, event, startX: event.clientX, startY: event.clientY, timer: 0 };
@@ -11017,16 +11053,17 @@ export function createWorldbuildPanel({ app, root }) {
     connectorCurves = drawnConnectors.map(({ key, at }) => ({ key, at }));
     // At icon scale a wire is a hairline a pixel wide, and there can be a
     // thousand of them: paint one path per look instead of a path and a hit
-    // twin per wire. The canvas then holds a handful of SVG nodes however many
-    // connectors it has, and a pan repaints that handful, not a thousand paths.
+    // twin per wire. The look is the kind's colour plus its picking and lens
+    // state (iconEdgeClass), a bounded set, so the canvas holds a handful of
+    // SVG nodes however many connectors it has and a pan repaints that handful.
     if (zoomMode(view.s).icon) {
       const buckets = new Map();
-      for (const { edge, key, path, stacked, cut, at } of drawnConnectors) {
-        const isGroup = edge.from.startsWith('group:') || edge.to.startsWith('group:');
+      for (const { edge, key, path, at } of drawnConnectors) {
         const relation = edge.relation ? relationKind(edge.relation) : null;
         const lensFocused = Boolean(lens?.edges.has(key));
-        const lensClass = lensFocused ? ' is-lens' : (lens && !selectedEdges.has(key) ? ' is-dimmed' : '');
-        const cls = `wb-edge wb-edge-batch wb-edge-${isGroup ? 'group' : edge.kind}${relation ? ` wb-rel-${relation.id}` : ''}${selectedEdges.has(key) ? ' is-selected' : ''}${lensClass}${cut && !stacked ? ' is-cut' : ''}`;
+        const cls = iconEdgeClass(edge, {
+          selected: selectedEdges.has(key), lensFocused, lensActive: Boolean(lens),
+        });
         buckets.set(cls, `${buckets.get(cls) ?? ''} ${path}`);
         if (lensFocused && relation) {
           const point = at(0.5);

@@ -31,6 +31,11 @@ export const DEFAULT_SETTINGS = {
   // text-only, which is easier to scan for some readers (and avoids emoji
   // fonts changing how the toolbar looks between platforms).
   icons: true,
+  // Instructional notes the viewer teaches with: the one-time object-map note
+  // on the canvas, the search tip and the editor's shortcut hint. On by
+  // default; off leaves the window free of teaching text, and Help keeps the
+  // same story for anyone who turns them back on.
+  tutorials: true,
   autosave: true,
   autosaveDelayMs: 800,
   fontSize: 16,
@@ -147,6 +152,7 @@ export function validateSettings(settings) {
   s.theme = s.theme === 'light' ? 'light' : 'dark';
   s.themeHues = cleanThemeHues(s.themeHues);
   s.icons = s.icons !== false;
+  s.tutorials = s.tutorials !== false;
   s.autosave = s.autosave !== false;
   s.graph = {
     ...DEFAULT_SETTINGS.graph,

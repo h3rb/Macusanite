@@ -470,9 +470,47 @@ async function serveStdio(server, { log }) {
   // order it sent them, and two tools can never interleave their writes.
   let queue = Promise.resolve();
 
-  const respond = (response) => {
-    if (response) process.stdout.write(`${JSON.stringify(response)}\n`);
+  // A headless client hangs up: it restarts the server, the agent stops, the
+  // container is signalled. Every one of those is a normal stop, so the server
+  // leaves the way it would at end-of-input — same log line, exit 0, and the
+  // flush that runs after this function returns. Without this, a closed stdout
+  // surfaces as an uncaught EPIPE and reads as a crashed server.
+  let stopping = false;
+  let finish = () => {};
+  const done = new Promise((resolve) => { finish = resolve; });
+  const stop = (why) => {
+    if (stopping) return;
+    stopping = true;
+    log('info', why);
+    // Nothing more arrives after a hangup, and a paused stdin lets the process
+    // end even when the pipe was never closed.
+    process.stdin.pause();
+    finish();
   };
+
+  const respond = (response) => {
+    if (!response || stopping) return;
+    if (!process.stdout.writable) {
+      stop('stdout closed — stopping');
+      return;
+    }
+    try {
+      process.stdout.write(`${JSON.stringify(response)}\n`);
+    } catch (error) {
+      stop(`stdout closed — stopping (${error.code ?? error.message})`);
+    }
+  };
+
+  process.stdout.on('error', (error) => stop(`stdout closed — stopping (${error.code ?? error.message})`));
+  process.stdin.on('error', (error) => stop(`stdin closed — stopping (${error.code ?? error.message})`));
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.once(signal, () => {
+      // Returning from `runMcp` still flushes a pending upload, which a bare
+      // default signal termination would lose.
+      try { process.exitCode = 0; } catch { /* nothing else to do */ }
+      stop(`${signal} — stopping`);
+    });
+  }
 
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk) => {
@@ -503,12 +541,10 @@ async function serveStdio(server, { log }) {
   // `end` is the normal close of a piped stdin; `close` covers a client that
   // hangs up mid-line. Whichever arrives first, the queue is drained before the
   // process is allowed to finish, so no response is lost.
-  await new Promise((resolve) => {
-    process.stdin.once('end', resolve);
-    process.stdin.once('close', resolve);
-  });
+  process.stdin.once('end', () => stop('stdin closed — stopping'));
+  process.stdin.once('close', () => stop('stdin closed — stopping'));
+  await done;
   await queue;
-  log('info', 'stdin closed — stopping');
 }
 
 /**

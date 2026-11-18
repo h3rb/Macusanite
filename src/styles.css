@@ -3561,9 +3561,23 @@ dialog::backdrop {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  container-type: inline-size;
   margin-bottom: 10px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
+}
+
+/* A narrow panel loses the decorative button glyphs before it loses labels or
+ * wraps a lone action onto its own row. Undo/redo keep their icon-only faces,
+ * and the checkpoint caret stays a full-height target beside them. */
+@container (max-width: 560px) {
+  .wb-toolbar .btn-mini:not(.ui-icon-only) .ui-icon {
+    display: none;
+  }
+
+  .wb-toolbar .btn-mini {
+    padding: 3px 6px;
+  }
 }
 
 .wb-title {
@@ -3771,6 +3785,14 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
 }
 
 .wb-zoom-tip.hidden {
+  display: none;
+}
+
+/* Settings → Reading → Tutorial notes off: no teaching text anywhere, including
+ * a note that was already open when the setting changed. */
+.hide-tutorials .wb-zoom-tip,
+.hide-tutorials .search-tip,
+.hide-tutorials .editor-hint {
   display: none;
 }
 
@@ -4889,34 +4911,6 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   width: min(320px, calc(100vw - 16px));
 }
 
-.wb-history-row {
-  display: block;
-  width: 100%;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.wb-history-row:hover {
-  background: var(--bg-hover);
-}
-
-.wb-history-now {
-  display: block;
-  padding: 6px 10px;
-  color: var(--text-dim);
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
 .wb-history-empty {
   display: block;
   padding: 6px 10px;
@@ -4927,9 +4921,9 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
 /* The caret beside undo opens the canvas's checkpoints: what the canvas
  * looked like before each step, each one a place to come back to. */
 .wb-history-toggle {
-  min-width: 18px;
-  min-height: 21px;
-  padding: 0 3px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 4px;
   line-height: 1;
 }
 
@@ -5301,6 +5295,24 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
 .wb-edge-mention {
   stroke: var(--ok);
   opacity: 0.42;
+}
+
+/* The icon-zoom batch layer: one path per tone and state instead of one per
+ * connector. A hairline cannot resolve a relationship's weight or dash, so the
+ * colour is all a batched wire keeps — the same three words the legend gives.
+ * The states (`is-selected`, `is-lens`, `is-dimmed`) are shared with the
+ * detail layer above. */
+.wb-edge-tone-ok {
+  stroke: var(--ok);
+}
+
+.wb-edge-tone-error {
+  stroke: var(--error);
+}
+
+.wb-edge-tone-faint {
+  stroke: var(--text-faint);
+  opacity: 0.55;
 }
 
 /* A bond stated on the canvas itself — no prose link stands behind it. The
