@@ -5168,6 +5168,7 @@ export function createWorldbuildPanel({ app, root }) {
             icon: group.icon || GROUP_GENERIC_ICON,
             kinds: [],
             notes: [],
+            edge: null,
           };
         } else {
           const note = byAnchor.get(row.endpoint);
@@ -5179,11 +5180,17 @@ export function createWorldbuildPanel({ app, root }) {
             icon: '',
             kinds: [],
             notes: [],
+            edge: null,
           };
         }
         merged.set(row.endpoint, entry);
       }
       if (!entry.kinds.includes(row.label)) entry.kinds.push(row.label);
+      // A row can be reached by a prose link and a bond at once; a canvas bond
+      // is the better handle for the pair's note when one is present.
+      if (row.kind !== 'contains' && row.from && row.to && (!entry.edge || (row.kind === 'bond' && entry.edge.kind !== 'bond'))) {
+        entry.edge = { from: row.from, to: row.to, relation: row.relation, kind: row.kind };
+      }
       // The note the bond carries, once per pair however many wires say it.
       if (row.note && !entry.notes.includes(row.note)) entry.notes.push(row.note);
     }
@@ -5209,7 +5216,7 @@ export function createWorldbuildPanel({ app, root }) {
 
   function inspectorLink(entry) {
     const notes = entry.notes ?? [];
-    return el('button', {
+    const link = el('button', {
       class: 'wb-inspector-link',
       type: 'button',
       title: `Jump to “${entry.title}” — ${entry.label}${notes.length ? `\n“${notes.join('” “')}”` : ''}`,
@@ -5221,6 +5228,15 @@ export function createWorldbuildPanel({ app, root }) {
       el('span', { class: 'wb-inspector-link-kind', text: entry.label }),
       ...notes.map((note) => el('span', { class: 'wb-inspector-link-note', text: `“${note}”` })),
     ]);
+    if (!entry.edge) return link;
+    const noteButton = el('button', {
+      class: 'wb-inspector-note',
+      type: 'button',
+      text: notes.length ? 'Edit note' : 'Add note',
+      title: `${notes.length ? 'Edit' : 'Add'} the bond note between the focus and “${entry.title}”`,
+      onclick: () => openBondNoteEditor(entry.edge, noteButton),
+    });
+    return el('div', { class: 'wb-inspector-link-row' }, [link, noteButton]);
   }
 
   /** The lens list, split the way the wires run: out of the focus, into it. */
@@ -9294,25 +9310,35 @@ export function createWorldbuildPanel({ app, root }) {
     }
     const rows = [...bonds.values()].sort((a, b) => a.rank - b.rank);
     for (const bond of rows) {
-      items.push(el('button', {
-        class: 'wb-menu-item wb-bond-row',
+      const noteButton = el('button', {
+        class: 'wb-bond-row-note-action',
         type: 'button',
-        title: `Remove this relationship — a prose link between the two notes stays${bond.note ? `\nNote: ${bond.note}` : ''}`,
-        onclick: () => {
-          step(() => {
-            relations = app.removeWorldRelation(currentPath, bond.from, bond.to) ?? relations;
-            drawEdges();
-            build();
-          }, `Remove “${endpointTitle(bond.from)}” ${relationKind(bond.relation).label.toLowerCase()} “${endpointTitle(bond.to)}”`);
-          announceBondRemoved(bond.from, bond.to, relationKind(bond.relation).label);
-          closeMenu();
-        },
-      }, [
-        el('span', {
-          class: 'wb-bond-row-title',
-          text: `${endpointTitle(bond.from)} ${relationKind(bond.relation).label.toLowerCase()} ${endpointTitle(bond.to)} ✕`,
-        }),
-        bond.note ? el('span', { class: 'wb-bond-row-note', text: `“${bond.note}”` }) : null,
+        text: bond.note ? 'Edit note' : 'Add note',
+        title: `${bond.note ? 'Edit' : 'Add'} the note on “${endpointTitle(bond.from)}” ${relationKind(bond.relation).label.toLowerCase()} “${endpointTitle(bond.to)}”`,
+        onclick: () => openBondNoteEditor(bond, noteButton),
+      });
+      items.push(el('div', { class: 'wb-bond-row' }, [
+        el('button', {
+          class: 'wb-menu-item wb-bond-row-remove',
+          type: 'button',
+          title: `Remove this relationship — a prose link between the two notes stays${bond.note ? `\nNote: ${bond.note}` : ''}`,
+          onclick: () => {
+            step(() => {
+              relations = app.removeWorldRelation(currentPath, bond.from, bond.to) ?? relations;
+              drawEdges();
+              build();
+            }, `Remove “${endpointTitle(bond.from)}” ${relationKind(bond.relation).label.toLowerCase()} “${endpointTitle(bond.to)}”`);
+            announceBondRemoved(bond.from, bond.to, relationKind(bond.relation).label);
+            closeMenu();
+          },
+        }, [
+          el('span', {
+            class: 'wb-bond-row-title',
+            text: `${endpointTitle(bond.from)} ${relationKind(bond.relation).label.toLowerCase()} ${endpointTitle(bond.to)} ✕`,
+          }),
+          bond.note ? el('span', { class: 'wb-bond-row-note', text: `“${bond.note}”` }) : null,
+        ]),
+        noteButton,
       ]));
     }
 
@@ -9651,9 +9677,9 @@ export function createWorldbuildPanel({ app, root }) {
    * and read in the inspector, the wire's tooltip and canvas search. The box is
    * a menu panel, so Escape and an outside click close it like any other.
    */
-  function openBondNoteEditor(edge) {
+  function openBondNoteEditor(edge, origin = null) {
     if (!currentPath || !edge?.from || !edge.to) return;
-    const anchor = menuEl?.getBoundingClientRect() ?? null;
+    const anchor = origin?.getBoundingClientRect?.() ?? menuEl?.getBoundingClientRect() ?? null;
     closeMenu({ returnFocus: false });
     const key = relationKey(edge.from, edge.to);
     const existing = bondNotes[key] ?? bondNotes[relationKey(edge.to, edge.from)] ?? '';

@@ -3408,6 +3408,46 @@ dialog::backdrop {
   background: var(--bg-hover);
 }
 
+.wb-inspector-link-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  border-radius: 5px;
+}
+
+.wb-inspector-link-row:hover {
+  background: var(--bg-hover);
+}
+
+.wb-inspector-link-row .wb-inspector-link {
+  flex: 1;
+  min-width: 0;
+}
+
+.wb-inspector-link-row .wb-inspector-link:hover {
+  background: transparent;
+}
+
+.wb-inspector-note {
+  flex: none;
+  margin-top: 3px;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 9.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wb-inspector-note:hover,
+.wb-inspector-note:focus-visible {
+  background: var(--bg);
+  color: var(--accent);
+}
+
 .wb-inspector-link-dot {
   width: 7px;
   height: 7px;
@@ -4522,7 +4562,27 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
 .wb-bond-row {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
+  padding: 2px 0;
+}
+
+.wb-bond-row-note-action {
+  align-self: flex-start;
+  margin: 0 0 2px 10px;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.wb-bond-row-note-action:hover,
+.wb-bond-row-note-action:focus-visible {
+  background: var(--bg-hover);
+  color: var(--accent);
 }
 
 .wb-bond-row-note {

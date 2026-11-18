@@ -3060,6 +3060,8 @@ export function lensFocus(connectors = [], selected = [], groupMembers = {}) {
     else neighbours.add(endpoint);
     rows.push({
       key,
+      from: edge.from,
+      to: edge.to,
       endpoint,
       direction,
       kind: edge.kind ?? 'bond',
