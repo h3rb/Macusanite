@@ -161,10 +161,28 @@ export function updateNote(model, index, patch = {}) {
 }
 
 /**
+ * The first free default title for a new card: New Note, then New Note 1,
+ * New Note 2 and so on. Existing titles are compared without case, so a
+ * hand-written “new note” still claims the plain label.
+ */
+export function nextNoteTitle(notes = [], base = 'New Note') {
+  const root = String(base ?? '').trim() || 'New Note';
+  const rootKey = root.toLowerCase();
+  const titles = new Set((notes ?? []).map((note) => String(note?.title ?? '').trim().toLowerCase()));
+  const similar = [...titles].some((title) => title === rootKey
+    || (title.startsWith(`${rootKey} `) && /^\d+$/.test(title.slice(rootKey.length + 1))));
+  if (!similar) return root;
+  for (let number = 1; ; number += 1) {
+    const candidate = `${root} ${number}`;
+    if (!titles.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+/**
  * Append a note to the end of the vein.
  * @returns {{model: object, index: number}}
  */
-export function addNote(model, { title = 'New note', level = DEFAULT_LEVEL, body = '' } = {}) {
+export function addNote(model, { title = 'New Note', level = DEFAULT_LEVEL, body = '' } = {}) {
   const notes = [...(model.notes ?? [])];
   const note = {
     index: notes.length,
@@ -209,6 +227,28 @@ export const RELATION_KINDS = [
   { id: 'tab-of', label: 'Tab Of', inverse: 'tab', rank: 1 },
   { id: 'supplying', label: 'Supplying', inverse: 'supplied-by', rank: 1 },
   { id: 'supplied-by', label: 'Supplied By', inverse: 'supplying', rank: 1 },
+  // UI-association kinds name the parts of an interface a card stands for.
+  // They are structural like Member Of, so they sit at the same low rank.
+  { id: 'subwindow', label: 'Subwindow', rank: 1 },
+  { id: 'panel', label: 'Panel', rank: 1 },
+  { id: 'sidebar', label: 'Sidebar', rank: 1 },
+  { id: 'left-sidebar', label: 'Left Sidebar', rank: 1 },
+  { id: 'right-sidebar', label: 'Right Sidebar', rank: 1 },
+  { id: 'center', label: 'Center', rank: 1 },
+  { id: 'canvas', label: 'Canvas', rank: 1 },
+  { id: 'top-bar', label: 'Top Bar', rank: 1 },
+  { id: 'status-bar', label: 'Status Bar', rank: 1 },
+  { id: 'subpanel', label: 'Subpanel', rank: 1 },
+  { id: 'wizard-start', label: 'Wizard Start', rank: 1 },
+  { id: 'next', label: 'Next', inverse: 'prev', rank: 1 },
+  { id: 'prev', label: 'Prev', inverse: 'next', rank: 1 },
+  { id: 'goto', label: 'Go To', rank: 1 },
+  { id: 'wizard-end', label: 'Wizard End', rank: 1 },
+  { id: 'dialog', label: 'Dialog', rank: 1 },
+  { id: 'modal', label: 'Modal', rank: 1 },
+  { id: 'floating', label: 'Floating', rank: 1 },
+  { id: 'hud', label: 'HUD', rank: 1 },
+  { id: 'element', label: 'Element', rank: 1 },
   { id: 'template', label: 'Template', rank: 2 },
   { id: 'parent', label: 'Parent', inverse: 'child', rank: 2 },
   { id: 'child', label: 'Child', inverse: 'parent', rank: 2 },
@@ -1570,6 +1610,12 @@ export function canvasSnapshot(state = {}) {
     // Markdown is a table's source of truth. Table edit steps carry the prose
     // they changed, so canvas undo restores the same grid the card showed.
     ...(state.tables ? { tables: state.tables } : {}),
+    // A deletion step carries the removed notes themselves, keyed by anchor:
+    // a note restores its prose, while null records that redoing the step must
+    // take it away again. The anchor order puts a restored note back between
+    // the same neighbours even when other cards have since moved or gone.
+    ...(state.notes ? { notes: state.notes } : {}),
+    ...(state.notes && state.noteOrder ? { noteOrder: state.noteOrder } : {}),
     view: state.view ?? { x: 0, y: 0, s: 1 },
   });
 }
@@ -1676,10 +1722,19 @@ export function capturePinnedGroupFrames(groups, hullOf) {
 }
 
 export function pruneSnapshotAnchors(snap, live) {
-  const prunedGroups = pruneGroups(snap.groups ?? {}, (anchor) => live.has(anchor));
+  // A deletion step carries the notes its undo must restore. Those anchors are
+  // live for this snapshot even though the vein has no cards for them now, so
+  // pruning must not discard their positions, groups or bonds before the undo.
+  const restorable = new Set(
+    Object.entries(snap.notes && typeof snap.notes === 'object' && !Array.isArray(snap.notes) ? snap.notes : {})
+      .filter(([, note]) => note)
+      .map(([anchor]) => anchor),
+  );
+  const isLive = (anchor) => live.has(anchor) || restorable.has(anchor);
+  const prunedGroups = pruneGroups(snap.groups ?? {}, isLive);
   const { groups } = prunedGroups;
   const surviving = new Set(Object.keys(groups));
-  const known = (end) => live.has(end) || (end.startsWith('group:') && surviving.has(end.slice(6)));
+  const known = (end) => isLive(end) || (end.startsWith('group:') && surviving.has(end.slice(6)));
   const relations = {};
   for (const [key, kind] of Object.entries(snap.relations ?? {})) {
     const ends = splitRelationKey(key);
@@ -1693,7 +1748,7 @@ export function pruneSnapshotAnchors(snap, live) {
     if (ends && known(ends.from) && known(ends.to)) bondNotes[key] = text;
   }
   const anchors = (obj) => Object.fromEntries(
-    Object.entries(obj ?? {}).filter(([anchor]) => live.has(anchor)),
+    Object.entries(obj ?? {}).filter(([anchor]) => isLive(anchor)),
   );
   const collapsedGroups = Object.fromEntries(
     Object.entries(cleanCollapsedGroups(snap.collapsedGroups)).filter(([id]) => surviving.has(id)),
@@ -1715,7 +1770,7 @@ export function pruneSnapshotAnchors(snap, live) {
     ...(snap.cardModes ? { cardModes: anchors(snap.cardModes) } : {}),
     ...(snap.cardSizes ? { cardSizes: anchors(snap.cardSizes) } : {}),
     ...(snap.cardDims ? { cardDims: anchors(snap.cardDims) } : {}),
-    ...(snap.stack ? { stack: cleanStackOrder(snap.stack).filter((anchor) => live.has(anchor)) } : {}),
+    ...(snap.stack ? { stack: cleanStackOrder(snap.stack).filter((anchor) => isLive(anchor)) } : {}),
     ...(snap.collapsedGroups ? { collapsedGroups } : {}),
     ...(snap.annotations ? { annotations: cleanAnnotations(snap.annotations) } : {}),
     ...(snap.tables ? { tables: anchors(snap.tables) } : {}),
@@ -1947,6 +2002,8 @@ export function restoreSnapshot(snap, live, current = {}) {
     collapsedGroups: cleanCollapsedGroups(pruned.collapsedGroups ?? current.collapsedGroups),
     annotations: pruned.annotations ?? cleanAnnotations(current.annotations),
     tables: pruned.tables ?? null,
+    ...(pruned.notes !== undefined ? { notes: pruned.notes } : {}),
+    ...(pruned.noteOrder !== undefined ? { noteOrder: pruned.noteOrder } : {}),
     view: cleanView(pruned.view, current.view ?? null),
   };
 }
@@ -2202,15 +2259,15 @@ export function cleanForgePrefs(raw) {
     }
     return out;
   };
-  const pairs = {};
-  let kept = 0;
+  const valid = [];
   for (const [key, value] of Object.entries(raw?.pairs ?? {})) {
-    if (kept >= FORGE_PAIR_LIMIT) break;
     if (!forgeKind(value)) continue;
     if (!/^[a-z][a-z0-9-]*->[a-z][a-z0-9-]*$/.test(key)) continue;
-    pairs[key] = value;
-    kept += 1;
+    valid.push([key, value]);
   }
+  // Newly remembered pairs are appended, so the end of the record is the
+  // newest; at the cap the oldest pairs are the ones to forget.
+  const pairs = Object.fromEntries(valid.slice(-FORGE_PAIR_LIMIT));
   return {
     recent: list(raw?.recent, FORGE_SHORTLIST_LIMIT),
     favourite: list(raw?.favourite, FORGE_SHORTLIST_LIMIT),
@@ -2226,10 +2283,16 @@ export function rememberForgeKind(prefs, { fromType = 'note', toType = 'note', k
   const clean = cleanForgePrefs(prefs);
   const id = forgeKind(kind);
   if (!id) return clean;
+  // Re-remembering a pair makes it the newest, so it moves to the end rather
+  // than keeping the position it had when it was first used.
+  const pairKey = `${fromType}->${toType}`;
+  const pairs = { ...clean.pairs };
+  delete pairs[pairKey];
+  pairs[pairKey] = id;
   return cleanForgePrefs({
     ...clean,
     recent: [id, ...clean.recent],
-    pairs: { ...clean.pairs, [`${fromType}->${toType}`]: id },
+    pairs,
   });
 }
 
@@ -2294,6 +2357,44 @@ export function groupEndpoint(groupId) {
   return `group:${groupId}`;
 }
 
+/** Every card a group holds: its own members plus every nested group's. */
+function groupMemberSet(groups, groupId) {
+  const members = new Set();
+  const seen = new Set();
+  const visit = (id) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const current = groups?.[id];
+    if (!current) return;
+    (current.members ?? []).forEach((anchor) => members.add(anchor));
+    (current.children ?? []).forEach(visit);
+  };
+  visit(groupId);
+  return members;
+}
+
+/** Each group's nesting depth: a root is 0, its child is 1, and so on. */
+function groupDepthMap(groups = {}) {
+  const parents = new Map();
+  for (const [id, group] of Object.entries(groups ?? {})) {
+    for (const child of group?.children ?? []) {
+      if (child && !parents.has(child)) parents.set(child, id);
+    }
+  }
+  const depths = new Map();
+  const depthOf = (id, seen = new Set()) => {
+    if (depths.has(id)) return depths.get(id);
+    if (seen.has(id)) return 0;
+    seen.add(id);
+    const parent = parents.get(id);
+    const depth = parent ? depthOf(parent, seen) + 1 : 0;
+    depths.set(id, depth);
+    return depth;
+  };
+  for (const id of Object.keys(groups ?? {})) depthOf(id);
+  return depths;
+}
+
 /**
  * The groups a picked set of cards covers whole: every card the group holds,
  * nested groups included, is in the set. A marquee that sweeps a box says it
@@ -2304,19 +2405,34 @@ export function coveredGroups(groups = {}, anchors = []) {
   const out = [];
   for (const group of Object.values(groups ?? {})) {
     if (!group?.id) continue;
-    const members = new Set();
-    const visit = (id, seen = new Set()) => {
-      if (seen.has(id)) return;
-      seen.add(id);
-      const current = groups[id];
-      if (!current) return;
-      (current.members ?? []).forEach((anchor) => members.add(anchor));
-      (current.children ?? []).forEach((child) => visit(child, seen));
-    };
-    visit(group.id);
+    const members = groupMemberSet(groups, group.id);
     if (members.size && [...members].every((anchor) => picked.has(anchor))) out.push(group.id);
   }
   return out;
+}
+
+/**
+ * The tightest group holding every picked card: the smallest effective
+ * membership wins, and a nested group beats an outer group that holds the
+ * same cards. Null when no single group contains the whole set.
+ */
+export function tightestGroup(groups = {}, anchors = []) {
+  const picked = anchors instanceof Set ? anchors : new Set(anchors ?? []);
+  if (!picked.size) return null;
+  const depths = groupDepthMap(groups);
+  let best = null;
+  for (const group of Object.values(groups ?? {})) {
+    if (!group?.id) continue;
+    const members = groupMemberSet(groups, group.id);
+    if (!members.size || ![...picked].every((anchor) => members.has(anchor))) continue;
+    const depth = depths.get(group.id) ?? 0;
+    if (!best
+      || members.size < best.size
+      || (members.size === best.size && depth > best.depth)) {
+      best = { group, size: members.size, depth };
+    }
+  }
+  return best?.group ?? null;
 }
 
 /**
@@ -2993,11 +3109,9 @@ export function nextConnectorSelection(selected, key, additive = false) {
 /**
  * The word a lens row shows for one connector, from the reader's side of it.
  * A prose link's kind says what stands behind the wire; an asserted
- * relationship names the bond itself. The outline spine is structural, so it
- * reads as containment in the direction it is drawn.
+ * relationship names the bond itself.
  */
-function lensEdgeLabel(edge, direction) {
-  if (edge.kind === 'contains') return direction === 'in' ? 'inside' : 'contains';
+function lensEdgeLabel(edge) {
   const relation = relationKind(edge.relation);
   const asserted = relation && relation.id !== DEFAULT_RELATION ? relation.label.toLowerCase() : '';
   if (edge.kind === 'bond') return asserted || 'bond';
@@ -3012,11 +3126,12 @@ function lensEdgeLabel(edge, direction) {
  * focus, and the endpoints one hop away.
  *
  * Nothing here is stored: the lens is a reading of connectors the canvas
- * already draws. Prose links, canvas bonds, group bonds and the outline spine
- * all count, so a selected card's neighbourhood is exactly what its wires
- * say it is. Edges with both ends in the focus are inside the lens rather
- * than neighbours, and each neighbour row names the kind from the reader's
- * side: `out` leaves the focus, `in` arrives at it.
+ * already draws. Prose links, canvas bonds and group bonds count, so a
+ * selected card's neighbourhood is what its authored wires say it is. The
+ * outline spine is structural and spans whole subsections, so it stays drawn
+ * but does not join the lens. Edges with both ends in the focus are inside
+ * the lens rather than neighbours, and each neighbour row names the kind from
+ * the reader's side: `out` leaves the focus, `in` arrives at it.
  *
  * `groupMembers` maps each group id to its effective member anchors (the
  * caller expands nested groups), which is how a selection of every card a
@@ -3045,6 +3160,9 @@ export function lensFocus(connectors = [], selected = [], groupMembers = {}) {
   const rows = [];
   for (const edge of connectors ?? []) {
     if (!edge?.from || !edge?.to) continue;
+    // The outline spine is the document's shape, not a relationship: counting
+    // it would keep a whole subsection bright around its heading.
+    if (edge.kind === 'contains') continue;
     const fromFocus = endpoints.has(edge.from);
     const toFocus = endpoints.has(edge.to);
     if (!fromFocus && !toFocus) continue;
@@ -3066,7 +3184,7 @@ export function lensFocus(connectors = [], selected = [], groupMembers = {}) {
       direction,
       kind: edge.kind ?? 'bond',
       relation: relation?.id ?? null,
-      label: lensEdgeLabel(edge, direction),
+      label: lensEdgeLabel(edge),
       note: typeof edge.note === 'string' ? edge.note : '',
     });
   }
@@ -3420,6 +3538,15 @@ export function navigatorProject(map, rect) {
     y: map.y + rect.y * map.scale,
     width: rect.width * map.scale,
     height: rect.height * map.scale,
+  };
+}
+
+/** A point in the navigator's box, back in canvas coordinates. */
+export function navigatorWorldPoint(map, x, y) {
+  if (!map || !(map.scale > 0) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return {
+    x: (x - map.x) / map.scale,
+    y: (y - map.y) / map.scale,
   };
 }
 

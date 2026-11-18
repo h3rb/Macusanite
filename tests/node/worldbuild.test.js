@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseNotes, serializeNotes, updateNote, updateIntro, addNote, removeNote,
+  parseNotes, serializeNotes, updateNote, updateIntro, addNote, nextNoteTitle, removeNote,
   noteEdges, hierarchyEdges, noteStats, countWords, DEFAULT_LEVEL,
   normalizeTag, addNoteTags, removeNoteTag, tagRecord, tagTarget,
   RELATION_KINDS, DEFAULT_RELATION, relationKind, relationKey,
@@ -14,7 +14,7 @@ import {
   ZOOM_MIN, ZOOM_MAX, CANVAS_SCHEMA, clampView, zoomViewAt, snapZoomView, anchorOfView, viewOfAnchor,
   ZOOM_DETAIL, ZOOM_FORGE, ZOOM_ANNOTATION, ZOOM_SUMMARY, ZOOM_COMPACT, ZOOM_ICON,
   zoomPercent, zoomLabel, zoomMode, applyZoomClasses,
-  navigatorMap, navigatorProject, navigatorViewport, navigatorModeLabel, readingOrder, coveredGroups,
+  navigatorMap, navigatorProject, navigatorViewport, navigatorWorldPoint, navigatorModeLabel, readingOrder, coveredGroups, tightestGroup,
   FORGE_ZOOM, isForgeZoom, syncForgeZoomClass, ICON_ZOOM, isIconZoom,
   DROP_MIN_PX, dropMembershipKind,
   canvasSnapshot, pruneSnapshotAnchors, renameAnchorIn,
@@ -30,7 +30,7 @@ import {
   lockedContentAnchors, sourceSectionRanges, enforceLockedSource, lockedRangeAt,
   connectedAnchors, lineageAnchors, anchorsInRect, curvesInRect, relationshipDepths, canvasSearch,
   connectorList, connectorKey, nextConnectorSelection, lensFocus, pathAnchors, effectiveRouting, cleanCardModes, cleanCardDims, cleanStackOrder, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
-  forgePalette, cleanForgePrefs, rememberForgeKind, toggleForgeFavourite,
+  forgePalette, cleanForgePrefs, rememberForgeKind, toggleForgeFavourite, FORGE_PAIR_LIMIT,
   cleanBondNotes, BOND_NOTE_MAX,
   CARD_MIN_W, CARD_MIN_H, CARD_MAX_W, CARD_MAX_H,
   arrangeCandidateOrigins, arrangeSwapPairs, findArrangeOrigin,
@@ -130,6 +130,15 @@ test('addNote appends a section and returns its index', () => {
   assert.equal(serializeNotes(next), '# Title\n\nBody.\n\n## Sieve series\n');
 });
 
+test('nextNoteTitle numbers fresh default notes without reusing a label', () => {
+  assert.equal(nextNoteTitle([]), 'New Note');
+  assert.equal(nextNoteTitle([{ title: 'New Note' }]), 'New Note 1');
+  assert.equal(nextNoteTitle([{ title: 'New note' }, { title: 'New Note 1' }]), 'New Note 2');
+  assert.equal(nextNoteTitle([{ title: 'New Note' }, { title: 'New Note 2' }]), 'New Note 1');
+  assert.equal(nextNoteTitle([{ title: 'New Note 2' }]), 'New Note 1');
+  assert.equal(nextNoteTitle([{ title: 'Unrelated' }]), 'New Note');
+});
+
 test('removeNote drops that note’s heading and prose', () => {
   const model = parseNotes('# Title\n\nBody.\n## Next\n\nMore.\n');
   const next = removeNote(model, 0);
@@ -199,6 +208,39 @@ test('relationship kinds run weakest-first, in inverse pairs', () => {
   assert.equal(last.id, 'foe');
   assert.ok(last.rank > secondLast.rank);
   assert.ok(secondLast.rank >= relationKind('controls').rank);
+});
+
+test('UI association kinds are available in the relationship table', () => {
+  const expected = [
+    ['subwindow', 'Subwindow'],
+    ['panel', 'Panel'],
+    ['sidebar', 'Sidebar'],
+    ['left-sidebar', 'Left Sidebar'],
+    ['right-sidebar', 'Right Sidebar'],
+    ['center', 'Center'],
+    ['canvas', 'Canvas'],
+    ['top-bar', 'Top Bar'],
+    ['status-bar', 'Status Bar'],
+    ['subpanel', 'Subpanel'],
+    ['wizard-start', 'Wizard Start'],
+    ['next', 'Next'],
+    ['prev', 'Prev'],
+    ['goto', 'Go To'],
+    ['wizard-end', 'Wizard End'],
+    ['dialog', 'Dialog'],
+    ['modal', 'Modal'],
+    ['floating', 'Floating'],
+    ['hud', 'HUD'],
+    ['element', 'Element'],
+  ];
+  for (const [id, label] of expected) {
+    const kind = relationKind(id);
+    assert.ok(kind, `missing UI association kind ${id}`);
+    assert.equal(kind.label, label);
+    assert.equal(kind.rank, relationKind('member-of').rank);
+  }
+  assert.equal(relationKind('next').inverse, 'prev');
+  assert.equal(relationKind('prev').inverse, 'next');
 });
 
 test('supplying and supplied by are asserted like any other kind', () => {
@@ -435,15 +477,16 @@ test('lensFocus lights a card, its wires and one hop away', () => {
   assert.equal(lens.active, true);
   assert.deepEqual([...lens.focus], ['a']);
   assert.deepEqual([...lens.groups], [], 'one card is not a two-card group');
-  assert.deepEqual([...lens.neighbours].sort(), ['b', 'c', 'd', 'p']);
+  assert.deepEqual([...lens.neighbours].sort(), ['b', 'c', 'd'],
+    'the outline spine does not add a neighbour');
   assert.deepEqual([...lens.neighbourGroups], ['g1']);
   assert.deepEqual([...lens.edges].sort(), [
     'bond:a->d',
-    'contains:p->a',
     'group:group:g1->a',
     'mention:c->a',
     'section:a->b',
   ]);
+  assert.equal(lens.edges.has('contains:p->a'), false, 'the spine stays out of the lens');
   // Only asserted kinds get a word on the canvas; the default stays unmarked.
   assert.deepEqual([...lens.asserted].sort(), ['bond:a->d', 'group:group:g1->a', 'mention:c->a']);
 
@@ -451,7 +494,6 @@ test('lensFocus lights a card, its wires and one hop away', () => {
   assert.deepEqual(rows, [
     'in c mention · ally',
     'in group:g1 ally · group',
-    'in p inside',
     'out b section link',
     'out d parent',
   ]);
@@ -465,6 +507,20 @@ test('lensFocus lights a card, its wires and one hop away', () => {
   assert.equal(empty.active, false);
   assert.equal(empty.rows.length, 0);
   assert.equal(empty.edges.size, 0);
+});
+
+test('lensFocus leaves the outline spine out of the focus', () => {
+  const model = parseNotes('# Hub\n\nSee [[#Other]].\n\n## Child\n\nBody.\n\n## Other\n\nBody.\n');
+  const connectors = connectorList(model, {}, {});
+  assert.ok(connectors.some((edge) => edge.kind === 'contains'), 'the spine is still a drawn connector');
+
+  const lens = lensFocus(connectors, ['hub'], {});
+  assert.deepEqual([...lens.neighbours], ['other'], 'only the prose link reaches out of the hub');
+  assert.deepEqual(lens.rows.map((row) => `${row.endpoint} ${row.label}`), ['other section link']);
+  assert.equal(lens.rows.some((row) => row.kind === 'contains'), false);
+  assert.equal(lens.edges.has('contains:hub->child'), false);
+  assert.equal(lens.edges.has('contains:hub->other'), false);
+  assert.equal(lens.edges.has('section:hub->other'), true);
 });
 
 test('lensFocus reads an exact selection of a group as that group', () => {
@@ -560,6 +616,22 @@ test('forgePalette shortlists pinned kinds and searches labels and ids', () => {
   assert.deepEqual(forgePalette({ prefs, query: 'nothing like this' }).rows, []);
   // A search keeps the shortlist order for what still matches.
   assert.deepEqual(forgePalette({ prefs, query: 'refer' }).rows.map((row) => row.id), ['references', 'referenced-by']);
+});
+
+test('rememberForgeKind keeps a pair remembered at the pair cap', () => {
+  const pairs = {};
+  for (let index = 0; index < FORGE_PAIR_LIMIT; index += 1) {
+    pairs[`t${index}->u${index}`] = 'ally';
+  }
+  const full = cleanForgePrefs({ pairs });
+  assert.equal(Object.keys(full.pairs).length, FORGE_PAIR_LIMIT);
+
+  const next = rememberForgeKind(full, { fromType: 'fresh', toType: 'pair', kind: 'foe' });
+  assert.equal(Object.keys(next.pairs).length, FORGE_PAIR_LIMIT);
+  assert.equal(next.pairs['fresh->pair'], 'foe', 'the pair just remembered survives the cap');
+  assert.equal(Object.keys(next.pairs).at(-1), 'fresh->pair', 'it is stored as the newest pair');
+  assert.equal('t0->u0' in next.pairs, false, 'the oldest pair is dropped instead');
+  assert.equal(next.pairs[`t${FORGE_PAIR_LIMIT - 1}->u${FORGE_PAIR_LIMIT - 1}`], 'ally');
 });
 
 test('cleanForgePrefs drops kinds and pairs it cannot trust', () => {
@@ -661,6 +733,34 @@ test('canvas snapshots and renames keep bond notes with their bonds', () => {
   const renamed = renameAnchorIn(JSON.parse(snap), 'b', 'b2');
   assert.deepEqual(renamed.relations, { 'a->gone': 'foe' });
   assert.deepEqual(renamed.bondNotes, { 'a->gone': 'Lost when the card left.' });
+});
+
+test('canvas snapshots carry deleted notes for prose undo and redo', () => {
+  const before = canvasSnapshot({
+    positions: { a: { x: 1, y: 2 }, b: { x: 3, y: 4 } },
+    notes: {
+      a: { index: 0, anchor: 'a', title: 'A', level: 1, body: 'First.' },
+      b: null,
+    },
+    noteOrder: ['a', 'b', 'c'],
+  });
+  const restored = restoreSnapshot(before, new Set(['a']), {});
+  assert.deepEqual(restored.notes, {
+    a: { index: 0, anchor: 'a', title: 'A', level: 1, body: 'First.' },
+    b: null,
+  });
+  assert.deepEqual(restored.noteOrder, ['a', 'b', 'c']);
+  // Pruning keeps the restorable cards' canvas data beside the prose payload.
+  const pruned = pruneSnapshotAnchors(JSON.parse(before), new Set());
+  assert.deepEqual(pruned.notes, {
+    a: { index: 0, anchor: 'a', title: 'A', level: 1, body: 'First.' },
+    b: null,
+  });
+  assert.deepEqual(pruned.noteOrder, ['a', 'b', 'c']);
+  assert.deepEqual(pruned.positions, { a: { x: 1, y: 2 } });
+  // Ordinary snapshots keep their old shape, so an older restore sees none.
+  assert.equal(restoreSnapshot(canvasSnapshot({ positions: { a: { x: 1, y: 2 } } }), new Set(['a']), {}).notes, undefined);
+  assert.equal(restoreSnapshot(canvasSnapshot({ positions: { a: { x: 1, y: 2 } } }), new Set(['a']), {}).noteOrder, undefined);
 });
 
 test('proseLinkBetween reports the markdown link a bond removal leaves behind', () => {
@@ -1520,6 +1620,31 @@ test('a marquee covers a group only when it takes every card in it', () => {
   assert.deepEqual(coveredGroups({}, ['one']), []);
 });
 
+test('tightestGroup picks the deepest group that holds the whole selection', () => {
+  const groups = {
+    outer: { id: 'outer', members: ['one'], children: ['inner'] },
+    inner: { id: 'inner', members: ['two', 'three'], children: ['leaf'] },
+    leaf: { id: 'leaf', members: ['four', 'five'] },
+    side: { id: 'side', members: ['six', 'seven'] },
+  };
+  assert.equal(tightestGroup(groups, ['four']).id, 'leaf');
+  assert.equal(tightestGroup(groups, ['four', 'five']).id, 'leaf');
+  assert.equal(tightestGroup(groups, ['two', 'four']).id, 'inner');
+  assert.equal(tightestGroup(groups, ['one', 'two']).id, 'outer');
+  assert.equal(tightestGroup(groups, ['six']).id, 'side');
+  assert.equal(tightestGroup(groups, ['four', 'six']), null);
+  assert.equal(tightestGroup(groups, []), null);
+  assert.equal(tightestGroup({}, ['one']), null);
+  // A wrapper that holds only a child has the same cards as that child; the
+  // nested group is still the tighter fit.
+  const wrapper = {
+    outer: { id: 'outer', members: [], children: ['inner'] },
+    inner: { id: 'inner', members: ['one', 'two'] },
+  };
+  assert.equal(tightestGroup(wrapper, ['one']).id, 'inner');
+  assert.equal(tightestGroup(wrapper, ['one', 'two']).id, 'inner');
+});
+
 test('readingOrder walks the canvas rows before its columns', () => {
   const items = [
     { key: 'c', x: 40, y: 260 },
@@ -1589,6 +1714,14 @@ test('the navigator fits the canvas into its box and frames the viewport', () =>
   assert.equal(navigatorMap({ minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }, 200, 100), null);
   assert.equal(navigatorViewport(map, null, 500, 400, 200, 100), null);
   assert.equal(navigatorViewport(map, { x: 0, y: 0, s: 0 }, 500, 400, 200, 100), null);
+
+  // A point in the map converts back to the canvas, the inverse of project.
+  assert.deepEqual(navigatorWorldPoint(map, 20, 10), { x: 0, y: 0 });
+  assert.deepEqual(navigatorWorldPoint(map, 100, 50), { x: 500, y: 250 });
+  const roundTrip = navigatorProject(map, { x: 320, y: 160, width: 0, height: 0 });
+  assert.deepEqual(navigatorWorldPoint(map, roundTrip.x, roundTrip.y), { x: 320, y: 160 });
+  assert.equal(navigatorWorldPoint(null, 20, 10), null);
+  assert.equal(navigatorWorldPoint(map, NaN, 10), null);
 });
 
 test('forge handoff keeps the boundary port and toggles only its class', () => {

@@ -271,7 +271,7 @@ The shell requires no display for `npm test`, `npm run build` or `cargo test`, w
 | `npm run build` | bundle the interface into `dist/` (`index.html` and `help.html`) | Node |
 | `npm run tauri:dev` | the real desktop window, hot reload | everything |
 | `npm run tauri:build` | release binary + installer, collected into `release/` (runs `npm run build` first) | everything |
-| `npm test` | 451 JavaScript tests (`node --test`, no browser needed) | Node |
+| `npm test` | 457 JavaScript tests (`node --test`, no browser needed) | Node |
 | `npm run test -- tests/node/mcp.test.js` | one suite | Node |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | 44 Rust tests (paths, scanning, writes, undo/redo, watcher) | Rust |
 | `npm run docs` | regenerate [docs/Help.md](docs/Help.md) from the catalogue | Node |
@@ -284,7 +284,7 @@ The shell requires no display for `npm test`, `npm run build` or `cargo test`, w
 
 Cargo can also be invoked directly. Passing `--manifest-path src-tauri/Cargo.toml` allows the usual `cargo build`, `cargo check` and `cargo clippy` commands to run from the repository root, and `cargo check` is much faster than a release build when the goal is only to verify that the Rust half compiles.
 
-Two browser checks run against the harness beside the Node suite. `?wb-smoke=zoom` drives the zoom contract and its hit targets at 100%, 60%, 20% and 12.5%; `?wb-perf=200|500|1000` measures the canvas performance budget — canvas DOM nodes at detail and icon zoom, wire paths at icon zoom, the first frame and the pan frame time — for a synthetic vein of that size, seeding it on the first load and reporting on the second. Both write their result to the console, to `window.wbZoomSmoke` / `window.wbPerf`, and to the page title, and both are development-only.
+Three browser checks run against the harness beside the Node suite. `?wb-smoke=zoom` drives the zoom contract and its hit targets at 100%, 60%, 20% and 12.5%; `?wb-smoke=lens` drives the relationship lens — selecting through a link port dims unrelated cards and wires, emphasises the card's own bonds, fills the inspector, jumps and re-focuses from a row, and raises the kind chips at 20% and 12.5%; `?wb-perf=200|500|1000` measures the canvas performance budget — canvas DOM nodes at detail and icon zoom, wire paths at icon zoom, the first frame and the pan frame time — for a synthetic vein of that size, seeding it on the first load and reporting on the second. All three write their result to the console, to `window.wbZoomSmoke` / `window.wbLensSmoke` / `window.wbPerf`, and to the page title, and all three are development-only.
 
 ### Building the portable binary without Node
 
@@ -311,7 +311,7 @@ A build that produced files is not necessarily a working installation. The follo
 
 ```bash
 # 1. the logic (no display, no Rust, ~3 s)
-npm test                                   # expect: 451 pass, 0 fail
+npm test                                   # expect: 457 pass, 0 fail
 npm run docs:check                         # expect: docs in sync
 
 # 2. the Rust half

@@ -12,7 +12,7 @@ import { el, clear, appendAll, askText, askConfirm } from './dom.js';
 import { renderMarkdown, renderMermaidIn } from './markdown.js';
 import { searchIcons } from '../lib/iconSet.js';
 import {
-  parseNotes, serializeNotes, updateNote, updateIntro, addNote, removeNote,
+  parseNotes, serializeNotes, updateNote, updateIntro, addNote, nextNoteTitle, removeNote,
   noteEdges, noteStats, countWords, DEFAULT_LEVEL,
   normalizeTag, addNoteTags, removeNoteTag, tagRecord, tagTarget,
   RELATION_KINDS, DEFAULT_RELATION, relationOf, relationKind, relationKey, groupEndpoint,
@@ -23,8 +23,8 @@ import {
   parseTablePaste, pasteTableData, moveTableRow, setTableColumnAlign, tableRowOrder,
   TABLE_ALIGNMENTS, TABLE_MAX_COLUMNS, TABLE_MAX_ROWS, TABLE_HEADER_MAX_LENGTH, TABLE_CELL_MAX_LENGTH,
   dropMembershipKind,
-  clampView, snapZoomView, zoomMode, applyZoomClasses, fitView, centreView, readingOrder, coveredGroups,
-  navigatorMap, navigatorProject, navigatorViewport, navigatorModeLabel, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, arrangeCandidateOrigins, arrangeSwapPairs, findArrangeOrigin, anchorOfView, viewOfAnchor,
+  clampView, snapZoomView, zoomMode, applyZoomClasses, fitView, centreView, readingOrder, coveredGroups, tightestGroup,
+  navigatorMap, navigatorProject, navigatorViewport, navigatorWorldPoint, navigatorModeLabel, snapDelta, rectsOverlap, resolveOverlaps, resizePush, canvasHealth, layoutSelection, arrangeCandidateOrigins, arrangeSwapPairs, findArrangeOrigin, anchorOfView, viewOfAnchor,
   normalizeRouting, prepareConnectorGeometry, cleanAnnotations, makeAnnotationId,
   placeConnectorLabels,
   NODE_IMAGES_DIR, isInlineImage, nodeImageRef, nodeImageMetaName,
@@ -193,7 +193,8 @@ export function createWorldbuildPanel({ app, root }) {
     width: String(NAV_W),
     height: String(NAV_H),
     role: 'img',
-    'aria-label': 'Canvas overview with the viewport drawn on it',
+    title: 'Click or drag to move the camera',
+    'aria-label': 'Canvas overview with the viewport drawn on it; click or drag to move the camera',
   });
   const navViewport = svgNode('rect', { class: 'wb-nav-viewport', x: 0, y: 0, width: 0, height: 0, rx: 2 });
   const navFitSelection = el('button', {
@@ -512,7 +513,7 @@ export function createWorldbuildPanel({ app, root }) {
   // whether it has grown past a click.
   let marquee = null;
   // A marquee changes the count on every frame, so it stays quiet and says
-  // the result once, when the pointer comes up.
+  // the result once, when the gesture ends.
   let selectionQuiet = false;
   let selectMenuEl = null;
   let arrangeMenuEl = null;
@@ -1017,15 +1018,16 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   function moreMenuRows() {
+    const fit = selectionFitBounds();
     return [
       el('div', { class: 'wb-menu-label', text: 'Canvas' }),
       moreItem('History…', 'Browse this vein’s canvas history — undo or redo several steps at once', () => openFromMore(toggleHistory)),
       moreItem('Health…', 'Cards with nothing connected to them, and groups too thin to mean anything', () => openFromMore(toggleHealth)),
       moreItem('Quick select…', 'Connected, ancestors, descendants, same type or colour, group members, pinned, locked, untyped, imageless', () => openFromMore(toggleSelectMenu)),
-      moreItem('Fit selection', 'Zoom to fit the selected cards', () => {
+      moreItem('Fit selection', fitSelectionTitle(fit), () => {
         closeMoreMenu({ returnFocus: false });
         zoomToFitSelection();
-      }, { disabled: !selected.size, attrs: { 'data-fit-selection': '' } }),
+      }, { disabled: !fit, attrs: { 'data-fit-selection': '' } }),
       moreItem('Push overlaps aside', 'While dragging, move free cards out of the way; pinned and locked cards stay put', () => togglePushAside(), { kind: 'pushAside' }),
       el('div', { class: 'wb-menu-label', text: 'This vein' }),
       moreItem(marked ? 'Unmark Worldbuilding' : 'Mark as Worldbuilding', marked
@@ -1524,12 +1526,23 @@ export function createWorldbuildPanel({ app, root }) {
 
   /* -------------------------------------------------------------- history -- */
 
+  // Notes whose absence belongs to a deletion step still on the history
+  // stacks. Every snapshot while they are absent records that absence, so a
+  // redo can take the prose away again after an undo restored it.
+  let noteRemovalAnchors = new Set();
+
   // The canvas state an undo step puts back: every slice the canvas owns is
   // in it, so an undo of any change — a drag, an arrange, a type — brings the
   // whole record back as it was. The snapshots are pruned at each rename and
   // at each restore (see the lib helpers they call).
-  function canvasSnapshot(includeTables = false, tableAnchors = null) {
+  function canvasSnapshot(includeTables = false, tableAnchors = null, noteAnchors = null) {
     const anchors = tableAnchors ? new Set(tableAnchors) : null;
+    const noteKeys = new Set([...(noteAnchors ?? []), ...noteRemovalAnchors]);
+    let notes = null;
+    if (noteKeys.size) {
+      const byAnchor = new Map((model?.notes ?? []).map((note) => [note.anchor, note]));
+      notes = Object.fromEntries([...noteKeys].map((anchor) => [anchor, byAnchor.get(anchor) ?? null]));
+    }
     return snapshotCanvas({
       positions: Object.fromEntries(positions),
       groups,
@@ -1555,6 +1568,7 @@ export function createWorldbuildPanel({ app, root }) {
           .filter((note) => !anchors || anchors.has(note.anchor))
           .map((note) => [note.anchor, note.body])),
       } : {}),
+      ...(notes ? { notes, noteOrder: (model?.notes ?? []).map((note) => note.anchor) } : {}),
       view: { ...view },
     });
   }
@@ -1701,7 +1715,20 @@ export function createWorldbuildPanel({ app, root }) {
     // existed leave them be, and the camera comes back with the rest too:
     // a step that moved it (Arrange resets it) returns with the view the
     // user was looking through.
-    const saved = restoreSnapshot(snap, new Set((model?.notes ?? []).map((note) => note.anchor)), {
+    let noteChanges = null;
+    try {
+      const raw = typeof snap === 'string' ? JSON.parse(snap) : snap;
+      const notes = raw?.notes;
+      if (notes && typeof notes === 'object' && !Array.isArray(notes)) noteChanges = notes;
+    } catch {
+      /* a malformed step has no prose to restore */
+    }
+    const live = new Set((model?.notes ?? []).map((note) => note.anchor));
+    for (const [anchor, note] of Object.entries(noteChanges ?? {})) {
+      if (note) live.add(anchor);
+      else live.delete(anchor);
+    }
+    const saved = restoreSnapshot(snap, live, {
       types: nodeTypes,
       fields: fieldValues,
       colors: nodeColors,
@@ -1718,6 +1745,65 @@ export function createWorldbuildPanel({ app, root }) {
       view,
     });
     if (!saved) return;
+    let notesRewritten = false;
+    const savedNotes = saved.notes && typeof saved.notes === 'object' && !Array.isArray(saved.notes)
+      ? saved.notes
+      : null;
+    if (savedNotes) {
+      let notes = [...(model?.notes ?? [])];
+      let changed = false;
+      for (const [anchor, note] of Object.entries(savedNotes)) {
+        if (note) continue;
+        const index = notes.findIndex((currentNote) => currentNote.anchor === anchor);
+        if (index >= 0) {
+          notes.splice(index, 1);
+          changed = true;
+        }
+        noteRemovalAnchors.add(anchor);
+      }
+      const savedNoteOrder = Array.isArray(saved.noteOrder)
+        ? saved.noteOrder.filter((anchor) => typeof anchor === 'string')
+        : [];
+      const addedEntries = new Map(
+        Object.entries(savedNotes).filter(([, note]) => note && typeof note === 'object'),
+      );
+      const additions = [
+        ...savedNoteOrder.filter((anchor) => addedEntries.has(anchor)),
+        ...[...addedEntries.keys()].filter((anchor) => !savedNoteOrder.includes(anchor)),
+      ];
+      for (const anchor of additions) {
+        const note = addedEntries.get(anchor);
+        if (notes.some((currentNote) => currentNote.anchor === anchor)) {
+          noteRemovalAnchors.delete(anchor);
+          continue;
+        }
+        let at = notes.length;
+        const storedAt = savedNoteOrder.indexOf(anchor);
+        if (storedAt >= 0) {
+          // Put the note back between the same neighbours it had before the
+          // deletion. Earlier restored cards are already in `notes`, so a run
+          // of restored sections keeps its original order.
+          const previous = savedNoteOrder.slice(0, storedAt).reverse()
+            .find((candidate) => notes.some((currentNote) => currentNote.anchor === candidate));
+          if (previous) {
+            at = notes.findIndex((currentNote) => currentNote.anchor === previous) + 1;
+          } else {
+            const next = savedNoteOrder.slice(storedAt + 1)
+              .find((candidate) => notes.some((currentNote) => currentNote.anchor === candidate));
+            if (next) at = notes.findIndex((currentNote) => currentNote.anchor === next);
+          }
+        } else if (Number.isInteger(note.index)) {
+          at = Math.max(0, Math.min(notes.length, note.index));
+        }
+        notes.splice(at, 0, { ...note, anchor, index: at });
+        noteRemovalAnchors.delete(anchor);
+        changed = true;
+      }
+      if (changed) {
+        model = { ...model, notes: notes.map((note, index) => ({ ...note, index })) };
+        notesRewritten = true;
+      }
+    }
     positions = new Map(Object.entries(saved.positions));
     groups = saved.groups;
     relations = saved.relations;
@@ -1749,7 +1835,7 @@ export function createWorldbuildPanel({ app, root }) {
       model = updateNote(model, index, { body: String(body ?? '') });
       tablesRewritten = true;
     }
-    if (tablesRewritten) commit();
+    if (notesRewritten || tablesRewritten) commit();
     // Anchors come and go with the steps; a selection would outlive them.
     selected = new Set();
     app.restoreWorldCanvas(currentPath, {
@@ -1787,10 +1873,21 @@ export function createWorldbuildPanel({ app, root }) {
     }
   }
 
+  function stepNoteAnchors(entry) {
+    try {
+      const notes = JSON.parse(entry?.snap ?? 'null')?.notes;
+      return notes && typeof notes === 'object' && !Array.isArray(notes) ? Object.keys(notes) : [];
+    } catch {
+      return [];
+    }
+  }
+
   function undoCanvas() {
     const stack = historyFor(currentPath);
-    const anchors = stepTableAnchors(stack.past[stack.past.length - 1]);
-    const jumped = historyJump(stack, 'undo', 1, canvasSnapshot(anchors.length > 0, anchors));
+    const top = stack.past[stack.past.length - 1];
+    const anchors = stepTableAnchors(top);
+    const noteAnchors = stepNoteAnchors(top);
+    const jumped = historyJump(stack, 'undo', 1, canvasSnapshot(anchors.length > 0, anchors, noteAnchors));
     if (!jumped) return;
     stack.past = jumped.past;
     stack.future = jumped.future;
@@ -1801,8 +1898,10 @@ export function createWorldbuildPanel({ app, root }) {
 
   function redoCanvas() {
     const stack = historyFor(currentPath);
-    const anchors = stepTableAnchors(stack.future[stack.future.length - 1]);
-    const jumped = historyJump(stack, 'redo', 1, canvasSnapshot(anchors.length > 0, anchors));
+    const top = stack.future[stack.future.length - 1];
+    const anchors = stepTableAnchors(top);
+    const noteAnchors = stepNoteAnchors(top);
+    const jumped = historyJump(stack, 'redo', 1, canvasSnapshot(anchors.length > 0, anchors, noteAnchors));
     if (!jumped) return;
     stack.past = jumped.past;
     stack.future = jumped.future;
@@ -1835,7 +1934,10 @@ export function createWorldbuildPanel({ app, root }) {
     const stack = historyFor(currentPath);
     const top = kind === 'undo' ? stack.past[stack.past.length - 1] : stack.future[stack.future.length - 1];
     const anchors = stepTableAnchors(top);
-    const jumped = historyJump(stack, kind, index + 1, canvasSnapshot(anchors.length > 0, anchors));
+    const count = index + 1;
+    const crossed = kind === 'undo' ? stack.past.slice(-count) : stack.future.slice(-count);
+    const noteAnchors = [...new Set(crossed.flatMap(stepNoteAnchors))];
+    const jumped = historyJump(stack, kind, count, canvasSnapshot(anchors.length > 0, anchors, noteAnchors));
     if (!jumped) return;
     stack.past = jumped.past;
     stack.future = jumped.future;
@@ -3691,7 +3793,7 @@ export function createWorldbuildPanel({ app, root }) {
 
   function addNewNote() {
     if (!model) return;
-    const added = addNote(model, { title: 'New note', level: DEFAULT_LEVEL });
+    const added = addNote(model, { title: nextNoteTitle(model.notes), level: DEFAULT_LEVEL });
     model = added.model;
     commit();
     build();
@@ -3704,7 +3806,7 @@ export function createWorldbuildPanel({ app, root }) {
    */
   function createLinkedNote(fromIndex) {
     if (!model) return;
-    const added = addNote(model, { title: 'New note', level: DEFAULT_LEVEL });
+    const added = addNote(model, { title: nextNoteTitle(model.notes), level: DEFAULT_LEVEL });
     model = added.model;
     const target = model.notes[added.index];
     const live = model.notes[fromIndex];
@@ -3978,8 +4080,9 @@ export function createWorldbuildPanel({ app, root }) {
     } else {
       // Fitting a hidden member fits the summary that represents it.
       for (const group of summaryGroups()) {
-        if ([...effectiveMembers(group)].some((anchor) => wantedAnchors.has(anchor))) {
-          expand(summaryRect(group));
+        const summary = summaryRect(group);
+        if (summary && [...effectiveMembers(group)].some((anchor) => wantedAnchors.has(anchor))) {
+          expand(summary);
         }
       }
     }
@@ -4031,13 +4134,34 @@ export function createWorldbuildPanel({ app, root }) {
     showZoomHud();
   }
 
-  /** Fit just the Ctrl-clicked selection into the viewport. */
-  function zoomToFitSelection() {
+  /**
+   * What Fit selection can frame: the selected cards that are on screen, plus
+   * the summary of any collapsed group holding one of the selected cards. A
+   * hidden member has no rect of its own, so its summary is the visible surface
+   * that stands in for it. Null when the selection has nothing visible to fit.
+   */
+  function selectionFitBounds() {
     const indexes = (model?.notes ?? [])
       .map((note, index) => (selected.has(note.anchor) ? index : -1))
       .filter((index) => index >= 0);
-    if (!indexes.length) return;
-    const fitted = fitView(contentBounds(indexes), stage.clientWidth, stage.clientHeight);
+    return indexes.length ? contentBounds(indexes) : null;
+  }
+
+  function fitSelectionTitle(bounds) {
+    if (bounds) return 'Frame the selected cards';
+    return selected.size
+      ? 'The selected cards are hidden inside a collapsed group with no summary — expand the group to fit them'
+      : 'Select cards to fit them';
+  }
+
+  /** Fit just the Ctrl-clicked selection into the viewport. */
+  function zoomToFitSelection() {
+    const bounds = selectionFitBounds();
+    if (!bounds) {
+      app.toast(fitSelectionTitle(bounds), 'info', 2600);
+      return;
+    }
+    const fitted = fitView(bounds, stage.clientWidth, stage.clientHeight);
     if (!fitted) return;
     view = fitted;
     persistView();
@@ -4046,20 +4170,18 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
-   * The group a selection stands for: its exact members when the selection is
-   * that whole group, otherwise the group holding the first selected card.
-   * The same reading the lens uses, so the two never disagree.
+   * The group a selection stands for: the tightest group holding all of it,
+   * so a nested child wins over the outer group that also contains its cards.
+   * When the selection spans separate groups, the first group holding one of
+   * them stands in, as before.
    */
   function navigatorGroup() {
     if (!selected.size) return null;
-    const chosen = [...selected];
-    let holder = null;
-    for (const group of Object.values(groups ?? {})) {
-      const members = effectiveMembers(group);
-      if (members.size === chosen.length && chosen.every((anchor) => members.has(anchor))) return group;
-      if (!holder && chosen.some((anchor) => members.has(anchor))) holder = group;
-    }
-    return holder;
+    return tightestGroup(groups, selected)
+      ?? Object.values(groups ?? {}).find(
+        (group) => [...effectiveMembers(group)].some((anchor) => selected.has(anchor)),
+      )
+      ?? null;
   }
 
   /**
@@ -4138,6 +4260,55 @@ export function createWorldbuildPanel({ app, root }) {
     syncNavigatorViewport();
   }
 
+  /** Centre the camera on one point in the navigator's box. */
+  function moveCameraToNavigator(event) {
+    if (!navGeometry) return false;
+    const rect = navMap.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return false;
+    const point = navigatorWorldPoint(
+      navGeometry,
+      ((event.clientX - rect.left) / rect.width) * NAV_W,
+      ((event.clientY - rect.top) / rect.height) * NAV_H,
+    );
+    if (!point) return false;
+    const centred = centreView(
+      { x: point.x, y: point.y, width: 0, height: 0 },
+      stage.clientWidth, stage.clientHeight, view.s,
+    );
+    if (!centred) return false;
+    view = centred;
+    scheduleView();
+    return true;
+  }
+
+  // The map is a way to steer as well as to read: a press centres the camera
+  // where it landed, and a drag keeps following the pointer until it lifts.
+  let navDrag = null;
+  navMap.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    navDrag = event.pointerId;
+    navMap.classList.add('is-dragging');
+    moveCameraToNavigator(event);
+  });
+  window.addEventListener('pointermove', (event) => {
+    if (navDrag === null || event.pointerId !== navDrag) return;
+    event.preventDefault();
+    moveCameraToNavigator(event);
+  }, { passive: false });
+  const endNavigatorDrag = (event) => {
+    if (navDrag === null || event.pointerId !== navDrag) return;
+    navDrag = null;
+    navMap.classList.remove('is-dragging');
+    // Apply the last position at once (clamped), then save it once for the
+    // whole gesture rather than on every move.
+    applyView();
+    persistView();
+  };
+  window.addEventListener('pointerup', endNavigatorDrag);
+  window.addEventListener('pointercancel', endNavigatorDrag);
+
   /** The viewport rectangle on the map, and the drawing mode beside it. */
   function syncNavigatorViewport() {
     const mode = zoomMode(view.s);
@@ -4165,7 +4336,9 @@ export function createWorldbuildPanel({ app, root }) {
 
   /** Offer only the framings that can do something. */
   function syncNavigatorActions() {
-    navFitSelection.disabled = !selected.size;
+    const fit = selectionFitBounds();
+    navFitSelection.disabled = !fit;
+    navFitSelection.title = fitSelectionTitle(fit);
     const group = navigatorGroup();
     navFitGroup.disabled = !group;
     navFitGroup.title = group
@@ -5021,7 +5194,12 @@ export function createWorldbuildPanel({ app, root }) {
     (model?.notes ?? []).forEach((note, index) => {
       cardEls[index]?.classList.toggle('is-selected', selected.has(note.anchor));
     });
-    moreMenuEl?.querySelector('[data-fit-selection]')?.toggleAttribute('disabled', !selected.size);
+    const fitButton = moreMenuEl?.querySelector('[data-fit-selection]');
+    if (fitButton) {
+      const fit = selectionFitBounds();
+      fitButton.toggleAttribute('disabled', !fit);
+      fitButton.title = fitSelectionTitle(fit);
+    }
     syncSelectionBar();
     syncLens();
     renderInspector();
@@ -5144,9 +5322,9 @@ export function createWorldbuildPanel({ app, root }) {
 
   /**
    * One direction of the lens as inspector rows: each neighbour's title,
-   * colour and the kind of wire that reaches it. Prose links, canvas bonds,
-   * group bonds and the outline spine all arrive through the same lens, so a
-   * lone card and a whole group are read the same way.
+   * colour and the kind of wire that reaches it. Prose links, canvas bonds and
+   * group bonds arrive through the lens; the outline spine stays a drawn
+   * background, so a lone card and a whole group are read the same way.
    */
   function lensRowEntries(direction) {
     if (!lensState?.active || !model) return [];
@@ -5219,6 +5397,7 @@ export function createWorldbuildPanel({ app, root }) {
     const link = el('button', {
       class: 'wb-inspector-link',
       type: 'button',
+      dataset: { endpoint: entry.endpoint },
       title: `Jump to “${entry.title}” — ${entry.label}${notes.length ? `\n“${notes.join('” “')}”` : ''}`,
       onclick: () => jumpAlong(entry),
     }, [
@@ -6316,8 +6495,8 @@ export function createWorldbuildPanel({ app, root }) {
    * Delete every selected card, asking once with the counts on the button.
    * The same bookkeeping as a card's own ✕: the prose leaves the vein's
    * markdown and the card's bonds, fields, pin, colour, image and group box go
-   * with it. The markdown is the record of a deletion, so no canvas step is
-   * written — the canvas history would not have the prose to restore.
+   * with it. The whole set is one canvas step, with the removed notes carried
+   * in its snapshot so undo can put both the prose and the cards back.
    */
   async function deleteSelectedNotes() {
     if (!currentPath || !model) return;
@@ -6330,13 +6509,17 @@ export function createWorldbuildPanel({ app, root }) {
     }
     const confirmed = await askConfirm({
       title: `Delete ${deletable.length} note${deletable.length === 1 ? '' : 's'}?`,
-      message: `Their prose is removed from this vein's markdown${lockedCount ? `; ${lockedCount} locked card${lockedCount === 1 ? ' stays' : 's stay'} on the canvas` : ''}.`,
+      message: `Their prose is removed from this vein's markdown. One undo restores the cards and their prose${lockedCount ? `; ${lockedCount} locked card${lockedCount === 1 ? ' stays' : 's stay'} on the canvas` : ''}.`,
       confirmLabel: `Delete ${deletable.length}`,
     });
     if (!confirmed) {
       announce('Delete cancelled');
       return;
     }
+    // Capture the prose before the loop removes it: the step's undo restores
+    // these note objects, while the after-state records their absence for a
+    // redo. The snapshot is taken before the canvas record loses their boxes.
+    const before = canvasSnapshot(false, null, deletable);
     for (const anchor of deletable) {
       const index = (model?.notes ?? []).findIndex((note) => note.anchor === anchor);
       if (index < 0) continue;
@@ -6353,7 +6536,11 @@ export function createWorldbuildPanel({ app, root }) {
       groups = app.dropWorldGroups(currentPath, anchor) ?? groups;
     }
     setSelection([]);
+    noteRemovalAnchors = new Set([...noteRemovalAnchors, ...deletable]);
+    // Prune the older steps before pushing this one: its snapshot deliberately
+    // keeps the cards that are no longer on the canvas.
     pruneHistorySnapshots(new Set((model?.notes ?? []).map((liveNote) => liveNote.anchor)));
+    pushStep(before, `Delete ${deletable.length} note${deletable.length === 1 ? '' : 's'}`);
     savePositions();
     commit();
     build();
@@ -8716,6 +8903,138 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
+   * A searchable, sectioned option list shared by the relate target step and
+   * the kind palette: one query box, one active row, and the same
+   * arrow/digit/Enter shortcuts. The caller supplies the rows for a query, the
+   * row markup, and what choosing a row means.
+   */
+  function filteredPicker({
+    searchClass,
+    searchLabel,
+    placeholder,
+    listClass,
+    listId,
+    listLabel,
+    sectionClass,
+    emptyClass,
+    emptyText,
+    rowsFor,
+    sectionLabel = (section) => section,
+    rowClass,
+    optionId,
+    rowAttrs = () => ({}),
+    rowContents,
+    onChoose,
+    onStar = null,
+    initialActive = 0,
+  }) {
+    let rows = [];
+    let active = initialActive;
+    const search = el('input', {
+      class: searchClass,
+      type: 'text',
+      role: 'combobox',
+      'aria-expanded': 'true',
+      'aria-controls': listId,
+      'aria-autocomplete': 'list',
+      'aria-label': searchLabel,
+      placeholder,
+      autocomplete: 'off',
+      spellcheck: 'false',
+      onkeydown: (event) => keydown(event),
+      oninput: () => refresh(),
+    });
+    const list = el('div', {
+      class: listClass,
+      id: listId,
+      role: 'listbox',
+      'aria-label': listLabel,
+    });
+
+    function refresh(activeId = null) {
+      rows = rowsFor(search.value) ?? [];
+      if (activeId !== null) {
+        const index = rows.findIndex((row) => row.id === activeId);
+        active = index >= 0 ? index : Math.min(active, Math.max(0, rows.length - 1));
+      } else if (active >= rows.length) {
+        active = Math.max(0, rows.length - 1);
+      }
+      list.replaceChildren();
+      let section = null;
+      rows.forEach((row, index) => {
+        if (row.section !== section) {
+          section = row.section;
+          list.append(el('div', { class: sectionClass, text: sectionLabel(section) }));
+        }
+        list.append(el('div', {
+          class: `${rowClass(row, index)}${index === active ? ' is-active' : ''}`,
+          id: optionId(row, index),
+          role: 'option',
+          'aria-selected': index === active ? 'true' : 'false',
+          ...rowAttrs(row, index),
+          onclick: () => choose(row),
+          onpointerenter: () => {
+            active = index;
+            syncActive();
+          },
+        }, rowContents(row, index)));
+      });
+      if (!rows.length) list.append(el('p', { class: emptyClass, text: emptyText }));
+      syncActive();
+    }
+
+    function syncActive() {
+      const items = [...list.querySelectorAll('[role="option"]')];
+      items.forEach((node, index) => {
+        const on = index === active;
+        node.classList.toggle('is-active', on);
+        node.setAttribute('aria-selected', on ? 'true' : 'false');
+        if (on) node.scrollIntoView({ block: 'nearest' });
+      });
+      const row = rows[active];
+      if (row) search.setAttribute('aria-activedescendant', optionId(row, active));
+      else search.removeAttribute('aria-activedescendant');
+    }
+
+    function choose(row) {
+      if (row) onChoose(row);
+    }
+
+    function keydown(event) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        if (!rows.length) return;
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        active = (active + step + rows.length) % rows.length;
+        syncActive();
+        return;
+      }
+      if (event.key === 'Enter') {
+        const row = rows[active];
+        if (!row) return;
+        event.preventDefault();
+        choose(row);
+        return;
+      }
+      // Digits can never occur in a kind's name, so they are always shortcuts.
+      if (/^[1-9]$/.test(event.key) && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        const row = rows[Number(event.key) - 1];
+        if (!row) return;
+        event.preventDefault();
+        choose(row);
+        return;
+      }
+      if (onStar && event.key === '*' && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        const row = rows[active];
+        if (row) onStar(row);
+      }
+    }
+
+    return { search, list, refresh };
+  }
+
+  /**
    * The kind step of forging, wherever it was started: a drag's release, the
    * keyboard's relate flow, or a menu. Nineteen kinds would be a long list, so
    * it is a compact palette — the kind last used for this pair of types is
@@ -8736,34 +9055,64 @@ export function createWorldbuildPanel({ app, root }) {
     const fromType = endpointTypeId(from);
     const toType = endpointTypeId(to);
     let prefs = app.forgePrefs();
-    let rows = [];
     // A bond that already exists opens on the kind it has; otherwise the pair's
     // remembered kind is one Enter away.
     const opening = forgePalette({ fromType, toType, prefs }).rows;
-    let active = Math.max(0, current
+    const initialActive = Math.max(0, current
       ? opening.findIndex((row) => row.id === current.id)
       : opening.findIndex((row) => row.remembered));
-
-    const search = el('input', {
-      class: 'wb-forge-search',
-      type: 'text',
-      role: 'combobox',
-      'aria-expanded': 'true',
-      'aria-controls': 'wb-forge-listbox',
-      'aria-autocomplete': 'list',
-      'aria-label': 'Find a relationship kind',
+    const picker = filteredPicker({
+      searchClass: 'wb-forge-search',
+      searchLabel: 'Find a relationship kind',
       placeholder: 'Find a kind…',
-      autocomplete: 'off',
-      spellcheck: 'false',
-      onkeydown: (event) => paletteKeydown(event),
-      oninput: () => renderRows(),
+      listClass: 'wb-forge-list',
+      listId: 'wb-forge-listbox',
+      listLabel: 'Relationship kinds',
+      sectionClass: 'wb-forge-section',
+      emptyClass: 'wb-forge-empty',
+      emptyText: 'No kind matches that.',
+      rowsFor: (query) => forgePalette({ fromType, toType, prefs, query }).rows,
+      sectionLabel: (section) => ({
+        remembered: 'Last used for this pair',
+        favourite: 'Favourites',
+        recent: 'Recent',
+        other: 'All kinds',
+      })[section],
+      rowClass: (row) => `wb-forge-row${row.favourite ? ' is-favourite' : ''}`,
+      optionId: (row) => `wb-forge-option-${row.id}`,
+      rowAttrs: (row) => ({
+        title: row.remembered
+          ? `Last kind forged from ${fromType} to ${toType}`
+          : `Assert “${fromTitle}” ${row.label.toLowerCase()} “${toTitle}”`,
+        dataset: { kind: row.id },
+      }),
+      rowContents: (row, index) => [
+        el('span', { class: 'wb-forge-number', 'aria-hidden': 'true', text: index < 9 ? String(index + 1) : '' }),
+        el('span', { class: 'wb-forge-label', text: row.label }),
+        row.remembered ? el('span', { class: 'wb-forge-tag', text: 'last' }) : null,
+        row.recent && !row.remembered ? el('span', { class: 'wb-forge-tag', text: 'recent' }) : null,
+        // A star on every row, not only the pinned ones: it is the mouse's way
+        // to pin, and it must not choose the kind the way the row does.
+        el('button', {
+          class: `wb-forge-star${row.favourite ? ' is-favourite' : ''}`,
+          type: 'button',
+          tabindex: '-1',
+          icon: false,
+          'aria-pressed': row.favourite ? 'true' : 'false',
+          'aria-label': `${row.favourite ? 'Unpin' : 'Pin'} ${row.label} ${row.favourite ? 'from' : 'to'} favourites`,
+          title: `${row.favourite ? 'Unpin' : 'Pin'} ${row.label.toLowerCase()} ${row.favourite ? 'from' : 'to'} favourites`,
+          onclick: (event) => {
+            event.stopPropagation();
+            toggleFavourite(row.id);
+          },
+        }, [row.favourite ? '★' : '☆']),
+        current?.id === row.id ? el('span', { class: 'wb-menu-check', 'aria-hidden': 'true', text: '✓' }) : null,
+      ],
+      onChoose: (row) => choose(row.id),
+      onStar: (row) => toggleFavourite(row.id),
+      initialActive,
     });
-    const list = el('div', {
-      class: 'wb-forge-list',
-      id: 'wb-forge-listbox',
-      role: 'listbox',
-      'aria-label': 'Relationship kinds',
-    });
+    const { search, list } = picker;
     const panel = el('div', {
       class: 'wb-menu wb-forge-palette',
       role: 'dialog',
@@ -8787,67 +9136,6 @@ export function createWorldbuildPanel({ app, root }) {
       ]),
     ]);
 
-    const sectionLabel = (section) => ({
-      remembered: 'Last used for this pair',
-      favourite: 'Favourites',
-      recent: 'Recent',
-      other: 'All kinds',
-    })[section];
-
-    function rowNode(row, index) {
-      return el('div', {
-        class: `wb-forge-row${index === active ? ' is-active' : ''}${row.favourite ? ' is-favourite' : ''}`,
-        id: `wb-forge-option-${row.id}`,
-        role: 'option',
-        'aria-selected': index === active ? 'true' : 'false',
-        title: row.remembered
-          ? `Last kind forged from ${fromType} to ${toType}`
-          : `Assert “${fromTitle}” ${row.label.toLowerCase()} “${toTitle}”`,
-        dataset: { kind: row.id },
-        onclick: () => choose(row.id),
-        onpointerenter: () => {
-          active = index;
-          syncActive();
-        },
-      }, [
-        el('span', { class: 'wb-forge-number', 'aria-hidden': 'true', text: index < 9 ? String(index + 1) : '' }),
-        el('span', { class: 'wb-forge-label', text: row.label }),
-        row.remembered ? el('span', { class: 'wb-forge-tag', text: 'last' }) : null,
-        row.recent && !row.remembered ? el('span', { class: 'wb-forge-tag', text: 'recent' }) : null,
-        row.favourite ? el('span', { class: 'wb-forge-star', 'aria-hidden': 'true', text: '★' }) : null,
-        current?.id === row.id ? el('span', { class: 'wb-menu-check', 'aria-hidden': 'true', text: '✓' }) : null,
-      ]);
-    }
-
-    function renderRows() {
-      rows = forgePalette({ fromType, toType, prefs, query: search.value }).rows;
-      if (active >= rows.length) active = Math.max(0, rows.length - 1);
-      list.replaceChildren();
-      let section = '';
-      rows.forEach((row, index) => {
-        if (row.section !== section) {
-          section = row.section;
-          list.append(el('div', { class: 'wb-forge-section', text: sectionLabel(section) }));
-        }
-        list.append(rowNode(row, index));
-      });
-      if (!rows.length) list.append(el('p', { class: 'wb-forge-empty', text: 'No kind matches that.' }));
-      syncActive();
-    }
-
-    function syncActive() {
-      const items = [...list.querySelectorAll('.wb-forge-row')];
-      items.forEach((node, index) => {
-        const on = index === active;
-        node.classList.toggle('is-active', on);
-        node.setAttribute('aria-selected', on ? 'true' : 'false');
-        if (on) node.scrollIntoView({ block: 'nearest' });
-      });
-      const row = rows[active];
-      if (row) search.setAttribute('aria-activedescendant', `wb-forge-option-${row.id}`);
-      else search.removeAttribute('aria-activedescendant');
-    }
-
     function choose(kindId) {
       prefs = app.rememberForgeKind(fromType, toType, kindId);
       closeMenu({ returnFocus: false });
@@ -8855,41 +9143,12 @@ export function createWorldbuildPanel({ app, root }) {
       else assertCanvasBond(from, to, kindId, { replaceReverse: hasReverse });
     }
 
-    function pinActive() {
-      const row = rows[active];
-      if (!row) return;
-      prefs = app.toggleForgeFavourite(row.id);
-      renderRows();
-    }
-
-    function paletteKeydown(event) {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        if (!rows.length) return;
-        event.preventDefault();
-        const step = event.key === 'ArrowDown' ? 1 : -1;
-        active = (active + step + rows.length) % rows.length;
-        syncActive();
-        return;
-      }
-      if (event.key === 'Enter') {
-        const row = rows[active];
-        if (!row) return;
-        event.preventDefault();
-        choose(row.id);
-        return;
-      }
-      // Digits can never occur in a kind's name, so they are always shortcuts.
-      if (/^[1-9]$/.test(event.key) && !event.altKey && !event.ctrlKey && !event.metaKey) {
-        const row = rows[Number(event.key) - 1];
-        if (!row) return;
-        event.preventDefault();
-        choose(row.id);
-        return;
-      }
-      if (event.key === '*' && !event.ctrlKey && !event.metaKey) {
-        event.preventDefault();
-        pinActive();
-      }
+    function toggleFavourite(kindId) {
+      prefs = app.toggleForgeFavourite(kindId);
+      // Pinning moves a kind into Favourites (or back out), so the active row
+      // follows the kind rather than staying at the old index.
+      picker.refresh(kindId);
+      picker.search.focus();
     }
 
     menuEl = panel;
@@ -8897,7 +9156,7 @@ export function createWorldbuildPanel({ app, root }) {
     focusOriginFor(panel, from);
     document.body.append(panel);
     panel.style.maxHeight = `${Math.max(240, Math.min(560, window.innerHeight - 24))}px`;
-    renderRows();
+    picker.refresh();
     // Keep the whole palette on screen: a drop near an edge, or at 20%, must
     // not push half the list past the window.
     const box = stage.getBoundingClientRect();
@@ -8947,29 +9206,38 @@ export function createWorldbuildPanel({ app, root }) {
       }));
     const targets = [...cards, ...groupRows];
     const squash = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
-    let rows = targets;
-    let active = 0;
-
-    const search = el('input', {
-      class: 'wb-forge-search wb-relate-search',
-      type: 'text',
-      role: 'combobox',
-      'aria-expanded': 'true',
-      'aria-controls': 'wb-relate-listbox',
-      'aria-autocomplete': 'list',
-      'aria-label': `Relate ${sourceName} to which card?`,
+    const picker = filteredPicker({
+      searchClass: 'wb-forge-search wb-relate-search',
+      searchLabel: `Relate ${sourceName} to which card?`,
       placeholder: 'Find a card or group…',
-      autocomplete: 'off',
-      spellcheck: 'false',
-      onkeydown: (event) => flowKeydown(event),
-      oninput: () => renderTargets(),
+      listClass: 'wb-relate-list',
+      listId: 'wb-relate-listbox',
+      listLabel: 'Targets in canvas order',
+      sectionClass: 'wb-relate-section',
+      emptyClass: 'wb-relate-empty',
+      emptyText: 'No card matches that.',
+      rowsFor: (query) => {
+        const terms = query.trim().toLowerCase().split(/\s+/).map(squash).filter(Boolean);
+        return targets.filter((row) => {
+          if (!terms.length) return true;
+          const text = squash(`${row.title} ${row.type} ${row.anchor}`);
+          return terms.every((term) => text.includes(term));
+        });
+      },
+      rowClass: () => 'wb-relate-row',
+      optionId: (row, index) => `wb-relate-option-${index}`,
+      rowAttrs: (row) => ({
+        title: `Relate ${sourceName} to “${row.title}”`,
+        dataset: { target: row.anchor },
+      }),
+      rowContents: (row, index) => [
+        el('span', { class: 'wb-relate-number', 'aria-hidden': 'true', text: index < 9 ? String(index + 1) : '' }),
+        el('span', { class: 'wb-relate-name', text: row.title }),
+        el('span', { class: 'wb-relate-type', text: row.type }),
+      ],
+      onChoose: (row) => chooseTarget(row.anchor),
     });
-    const list = el('div', {
-      class: 'wb-relate-list',
-      id: 'wb-relate-listbox',
-      role: 'listbox',
-      'aria-label': 'Targets in canvas order',
-    });
+    const { search, list } = picker;
     const panel = el('div', {
       class: 'wb-menu wb-relate',
       role: 'dialog',
@@ -8988,56 +9256,6 @@ export function createWorldbuildPanel({ app, root }) {
         el('span', { text: 'Esc cancels' }),
       ]),
     ]);
-
-    function renderTargets() {
-      const terms = search.value.trim().toLowerCase().split(/\s+/).map(squash).filter(Boolean);
-      rows = targets.filter((row) => {
-        if (!terms.length) return true;
-        const text = squash(`${row.title} ${row.type} ${row.anchor}`);
-        return terms.every((term) => text.includes(term));
-      });
-      if (active >= rows.length) active = Math.max(0, rows.length - 1);
-      list.replaceChildren();
-      let section = '';
-      rows.forEach((row, index) => {
-        if (row.section !== section) {
-          section = row.section;
-          list.append(el('div', { class: 'wb-relate-section', text: section }));
-        }
-        list.append(el('div', {
-          class: `wb-relate-row${index === active ? ' is-active' : ''}`,
-          id: `wb-relate-option-${index}`,
-          role: 'option',
-          'aria-selected': index === active ? 'true' : 'false',
-          title: `Relate ${sourceName} to “${row.title}”`,
-          dataset: { target: row.anchor },
-          onclick: () => chooseTarget(row.anchor),
-          onpointerenter: () => {
-            active = index;
-            syncActive();
-          },
-        }, [
-          el('span', { class: 'wb-relate-number', 'aria-hidden': 'true', text: index < 9 ? String(index + 1) : '' }),
-          el('span', { class: 'wb-relate-name', text: row.title }),
-          el('span', { class: 'wb-relate-type', text: row.type }),
-        ]));
-      });
-      if (!rows.length) list.append(el('p', { class: 'wb-relate-empty', text: 'No card matches that.' }));
-      syncActive();
-    }
-
-    function syncActive() {
-      const items = [...list.querySelectorAll('.wb-relate-row')];
-      items.forEach((node, index) => {
-        const on = index === active;
-        node.classList.toggle('is-active', on);
-        node.setAttribute('aria-selected', on ? 'true' : 'false');
-        if (on) node.scrollIntoView({ block: 'nearest' });
-      });
-      const row = rows[active];
-      if (row) search.setAttribute('aria-activedescendant', `wb-relate-option-${active}`);
-      else search.removeAttribute('aria-activedescendant');
-    }
 
     function chooseTarget(anchor) {
       if (!anchor || sourceSet.has(anchor)) return;
@@ -9058,37 +9276,12 @@ export function createWorldbuildPanel({ app, root }) {
       openKindPalette(picked[0], anchor, { x: at.left, y: at.top }, { alsoFrom: picked.slice(1) });
     }
 
-    function flowKeydown(event) {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        if (!rows.length) return;
-        event.preventDefault();
-        const step = event.key === 'ArrowDown' ? 1 : -1;
-        active = (active + step + rows.length) % rows.length;
-        syncActive();
-        return;
-      }
-      if (event.key === 'Enter') {
-        const row = rows[active];
-        if (!row) return;
-        event.preventDefault();
-        chooseTarget(row.anchor);
-        return;
-      }
-      // Digits never occur in a title search worth keeping, so they pick a row.
-      if (/^[1-9]$/.test(event.key) && !event.altKey && !event.ctrlKey && !event.metaKey) {
-        const row = rows[Number(event.key) - 1];
-        if (!row) return;
-        event.preventDefault();
-        chooseTarget(row.anchor);
-      }
-    }
-
     menuEl = panel;
     panel._cancelAnnounce = 'Relationship cancelled';
     if (picked.length === 1) focusOriginFor(panel, picked[0]);
     document.body.append(panel);
     panel.style.maxHeight = `${Math.max(240, Math.min(520, window.innerHeight - 24))}px`;
-    renderTargets();
+    picker.refresh();
     const anchorBox = anchorEl?.getBoundingClientRect() ?? null;
     const box = stage.getBoundingClientRect();
     const atX = anchorBox ? anchorBox.right + 8 : box.left + 24;
@@ -11031,7 +11224,7 @@ export function createWorldbuildPanel({ app, root }) {
     // Cards and annotations handle their own drags and controls; everything
     // else in the stage is background: dragging it pans, and Shift+dragging
     // it draws a marquee selection (Ctrl+Shift adds to the selection).
-    if (event.target.closest?.('.wb-card, .wb-annotation, [data-edge-key], button, input, select, textarea')) return;
+    if (event.target.closest?.('.wb-card, .wb-annotation, .wb-navigator, [data-edge-key], button, input, select, textarea')) return;
     if (event.shiftKey && event.button === 0) {
       const additive = event.ctrlKey || event.metaKey;
       marquee = {
@@ -11045,6 +11238,14 @@ export function createWorldbuildPanel({ app, root }) {
         moved: false,
       };
       selectionQuiet = true;
+      // Keep the drag alive outside the window; losing the capture is one of
+      // the ways the gesture can end below. Synthetic harness pointers are
+      // not active, so capture is best-effort there.
+      try {
+        stage.setPointerCapture(event.pointerId);
+      } catch {
+        /* not an active pointer */
+      }
       event.preventDefault();
       return;
     }
@@ -11054,7 +11255,7 @@ export function createWorldbuildPanel({ app, root }) {
   });
 
   stage.addEventListener('dblclick', (event) => {
-    if (event.target.closest?.('.wb-card, .wb-annotation, button, input, select, textarea')) return;
+    if (event.target.closest?.('.wb-card, .wb-annotation, .wb-navigator, button, input, select, textarea')) return;
     const rect = stage.getBoundingClientRect();
     addAnnotation({
       x: (event.clientX - rect.left - view.x) / view.s - ANNOTATION_W / 2,
@@ -11251,18 +11452,24 @@ export function createWorldbuildPanel({ app, root }) {
     persistView();
   }, { passive: false });
 
+  /**
+   * End a marquee exactly once, however the gesture ends. A pointerup on
+   * empty canvas is also a Shift+click and clears the selection; a cancelled
+   * or blurred gesture keeps whatever the box gathered. The drag stayed quiet
+   * while it ran, so its result is the announcement here.
+   */
+  function finishMarquee({ fromPointerUp = false } = {}) {
+    if (!marquee) return;
+    if (fromPointerUp && !marquee.moved && !marquee.additive) setSelection([]);
+    marquee = null;
+    marqueeBox.classList.add('hidden');
+    marqueeCount.textContent = '';
+    selectionQuiet = false;
+    announceSelection();
+  }
+
   window.addEventListener('pointerup', () => {
-    if (marquee) {
-      // A Shift+click on empty canvas clears the selection; a real drag
-      // leaves whatever the marquee picked.
-      if (!marquee.moved && !marquee.additive) setSelection([]);
-      marquee = null;
-      marqueeBox.classList.add('hidden');
-      marqueeCount.textContent = '';
-      // The drag stayed quiet while it ran, so its result is the announcement.
-      selectionQuiet = false;
-      announceSelection();
-    }
+    finishMarquee({ fromPointerUp: true });
     if (panning) {
       panning = null;
       stage.classList.remove('is-panning');
@@ -11306,6 +11513,14 @@ export function createWorldbuildPanel({ app, root }) {
     restackFoldedCards(drop.members.map((member) => member.anchor));
     commitStep(dropName ?? moveStepName(drop));
   });
+
+  // A marquee can end without a pointerup: the browser may cancel the
+  // pointer, the window may lose focus, or a capture may be lost. Each path
+  // must close the box and announce the selection just as a release would.
+  window.addEventListener('pointercancel', () => finishMarquee());
+  window.addEventListener('blur', () => finishMarquee());
+  // lostpointercapture does not bubble, so watch it in the capture phase.
+  window.addEventListener('lostpointercapture', () => finishMarquee(), true);
 
   return {
     render,

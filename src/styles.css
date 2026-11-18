@@ -3864,6 +3864,13 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   height: auto;
   border-radius: 5px;
   background: var(--bg);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.wb-nav-map.is-dragging {
+  cursor: grabbing;
 }
 
 .wb-nav-group {
@@ -4485,9 +4492,30 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
 }
 
 .wb-forge-star {
-  width: 1em;
-  color: var(--warn);
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: -2px -3px -2px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
   text-align: center;
+  cursor: pointer;
+}
+
+.wb-forge-star:hover,
+.wb-forge-star:focus-visible {
+  background: var(--border);
+  color: var(--warn);
+}
+
+.wb-forge-star.is-favourite {
+  color: var(--warn);
 }
 
 .wb-forge-hint {

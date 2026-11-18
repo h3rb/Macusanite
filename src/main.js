@@ -3500,10 +3500,10 @@ function pickBrowserArchive() {
 globalThis.macusanite = app;
 
 /**
- * `?wb-smoke=zoom` runs the canvas zoom smoke test against the harness and
- * `?wb-perf=1000` runs the canvas performance budget at that many cards; both
- * report through the console and the page title. Development only: the dynamic
- * import is dropped from a production build.
+ * `?wb-smoke=zoom` and `?wb-smoke=lens` run the canvas smoke tests against the
+ * harness, and `?wb-perf=1000` runs the canvas performance budget at that many
+ * cards; all report through the console and the page title. Development only:
+ * the dynamic imports are dropped from a production build.
  */
 async function runRequestedSmoke() {
   if (!import.meta.env.DEV) return;
@@ -3512,6 +3512,10 @@ async function runRequestedSmoke() {
     const { runZoomSmoke } = await import('../tests/harness/zoomSmoke.js');
     await runZoomSmoke();
   }
+  if (params.get('wb-smoke') === 'lens') {
+    const { runLensSmoke } = await import('../tests/harness/lensSmoke.js');
+    await runLensSmoke();
+  }
   if (params.get('wb-perf')) {
     const { runPerfBudget } = await import('../tests/harness/perfBudget.js');
     await runPerfBudget(location.search);
@@ -3519,7 +3523,7 @@ async function runRequestedSmoke() {
 }
 
 app.init()
-  .then(() => runRequestedSmoke().catch((error) => console.error('zoom smoke could not run', error)))
+  .then(() => runRequestedSmoke().catch((error) => console.error('smoke check could not run', error)))
   .catch(async (error) => {
     console.error(error);
     const host = qs('#toasts');
