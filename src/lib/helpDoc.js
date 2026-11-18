@@ -99,7 +99,7 @@ Editing:
 * **tags** come next;
 * **body** text comes last, and a match near the top of a vein outranks one buried in a footnote.
 
-Every term in the query must appear somewhere before a vein becomes a result. Two unquoted words may match anywhere and in any order, while quoting them as \`"sieve series"\` requires the phrase, and \`#fieldwork\` matches the tag.
+Every term in the query must appear somewhere before a vein becomes a result. Two unquoted words may match anywhere and in any order, while quoting them as \`"sieve series"\` requires the phrase, and \`#fieldwork\` matches the tag. The one-time quote tip in the search pane is controlled by **Settings → Reading → Tutorial notes**.
 
 Each result explains why it matched by reporting a \`title\`, a \`§ Sieve series\`, a \`tag\` or a count such as \`2 in text\`, and it includes a snippet with the terms already marked. Clicking a result opens the vein and marks **every** occurrence in the page while ringing the current one; \`F3\` and \`Shift+F3\` move through the occurrences, and the counter above the results reports the position. \`Esc\` clears the query, and a second \`Esc\` restores the tree.
 
@@ -248,6 +248,25 @@ Every command accepts \`--json\` for machine-readable output, \`--vault <folder>
 node cli/macusanite.mjs mcp stdio --vault ./notes
 \`\`\`
 
+For an MCP client, paste this into the repository's \`.mcp.json\` or Claude Desktop's MCP configuration. Replace both example paths with absolute paths on your machine; if the client cannot find Node on its \`PATH\`, set \`command\` to the absolute path of your Node executable.
+
+\`\`\`json
+{
+  "mcpServers": {
+    "macusanite": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/Macusanite/cli/macusanite.mjs",
+        "mcp",
+        "stdio",
+        "--vault",
+        "/absolute/path/to/vault"
+      ]
+    }
+  }
+}
+\`\`\`
+
 The server reads one JSON-RPC message per line from stdin and writes one message per line to stdout, while logs go to stderr. This is the interface an MCP client expects when it is configured with a local command. No window, display or other process is involved: a vault that can be read from a shell can be read over MCP, including on a machine with no desktop session at all. A client that hangs up and a supervisor that sends \`SIGTERM\` are both treated as normal stops — the server logs the stop, exits 0 and flushes a pending automatic upload — so a closed pipe is never reported as a crash.
 
 ### MCP over HTTP, headless
@@ -278,7 +297,7 @@ The canvas represents the vein itself. Typing in a card writes the prose under t
 
 * **Drag** a card by its grip to move it, and snap guides align it with neighbouring cards. Dragging the background pans the canvas, the wheel zooms around the pointer, and a small badge reports the zoom percentage while it changes.
 * **Overlaps** produce a dashed warning outline and a small count while a drag covers another card. **Push aside** in the toolbar or **More ▾ → Push overlaps aside** moves free cards out of the way during a drag, while pinned and locked cards remain fixed. To resolve an overlap that already exists, select the affected cards and use **Resolve overlaps** in the inspector, which moves selected free cards clear while leaving pinned or locked cards in place.
-* **Zooming out from 1:1** preserves full cards for the first two wheel notches. At approximately 55%, which is the third notch, cards become semantic summaries in which the type, title, link count and word count remain at a readable screen size while full prose and fields step aside. Below 25%, the summary type and boxes continue to shrink with the canvas, and at 12.5% each card becomes its type icon. Further zooming, or **⤢ Fit**, frames the entire graph regardless of its size, and a collapsed group shows its name and card count. Cards stay fully editable down to 75%: titles, prose, fields and tags take the pointer, and the relationship words work too. Below 75% the card's controls become inert and it turns into an object map, while dragging, folding, resizing, selection and connector selection continue to work, and editing resumes at 75% or closer. Forging a relationship stays available at every zoom: the link dot keeps working in the object map, and from 65% down it is drawn as a screen-sized ring on the card's corner so it is still easy to grab. The first time the canvas passes below 65%, a one-time **Object map: the rings still work** note names the three things that change is easy to hide: dragging a card's corner ring onto another card forges a bond (a click on the ring picks the card instead), the same ring on a group's tab or collapsed summary bonds the whole group, and a click picks while a drag moves. **Got it** retires the note for good, and this section keeps the same story.
+* **Zooming out from 1:1** preserves full cards for the first two wheel notches. At approximately 55%, which is the third notch, cards become semantic summaries in which the type, title, link count and word count remain at a readable screen size while full prose and fields step aside. Below 25%, the summary type and boxes continue to shrink with the canvas, and at 12.5% each card becomes its type icon. Further zooming, or **⤢ Fit**, frames the entire graph regardless of its size, and a collapsed group shows its name and card count. Cards stay fully editable down to 75%: titles, prose, fields and tags take the pointer, and the relationship words work too. Below 75% the card's controls become inert and it turns into an object map, while dragging, folding, resizing, selection and connector selection continue to work, and editing resumes at 75% or closer. Forging a relationship stays available at every zoom: the link dot keeps working in the object map, and from 65% down it is drawn as a screen-sized ring on the card's corner so it is still easy to grab. The first time the canvas passes below 65%, a one-time **Object map: the rings still work** note names the three things that change is easy to hide: dragging a card's corner ring onto another card forges a bond (a click on the ring picks the card instead), the same ring on a group's tab or collapsed summary bonds the whole group, and a click picks while a drag moves. **Got it** retires the note for good, and this section keeps the same story. The note and the search pane's quote tip can both be hidden or shown with **Settings → Reading → Tutorial notes**.
 * **The navigator** sits in a corner of the canvas: it maps the whole vein, draws the part the stage is showing as a viewport rectangle, names the drawing mode beside the scale (Detail, Overview, Summary, Map, Icons), and frames either the **selection** or the **group** it belongs to in one click. It answers where a card went after a pan at 50% and which way the canvas runs at 12%. **Settings → Worldbuilding → Navigator** hides it, and its **×** hides it at once.
 * **Tablet gestures** — **Settings → Worldbuilding → Tablet gestures** — turn the canvas into a touch surface. A **long press** on a card or a group's tab or summary begins a forge from it: drag onto another card and release to choose the kind, exactly as dragging the ring does. A short press picks, a drag moves, and two fingers pinch to zoom and pan together, with the zoom badge reporting the scale. While the setting is on the rings, grip marks and resize corners grow to finger size, and with it off the canvas behaves as it does for a mouse.
 * **Right-click** a card to access every operation it supports, including linking, relating, colouring, assigning an image, choosing its type, folding, pinning and locking. Right-click a group for its own menu, or right-click a connector for its relationship and routing options.
@@ -289,7 +308,7 @@ The canvas represents the vein itself. Typing in a card writes the prose under t
 
 ### Undoing canvas changes
 
-The canvas maintains its own undo history, separate from the markdown editor's. The toolbar's **↶** and **↷** arrows undo and redo one step and name that step in their tooltip, while **Ctrl+Z** and **Ctrl+Shift+Z**, or **Ctrl+Y**, perform the same actions when the canvas has focus. **More ▾ → History** lists the whole stack, with redo above the current point and undo below it, and selecting a row jumps to that point. Each vein keeps its own stack, which is saved with its canvas record so that the steps remain available after the vault is closed and reopened. A step represents one canvas change, such as a move, a group, a bond, a fold, a type, a colour or an arrangement. Typing is not a canvas step, because a card's title, prose, fields and tag box retain their own undo while the cursor is inside them, and the prose's markdown undo belongs to the editor. [Canvas history](#canvas-history-exports-and-health) explains what a step restores.
+The canvas maintains its own undo history, separate from the markdown editor's. The toolbar's **↶** and **↷** arrows undo and redo one step and name that step in their tooltip, while **Ctrl+Z** and **Ctrl+Shift+Z**, or **Ctrl+Y**, perform the same actions when the canvas has focus. **More ▾ → History** lists the whole stack, with redo above the current point and undo below it, and selecting a row jumps to that point. Each vein keeps its own stack, which is saved with its canvas record so that the steps remain available after the vault is closed and reopened. A step represents one canvas change, such as a move, a group, a bond, a fold, a type, a colour or an arrangement. Typing is not a canvas step, because a card's title, prose, fields and tag box retain their own undo while the cursor is inside them, and the prose's markdown undo belongs to the editor. Deleting is a step: a card's **✕** and the selection's Delete both remove the notes from the markdown and record one step that carries their prose, so undo puts the cards back in their places with the prose and their bonds, fields, pins and colours, and redo takes them away again. [Canvas history](#canvas-history-exports-and-health) explains what a step restores.
 
 ### Deeper sections
 

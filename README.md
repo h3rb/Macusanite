@@ -188,7 +188,26 @@ The CLI provides 49 commands in seven groups: identity and settings, documents, 
 ### MCP over stdio
 
 ```bash
-node cli/macusanite.mjs --vault ./notes mcp stdio
+node cli/macusanite.mjs mcp stdio --vault ./notes
+```
+
+For an MCP client, paste this into the repository's `.mcp.json` or Claude Desktop's MCP configuration. Replace both example paths with absolute paths on your machine; if the client cannot find Node on its `PATH`, set `command` to the absolute path of your Node executable.
+
+```json
+{
+  "mcpServers": {
+    "macusanite": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/Macusanite/cli/macusanite.mjs",
+        "mcp",
+        "stdio",
+        "--vault",
+        "/absolute/path/to/vault"
+      ]
+    }
+  }
+}
 ```
 
 The server reads one JSON-RPC message per line from stdin and writes one message per line to stdout, while logs go to stderr. This is the interface an MCP client expects when it is configured with a local command. No window, display or other process is involved, so a vault can be served on a machine with no desktop session at all. A client that hangs up and a supervisor that sends `SIGTERM` are both normal stops: the server logs the stop, exits 0 and flushes a pending automatic upload, rather than reporting a closed pipe as a crash.
