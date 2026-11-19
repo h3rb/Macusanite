@@ -21,11 +21,16 @@
  *   open http://127.0.0.1:1421/?wb-smoke=navigator
  *
  * The results also land on `globalThis.wbNavSmoke` and in the console, and the
- * page title reports the run. A window about 600 px wide is what makes both cap
- * checks bind; above the width one of them needs — about 955 px for the drawer
- * and 618 px for the inspector — that check confirms the panel takes its own
- * width and says which window would exercise the cap instead. The run puts the
- * navigator back where it found it, so it can be repeated.
+ * page title reports the run.
+ *
+ * The two caps are a media query, so each is checked twice over: the shipped
+ * rule is read from the stylesheet and asserted at every window size, and the
+ * panel is then measured against it, which only says something below the
+ * breakpoint. A window about 600 px wide makes both measurements bind. A wider
+ * one still proves the rule, and its measurement is reported as skipped, naming
+ * the window that would exercise it — about 955 px for the drawer and 618 px for
+ * the inspector. The run puts the navigator back where it found it, so it can be
+ * repeated.
  */
 import {
   bringCentreIntoView, fail, fire, inside, record, reportSmoke, selectedAnchors,
@@ -37,6 +42,10 @@ const PLACEMENT_LABEL = 'Navigator placement';
 /** The drawer's share of a window at 1100 px or narrower, and the inspector's. */
 const DRAWER_SHARE = 0.44;
 const INSPECTOR_SHARE = 0.46;
+/** The width both caps are declared under. */
+const CAP_BREAKPOINT = 1100;
+/** A share as the stylesheet spells it, without float noise from `× 100`. */
+const shareVw = (share) => `${Math.round(share * 100)}vw`;
 /** The inspector's own width, before any cap. */
 const INSPECTOR_WIDTH = 284;
 /** The navigator's remembered width, before the grip moves it. */
@@ -74,8 +83,63 @@ function panelWidth() {
 
 /** The width 44vw or 46vw leaves at this window, or the panel's own when wide. */
 function cappedWidth(natural, share) {
-  if (globalThis.innerWidth > 1100) return natural;
+  if (globalThis.innerWidth > CAP_BREAKPOINT) return natural;
   return Math.min(natural, globalThis.innerWidth * share);
+}
+
+/** A declaration or selector with the whitespace and quote style CSS ignores. */
+function squeeze(value) {
+  return String(value).replace(/\s+/g, '').replace(/["']/g, '"');
+}
+
+/** The arguments of a `min(…)`, or null for any other value. */
+function minArgs(value) {
+  const text = squeeze(value);
+  if (!text.startsWith('min(') || !text.endsWith(')')) return null;
+  const body = text.slice(4, -1);
+  const args = [];
+  let depth = 0;
+  let from = 0;
+  for (let at = 0; at < body.length; at += 1) {
+    if (body[at] === '(') depth += 1;
+    else if (body[at] === ')') depth -= 1;
+    else if (body[at] === ',' && depth === 0) {
+      args.push(body.slice(from, at));
+      from = at + 1;
+    }
+  }
+  args.push(body.slice(from));
+  return args;
+}
+
+/**
+ * The `--wb-dock-w` the shipped stylesheet declares for one dock panel inside
+ * the ≤1100 px media rule, or null when no such rule reached the page.
+ *
+ * The rule holds at every window size, while the width it produces only binds
+ * below the breakpoint, so a wide window would otherwise leave it unchecked.
+ * Reading the CSSOM checks what ships, not what this window happens to draw.
+ */
+function shippedPanelCap(panel) {
+  const selector = squeeze(`.wb-dock[data-panel='${panel}']`);
+  for (const sheet of document.styleSheets) {
+    let rules;
+    try {
+      rules = sheet.cssRules;
+    } catch {
+      continue; // a sheet from another origin hides its rules
+    }
+    for (const rule of rules ?? []) {
+      const media = rule.media?.mediaText ?? rule.conditionText ?? '';
+      if (!squeeze(media).includes(`max-width:${CAP_BREAKPOINT}px`)) continue;
+      for (const inner of rule.cssRules ?? []) {
+        if (squeeze(inner.selectorText ?? '') !== selector) continue;
+        const value = inner.style?.getPropertyValue('--wb-dock-w') ?? '';
+        if (value.trim()) return { value: value.trim(), media: media.trim() };
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -319,25 +383,41 @@ export async function runNavigatorSmoke(search = globalThis.location?.search ?? 
       return { detail: `${SAVED_WIDTH} px re-applied after floating and docking again` };
     });
 
-    await record(results, 'a window at 1100 px or narrower caps the drawer at 44vw', async () => {
+    await record(results, 'the ≤1100 px rule ships a 44vw cap for the drawer', async () => {
+      const cap = shippedPanelCap('navigator');
+      if (!cap) fail('the stylesheet has no ≤1100 px rule setting --wb-dock-w for the navigator drawer');
+      const args = minArgs(cap.value);
+      if (!args || args.length !== 2) fail(`the drawer's rule is “${cap.value}”, not a min() of two widths`);
+      if (args[0] !== 'var(--wb-nav-w,202px)') {
+        fail(`the drawer's rule caps “${args[0]}” instead of the remembered var(--wb-nav-w, 202px)`);
+      }
+      if (args[1] !== shareVw(DRAWER_SHARE)) {
+        fail(`the drawer's rule caps at ${args[1]} instead of ${shareVw(DRAWER_SHARE)}`);
+      }
+      return { detail: `${cap.media} → min(${args[0]}, ${args[1]}), read from the shipped rule` };
+    });
+
+    await record(results, '…and a narrow window draws the drawer at 44vw', async () => {
       await setPlacementVia(app, 'drawer');
       // A width above every window's own limit, so the media query is what has
       // to hold it back rather than the grip's ceiling.
       await applyWidth(app, 420);
       const applied = Math.round(appliedWidth());
       const wanted = cappedWidth(applied, DRAWER_SHARE);
+      const narrowest = Math.ceil(applied / DRAWER_SHARE);
       if (wanted >= applied - 1) {
-        return { skip: `this window is ${globalThis.innerWidth} px, so 44vw leaves ${wanted.toFixed(0)} px for a ${applied} px drawer; a window under ${Math.ceil(applied / DRAWER_SHARE)} px binds the cap` };
+        const share = globalThis.innerWidth * DRAWER_SHARE;
+        return { skip: `the shipped ${shareVw(DRAWER_SHARE)} rule is checked above; ${shareVw(DRAWER_SHARE)} of this ${globalThis.innerWidth} px window is ${share.toFixed(0)} px, more than the ${applied} px the drawer asks for, so the cap cannot bind and its drawn width goes unmeasured here. A window ${narrowest} px or narrower draws it.` };
       }
       const visual = panelWidth();
       if (Math.abs(visual - wanted) > 1) {
-        fail(`the drawer is ${visual.toFixed(1)} px wide at ${globalThis.innerWidth} px; 44vw caps it at ${wanted.toFixed(1)}`);
+        fail(`the drawer is ${visual.toFixed(1)} px wide at ${globalThis.innerWidth} px; ${shareVw(DRAWER_SHARE)} caps it at ${wanted.toFixed(1)}`);
       }
       return { detail: `${applied} → ${wanted.toFixed(0)} px at ${globalThis.innerWidth} px wide` };
     });
 
     let picked = null;
-    await record(results, 'a window at 1100 px or narrower caps the inspector at 46vw', async () => {
+    const openInspector = async () => {
       picked = await selectCard(stage);
       // Picking a card gives the inspector the dock on its own; its tab is the
       // way back to it when the map was the panel chosen by hand.
@@ -350,13 +430,33 @@ export async function runNavigatorSmoke(search = globalThis.location?.search ?? 
       const shown = await waitFor(() => dockHost()?.dataset.panel === 'inspector', 2000);
       if (!shown) fail('the dock did not switch to the inspector');
       await wait(60);
+    };
+
+    await record(results, 'the ≤1100 px rule ships a 46vw cap for the inspector', async () => {
+      const cap = shippedPanelCap('inspector');
+      if (!cap) fail('the stylesheet has no ≤1100 px rule setting --wb-dock-w for the inspector');
+      const args = minArgs(cap.value);
+      if (!args || args.length !== 2) fail(`the inspector's rule is “${cap.value}”, not a min() of two widths`);
+      if (args[0] !== `${INSPECTOR_WIDTH}px`) {
+        fail(`the inspector's rule caps “${args[0]}” instead of its own ${INSPECTOR_WIDTH}px`);
+      }
+      if (args[1] !== shareVw(INSPECTOR_SHARE)) {
+        fail(`the inspector's rule caps at ${args[1]} instead of ${shareVw(INSPECTOR_SHARE)}`);
+      }
+      return { detail: `${cap.media} → min(${args[0]}, ${args[1]}), read from the shipped rule` };
+    });
+
+    await record(results, '…and a narrow window draws the inspector at 46vw', async () => {
+      await openInspector();
       const wanted = cappedWidth(INSPECTOR_WIDTH, INSPECTOR_SHARE);
+      const narrowest = Math.ceil(INSPECTOR_WIDTH / INSPECTOR_SHARE);
       if (wanted >= INSPECTOR_WIDTH - 1) {
-        return { skip: `this window is ${globalThis.innerWidth} px, so 46vw leaves ${wanted.toFixed(0)} px for a ${INSPECTOR_WIDTH} px inspector; a window under ${Math.ceil(INSPECTOR_WIDTH / INSPECTOR_SHARE)} px binds the cap` };
+        const share = globalThis.innerWidth * INSPECTOR_SHARE;
+        return { skip: `the shipped ${shareVw(INSPECTOR_SHARE)} rule is checked above; ${shareVw(INSPECTOR_SHARE)} of this ${globalThis.innerWidth} px window is ${share.toFixed(0)} px, more than the ${INSPECTOR_WIDTH} px the inspector takes, so the cap cannot bind and its drawn width goes unmeasured here. A window ${narrowest} px or narrower draws it.` };
       }
       const visual = panelWidth();
       if (Math.abs(visual - wanted) > 1) {
-        fail(`the inspector is ${visual.toFixed(1)} px wide at ${globalThis.innerWidth} px; 46vw caps it at ${wanted.toFixed(1)}`);
+        fail(`the inspector is ${visual.toFixed(1)} px wide at ${globalThis.innerWidth} px; ${shareVw(INSPECTOR_SHARE)} caps it at ${wanted.toFixed(1)}`);
       }
       return { detail: `${INSPECTOR_WIDTH} → ${wanted.toFixed(0)} px at ${globalThis.innerWidth} px wide` };
     });
