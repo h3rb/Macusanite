@@ -3532,8 +3532,8 @@ function pickBrowserArchive() {
 globalThis.macusanite = app;
 
 /**
- * `?wb-smoke=zoom`, `?wb-smoke=lens`, `?wb-smoke=delete` and
- * `?wb-smoke=marquee` run the canvas smoke tests against the harness, and
+ * `?wb-smoke=zoom`, `?wb-smoke=lens`, `?wb-smoke=delete`, `?wb-smoke=marquee`
+ * and `?wb-smoke=navigator` run the canvas smoke tests against the harness, and
  * `?wb-perf=1000` runs the canvas performance budget at that many cards; all
  * report through the console and the page title. Development only: the dynamic
  * imports are dropped from a production build.
@@ -3556,6 +3556,10 @@ async function runRequestedSmoke() {
   if (params.get('wb-smoke') === 'marquee') {
     const { runMarqueeSmoke } = await import('../tests/harness/marqueeSmoke.js');
     await runMarqueeSmoke(location.search);
+  }
+  if (params.get('wb-smoke') === 'navigator') {
+    const { runNavigatorSmoke } = await import('../tests/harness/navigatorSmoke.js');
+    await runNavigatorSmoke(location.search);
   }
   if (params.get('wb-perf')) {
     const { runPerfBudget } = await import('../tests/harness/perfBudget.js');
