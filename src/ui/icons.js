@@ -118,6 +118,9 @@ const SVGS = {
   card: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9.5h18"/></svg>',
   group: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/><path d="M10.5 7h1.5a3 3 0 0 1 3 3v3.5"/></svg>',
   select: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6M4 4v6M20 4h-6M20 4v6M4 20h6M4 20v-6M20 20h-6M20 20v-6"/><path d="M9 9h6v6H9z"/></svg>',
+  // A panel leaving its dock: the box the pane sat in, open at one corner, and
+  // an arrow going out of it — not the two-corner spread of “fit”.
+  popout: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.5 13.5v5a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2h5"/><path d="M14.5 3.5h6v6"/><path d="M20.5 3.5 12 12"/></svg>',
 };
 
 const norm = (value) => String(value ?? '')

@@ -229,7 +229,7 @@ export function createWorldbuildPanel({ app, root }) {
       el('button', {
         class: 'icon-btn btn-mini ui-icon-only wb-nav-popout',
         type: 'button',
-        icon: 'fit',
+        icon: 'popout',
         iconLabel: 'Pop out',
         title: 'Pop the navigator out of the dock into a floating panel',
         onclick: () => {
