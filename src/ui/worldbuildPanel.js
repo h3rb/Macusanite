@@ -358,7 +358,6 @@ export function createWorldbuildPanel({ app, root }) {
     panels: [navigator, inspector],
     variant: 'overlay',
     railSide: 'end',
-    edge: 'right',
     railLabel: 'Canvas panels',
     onChoose: (id, showing) => {
       if (id === 'navigator') {

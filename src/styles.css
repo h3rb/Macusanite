@@ -1612,7 +1612,11 @@ mark.search-hit {
 
 .dock-rail {
   display: flex;
-  flex: 0 0 var(--dock-rail, 30px);
+  /* A folded column's rail is the whole pane, so it takes the pane's content
+     box rather than a width of its own: the column's 1px border lives inside
+     the same grid track, and a 36px rail in a 35px box would overrun it. The
+     canvas dock pins its rail's width itself. */
+  flex: 1 1 auto;
   flex-direction: column;
   /* Centred by auto margins rather than `justify-content`, so a rail shorter
      than its tabs scrolls from the first tab instead of clipping it above the
@@ -1680,15 +1684,6 @@ mark.search-hit {
   text-transform: uppercase;
   white-space: nowrap;
   user-select: none;
-}
-
-/* The two column folds get their rail width from the folded column they fill. */
-.sidebar {
-  --dock-rail: var(--sidebar-fold-width);
-}
-
-.graph-panel {
-  --dock-rail: var(--graph-fold-width);
 }
 
 .graph-stage {

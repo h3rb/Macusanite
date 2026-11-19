@@ -31,7 +31,6 @@ export function createDock({
   panels = [],
   railSide = 'end',
   variant = 'column',
-  edge = 'right',
   railLabel,
   onChoose,
   onShow,
@@ -60,15 +59,20 @@ export function createDock({
     tab.button = el('button', {
       class: 'dock-tab',
       type: 'button',
+      // The rail's label and its fold arrow are the tab: a label-derived icon
+      // above them would make one pane's rail grow a glyph the next one lacks.
+      icon: false,
       'aria-pressed': 'false',
       'aria-controls': tab.panel.id,
       title: tab.title ?? tab.label,
       onclick: () => onChoose?.(tab.id, active === tab.id),
     }, [
-      // A single tab is the pane's whole fold, so it says which way the pane
-      // opens; a rail of two is a choice, and the pressed state says which.
+      // A single tab is the pane's whole fold, so it points the way the pane
+      // opens — the rail marks the pane's outer edge, and its side says which
+      // way the panel comes back. A rail of two is a choice, and the pressed
+      // state says which.
       ...(tabs.length === 1
-        ? [el('span', { class: 'dock-tab-arrow', text: edge === 'left' ? '›' : '‹', 'aria-hidden': 'true' })]
+        ? [el('span', { class: 'dock-tab-arrow', text: railSide === 'start' ? '‹' : '›', 'aria-hidden': 'true' })]
         : []),
       el('span', { class: 'dock-tab-label', text: tab.label }),
     ]);
@@ -113,6 +117,15 @@ export function createDock({
       node.classList.toggle('is-open', Boolean(open));
       if (open) node.dataset.panel = open;
       else delete node.dataset.panel;
+    }
+    // A rail shorter than its tabs scrolls; keep the one just chosen in view,
+    // so the pressed tab is never the one cut in half.
+    const chosen = tabs.find((tab) => tab.id === open)?.button;
+    if (chosen && rail.clientHeight > 0 && rail.scrollHeight > rail.clientHeight) {
+      const box = chosen.getBoundingClientRect();
+      const view = rail.getBoundingClientRect();
+      if (box.top < view.top) rail.scrollTop -= view.top - box.top;
+      else if (box.bottom > view.bottom) rail.scrollTop += box.bottom - view.bottom;
     }
     onShow?.(open);
   }

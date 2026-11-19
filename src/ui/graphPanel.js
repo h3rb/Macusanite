@@ -43,7 +43,6 @@ export function createGraphPanel({ app, root }) {
   const dock = createDock({
     root,
     labels: [{ id: 'graph', label: 'Concept graph', title: 'Expand the concept graph' }],
-    edge: 'right',
     variant: 'column',
     railSide: 'start',
     onChoose: () => app.toggleGraph(!graphShown()),

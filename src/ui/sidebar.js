@@ -69,7 +69,6 @@ export function createSidebar({ app, root }) {
   const dock = createDock({
     root,
     labels: [{ id: 'vault', label: 'Vault', title: 'Expand the vault sidebar' }],
-    edge: 'left',
     variant: 'column',
     railSide: 'end',
     onChoose: () => app.toggleSidebar(!sidebarShown()),
