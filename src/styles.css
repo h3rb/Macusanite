@@ -4295,6 +4295,16 @@ body:not(.nav-dock-drawer) .wb-dock.is-open {
   stroke-dasharray: 1.6 1.6;
 }
 
+/* The ring stays in the layer and its marker's class shows it, so a pan toggles
+   a class rather than building and discarding a circle per selected card. */
+.wb-nav-marker .wb-nav-away {
+  display: none;
+}
+
+.wb-nav-marker.is-away .wb-nav-away {
+  display: inline;
+}
+
 .wb-nav-viewport {
   fill: color-mix(in srgb, var(--accent) 16%, transparent);
   stroke: var(--accent);

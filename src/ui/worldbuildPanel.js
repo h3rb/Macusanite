@@ -59,6 +59,11 @@ const INTRO_H = 150;
 // enough to sit in a corner of the stage, large enough to read a split.
 const NAV_W = 196;
 const NAV_H = 118;
+// The navigator's marker layer buckets its dots into this grid. A pan settles a
+// whole cell in one step, and only the cells its frame edge crosses are read
+// dot by dot, so the work follows the frame's border rather than the selection.
+const NAV_MARKER_COLS = 12;
+const NAV_MARKER_ROWS = 8;
 // One id per panel instance, so the rail's aria-controls names the drawer body
 // it actually opens.
 let navBodySeq = 0;
@@ -275,9 +280,11 @@ export function createWorldbuildPanel({ app, root }) {
   const navCards = new Map();
   // What the map says on top of the cards: the selection's group framed, and a
   // dot per selected card that keeps it findable when its own rectangle is a
-  // pixel wide.
+  // pixel wide. Dots are grouped into a coarse grid, so a pan settles whole
+  // cells rather than walking the selection.
   let navMarkerLayer = null;
-  let navMarkerKey = '';
+  let navMarkerCells = [];
+  let navMarkersStale = true;
   // What screen readers hear from the canvas: the selection, each step of the
   // relate flow, and each bond forged. It is off-screen and politely
   // announced, so a pointer user never sees it and a fast sequence replaces
@@ -4504,7 +4511,8 @@ export function createWorldbuildPanel({ app, root }) {
     navMap.replaceChildren();
     navGeometry = null;
     navMarkerLayer = null;
-    navMarkerKey = '';
+    navMarkerCells = [];
+    navMarkersStale = true;
     if (!model || !(model.notes ?? []).length) {
       syncNavigatorViewport();
       return;
@@ -4541,7 +4549,7 @@ export function createWorldbuildPanel({ app, root }) {
       shapes.append(rect);
     });
     navMarkerLayer = svgNode('g', { class: 'wb-nav-markers', 'aria-hidden': 'true' });
-    navMarkerKey = '';
+    navMarkersStale = true;
     navMap.append(shapes, navMarkerLayer, navViewport);
     syncNavigatorViewport();
   }
@@ -4603,7 +4611,8 @@ export function createWorldbuildPanel({ app, root }) {
       navViewport.setAttribute('width', '0');
       navViewport.setAttribute('height', '0');
       navMarkerLayer?.replaceChildren();
-      navMarkerKey = '';
+      navMarkerCells = [];
+      navMarkersStale = true;
       return;
     }
     const box = navigatorViewport(
@@ -4619,32 +4628,19 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
-   * The map's reading, not just its shapes: the group the selection stands in
-   * is framed, every selected card keeps a dot of its own size, and a dot the
-   * camera has left outside the frame is ringed — which is what “where did that
-   * card go?” looks like on the map.
+   * Rebuild the map's reading — the group frame and a dot per selected card —
+   * because the selection or the map changed. A pan never comes here: the dots
+   * keep their places, and only their rings move (see syncNavigatorMarkers).
    *
-   * The frame moves with every pan, so this runs from the viewport sync; the
-   * dots are only rebuilt when what they would say has changed, which keeps a
-   * whole-vein selection off the pan path.
+   * Each dot lands in a grid cell that holds its own group, so a frame that
+   * leaves a cell behind costs one class on the cell rather than a walk over
+   * its cards.
    */
-  function syncNavigatorMarkers(box) {
+  function buildNavigatorMarkers() {
+    navMarkerCells = [];
     if (!navMarkerLayer || !navGeometry) return;
-    const width = box ? Math.max(2, box.width) : 0;
-    const height = box ? Math.max(2, box.height) : 0;
-    const dots = [];
-    for (const [anchor, rect] of navCards) {
-      if (!selected.has(anchor)) continue;
-      const x = Number(rect.getAttribute('x')) + Number(rect.getAttribute('width')) / 2;
-      const y = Number(rect.getAttribute('y')) + Number(rect.getAttribute('height')) / 2;
-      const away = !box || x < box.x || x > box.x + width || y < box.y || y > box.y + height;
-      dots.push({ x, y, away });
-    }
-    const group = navigatorGroup();
-    const key = `${group?.id ?? ''}|${dots.map((dot) => `${Math.round(dot.x)},${Math.round(dot.y)}${dot.away ? '!' : ''}`).join(';')}`;
-    if (key === navMarkerKey) return;
-    navMarkerKey = key;
     navMarkerLayer.replaceChildren();
+    const group = navigatorGroup();
     const groupRect = group ? groupDisplayRect(group) : null;
     const groupBox = groupRect ? navigatorProject(navGeometry, groupRect) : null;
     if (groupBox) {
@@ -4653,15 +4649,94 @@ export function createWorldbuildPanel({ app, root }) {
         x: groupBox.x, y: groupBox.y, width: groupBox.width, height: groupBox.height, rx: 2,
       }));
     }
-    for (const dot of dots) {
-      if (dot.away) navMarkerLayer.append(svgNode('circle', { class: 'wb-nav-away', cx: dot.x, cy: dot.y, r: 4.2 }));
-      navMarkerLayer.append(svgNode('circle', { class: 'wb-nav-dot', cx: dot.x, cy: dot.y, r: 2 }));
+    if (!selected.size) return;
+    const cellW = NAV_W / NAV_MARKER_COLS;
+    const cellH = NAV_H / NAV_MARKER_ROWS;
+    const cells = new Array(NAV_MARKER_COLS * NAV_MARKER_ROWS).fill(null);
+    for (const anchor of selected) {
+      const rect = navCards.get(anchor);
+      if (!rect) continue;
+      const x = Number(rect.getAttribute('x')) + Number(rect.getAttribute('width')) / 2;
+      const y = Number(rect.getAttribute('y')) + Number(rect.getAttribute('height')) / 2;
+      const col = Math.min(NAV_MARKER_COLS - 1, Math.max(0, Math.floor(x / cellW)));
+      const row = Math.min(NAV_MARKER_ROWS - 1, Math.max(0, Math.floor(y / cellH)));
+      const index = row * NAV_MARKER_COLS + col;
+      let cell = cells[index];
+      if (!cell) {
+        cell = {
+          el: svgNode('g', { class: 'wb-nav-cell' }),
+          dots: [],
+          away: null,
+          x0: col * cellW, x1: (col + 1) * cellW,
+          y0: row * cellH, y1: (row + 1) * cellH,
+        };
+        cells[index] = cell;
+        navMarkerLayer.append(cell.el);
+      }
+      const marker = svgNode('g', { class: 'wb-nav-marker' });
+      marker.append(
+        svgNode('circle', { class: 'wb-nav-away', cx: x, cy: y, r: 4.2 }),
+        svgNode('circle', { class: 'wb-nav-dot', cx: x, cy: y, r: 2 }),
+      );
+      cell.dots.push({ el: marker, x, y, away: null });
+      cell.el.append(marker);
+    }
+    navMarkerCells = cells.filter(Boolean);
+  }
+
+  /** Ring one dot, or leave it alone when it already agrees. */
+  function setNavigatorDotAway(dot, away) {
+    if (dot.away === away) return;
+    dot.away = away;
+    dot.el.classList.toggle('is-away', away);
+  }
+
+  /**
+   * The map's reading as the frame moves: every selected card keeps a dot of
+   * its own size, and one the camera has left outside the frame is ringed —
+   * which is what “where did that card go?” looks like on the map.
+   *
+   * A cell wholly inside or outside the frame answers for all of its dots at
+   * once, and only the cells the frame's edge crosses are read one dot at a
+   * time. A pan therefore costs its own border, not the cards in hand, so a
+   * whole-vein selection pans as cheaply as a single card.
+   */
+  function syncNavigatorMarkers(box) {
+    if (!navMarkerLayer || !navGeometry) return;
+    if (navMarkersStale) {
+      navMarkersStale = false;
+      buildNavigatorMarkers();
+    }
+    const left = box ? box.x : Number.POSITIVE_INFINITY;
+    const right = box ? box.x + Math.max(2, box.width) : Number.NEGATIVE_INFINITY;
+    const top = box ? box.y : Number.POSITIVE_INFINITY;
+    const bottom = box ? box.y + Math.max(2, box.height) : Number.NEGATIVE_INFINITY;
+    for (const cell of navMarkerCells) {
+      // A cell that only touches the frame's edge is read as crossed, because a
+      // dot sitting exactly on the edge counts as inside.
+      const inside = cell.x0 >= left && cell.x1 <= right && cell.y0 >= top && cell.y1 <= bottom;
+      const outside = !box
+        || cell.x1 <= left || cell.x0 > right || cell.y1 <= top || cell.y0 > bottom;
+      if (!inside && !outside) {
+        cell.away = null;
+        for (const dot of cell.dots) {
+          setNavigatorDotAway(dot, dot.x < left || dot.x > right || dot.y < top || dot.y > bottom);
+        }
+        continue;
+      }
+      const away = outside;
+      if (cell.away === away) continue;
+      cell.away = away;
+      for (const dot of cell.dots) setNavigatorDotAway(dot, away);
     }
   }
 
   /** Ring the selected cards on the map without re-measuring it. */
   function syncNavigatorSelection() {
     for (const [anchor, rect] of navCards) rect.classList.toggle('is-selected', selected.has(anchor));
+    // A new selection means new dots, so the markers are rebuilt once on the
+    // next viewport sync rather than on every frame after it.
+    navMarkersStale = true;
     syncNavigatorViewport();
   }
 
