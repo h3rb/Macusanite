@@ -3966,6 +3966,18 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   outline-offset: -2px;
 }
 
+/* Floating on a short stage, the card is capped like the dock and scrolls its
+   own panel rather than running off the top of the canvas. */
+.wb-stage > .wb-navigator {
+  max-height: calc(100% - 24px);
+}
+
+.wb-stage > .wb-navigator > .wb-nav-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 /* ── the right-edge dock ──────────────────────────────────────────────────
  * One card on the canvas's right edge, holding a rail of vertical tabs and the
  * panel of whichever tab was chosen: the navigator and the inspector take
@@ -3979,6 +3991,10 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   right: calc(var(--viewer-pad-x) * -1);
   z-index: 9;
   display: flex;
+  /* A column, so the card's own size clamp shrinks its panel along the main axis
+     rather than only clipping the box: on a short canvas the panel scrolls
+     inside the card instead of running out of the bottom of it. */
+  flex-direction: column;
   /* The rail and its one border: shut, this is the whole dock. */
   width: 31px;
   max-height: calc(100% - 24px);
@@ -4031,11 +4047,28 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   }
 }
 
+/* The inspector holds the canvas's right edge, so a floating map takes the other
+   corner rather than sitting under it — the same move a narrow window makes. */
+.wb-stage.is-inspector-edge > .wb-navigator {
+  right: auto;
+  left: 12px;
+}
+
+/* Below 1080px the graph column is gone with its splitter, so there is no edge
+   for the dock to sit flush against: it becomes a card inside the canvas, with
+   all four corners rather than one rim cut off by the window. */
+@media (max-width: 1080px) {
+  .wb-dock {
+    right: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+}
+
 /* The shared dock fills the card. Pinned right, so shutting the panel slides it
    away under the rail rather than dragging the rail off the edge with it. */
 .wb-dock .dock {
   justify-content: flex-end;
-  height: 100%;
 }
 
 /* The panel's slot: always the panel's own width, and clipped by the dock when
@@ -4049,6 +4082,19 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   border-left: 1px solid var(--border);
 }
 
+/* Floating, the dock holds the inspector alone: the navigator is its own card,
+   so the rail has one tab to offer and would stretch it down the panel's whole
+   height — a handle rather than a choice, and a second close beside the panel's
+   own. The inspector then names itself in its head, which the docked tab did. */
+body:not(.nav-dock-drawer) .wb-dock .dock-rail {
+  display: none;
+}
+
+/* Without the rail beside it, the panel is the whole card. */
+body:not(.nav-dock-drawer) .wb-dock.is-open {
+  width: var(--wb-dock-w);
+}
+
 .wb-dock .dock-tab {
   color: var(--text-faint);
 }
@@ -4059,6 +4105,9 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
 
 .wb-dock .wb-navigator {
   position: relative;
+  /* The floating card's corner offsets would shift a relative box up and left
+     inside the slot, whose clip then eats its head and its first column. */
+  inset: auto;
   flex: 1 1 auto;
   width: 100%;
   padding: 0;
@@ -4082,10 +4131,10 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   overflow-y: auto;
 }
 
-/* The tab beside the panel names it, so its kicker would only cost the head the
-   room its two buttons need. */
-.wb-dock .wb-nav-kicker,
-.wb-dock .wb-inspector-kicker {
+/* The navigator's head is a row of its own controls and the tab beside it names
+   the panel, so its kicker would only cost them the room; the inspector's head
+   has the room to name itself in either placement. */
+.wb-dock .wb-nav-kicker {
   display: none;
 }
 
@@ -4183,6 +4232,9 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
 
 .wb-nav-map {
   display: block;
+  /* Never squashed by a short card: the map keeps its aspect and the panel
+     body scrolls to the rest. */
+  flex: none;
   width: 100%;
   height: auto;
   border-radius: 5px;

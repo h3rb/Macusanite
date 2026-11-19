@@ -464,6 +464,9 @@ export function createWorldbuildPanel({ app, root }) {
     }
     navigator.classList.toggle('hidden', docked ? panel !== 'navigator' : false);
     inspector.classList.toggle('hidden', panel !== 'inspector');
+    // A floating map stays clear of the panel on the right edge: the dock takes
+    // the corner the card would otherwise sit in.
+    stage.classList.toggle('is-inspector-edge', panel === 'inspector');
     // The rail's navigator tab is how a closed navigator comes back, so it only
     // goes away when the map floats instead; the inspector's tab exists only
     // while there is a selection to read.
