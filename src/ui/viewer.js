@@ -121,7 +121,38 @@ export function createViewer({ app, root }) {
   });
   const editorSource = el('div', { class: 'editor-source' }, [sourceHighlight, textareaEl]);
   const editorSplit = el('div', { class: 'editor-split' }, [editorSource, preview]);
-  const editorHint = el('span', { class: 'editor-hint', text: 'Markdown source — Ctrl+S saves, Esc returns to the rendered view' });
+  // The source view's shortcut hint. Closing it remembers the decision, and
+  // Settings → Reading → Reset tutorials brings it back. The same element
+  // doubles as the locked-section warning, which is not a tutorial: that one
+  // always shows, even after the hint itself is closed.
+  let editorLockedCount = 0;
+  const editorHintText = el('span', { class: 'editor-hint-text' });
+  const editorHintClose = el('button', {
+    class: 'btn btn-ghost btn-mini editor-hint-close',
+    type: 'button',
+    text: '×',
+    'aria-label': 'Close this editor hint',
+    title: 'Close this hint — Settings → Reading → Reset tutorials brings it back',
+    onclick: () => {
+      app.closeTutorial('editor-shortcuts');
+      syncEditorHint();
+    },
+  });
+  const editorHint = el('span', { class: 'editor-hint' }, [editorHintText, editorHintClose]);
+
+  /** Paint the editor hint, or the locked-section warning it doubles as. */
+  function syncEditorHint() {
+    const locked = editorLockedCount;
+    editorHintText.textContent = locked
+      ? `${locked} locked section${locked === 1 ? '' : 's'} read-only — changes there are ignored`
+      : 'Markdown source — Ctrl+S saves, Esc returns to the rendered view';
+    editorHint.title = locked
+      ? 'Locked group and node contents cannot be changed in the source. Links can still be added on the canvas.'
+      : '';
+    const closed = app.tutorialSeen('editor-shortcuts');
+    editorHint.classList.toggle('hidden', locked === 0 && closed);
+    editorHintClose.classList.toggle('hidden', locked > 0 || closed);
+  }
 
   /** Vault veins the link dialog can offer, titled the way the sidebar shows them. */
   function linkTargets() {
@@ -391,12 +422,8 @@ export function createViewer({ app, root }) {
     const wasWorld = root.classList.contains('is-world');
     if (inWorld && !wasWorld) readScroll = root.scrollTop;
     const lockedCount = app.lockedContentAnchors?.(doc.path)?.length ?? 0;
-    editorHint.textContent = lockedCount
-      ? `${lockedCount} locked section${lockedCount === 1 ? '' : 's'} read-only — changes there are ignored`
-      : 'Markdown source — Ctrl+S saves, Esc returns to the rendered view';
-    editorHint.title = lockedCount
-      ? 'Locked group and node contents cannot be changed in the source. Links can still be added on the canvas.'
-      : '';
+    editorLockedCount = lockedCount;
+    syncEditorHint();
     editor.classList.toggle('hidden', mode !== 'edit' || readOnly);
     body.classList.toggle('hidden', (mode === 'edit' && !readOnly) || inWorld);
     world.classList.toggle('hidden', !inWorld);

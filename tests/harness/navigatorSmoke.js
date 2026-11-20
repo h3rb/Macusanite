@@ -23,11 +23,13 @@
  * The results also land on `globalThis.wbNavSmoke` and in the console, and the
  * page title reports the run.
  *
- * The two caps are a media query, so each is checked twice over: the shipped
- * rule is read from the stylesheet and asserted at every window size, and the
- * panel is then measured against it, which only says something below the
- * breakpoint. A window about 600 px wide makes both measurements bind. A wider
- * one still proves the rule, and its measurement is reported as skipped, naming
+ * The two caps and the floating map's corner all belong to one ≤1100 px media
+ * rule, so the rule is read from the stylesheet and asserted at every window
+ * size, and what it draws is then measured, which only says something below the
+ * breakpoint. A window about 600 px wide makes the cap measurements bind. The
+ * corner is measured beside the inspector, which asks for it at any width, and
+ * on the media rule alone only below the breakpoint. A wider window still proves
+ * the rule, and each measurement it cannot bind is reported as skipped, naming
  * the window that would exercise it — about 955 px for the drawer and 618 px for
  * the inspector. The run puts the navigator back where it found it, so it can be
  * repeated.
@@ -48,6 +50,8 @@ const CAP_BREAKPOINT = 1100;
 const shareVw = (share) => `${Math.round(share * 100)}vw`;
 /** The inspector's own width, before any cap. */
 const INSPECTOR_WIDTH = 284;
+/** How far a floating map is inset from the corner it takes. */
+const FLOAT_INSET = 12;
 /** The navigator's remembered width, before the grip moves it. */
 const DRAWER_NATURAL = 202;
 /** How far inward the grip is dragged, and the width that leaves it at. */
@@ -113,15 +117,16 @@ function minArgs(value) {
 }
 
 /**
- * The `--wb-dock-w` the shipped stylesheet declares for one dock panel inside
- * the ≤1100 px media rule, or null when no such rule reached the page.
+ * Every rule the shipped stylesheet puts under the ≤1100 px media query for one
+ * selector, with its declarations and the query's own text.
  *
- * The rule holds at every window size, while the width it produces only binds
- * below the breakpoint, so a wide window would otherwise leave it unchecked.
+ * These rules hold at every window size, while what they draw only binds below
+ * the breakpoint, so a wide window would otherwise leave them unchecked.
  * Reading the CSSOM checks what ships, not what this window happens to draw.
  */
-function shippedPanelCap(panel) {
-  const selector = squeeze(`.wb-dock[data-panel='${panel}']`);
+function narrowRules(selector) {
+  const wanted = squeeze(selector);
+  const found = [];
   for (const sheet of document.styleSheets) {
     let rules;
     try {
@@ -133,13 +138,36 @@ function shippedPanelCap(panel) {
       const media = rule.media?.mediaText ?? rule.conditionText ?? '';
       if (!squeeze(media).includes(`max-width:${CAP_BREAKPOINT}px`)) continue;
       for (const inner of rule.cssRules ?? []) {
-        if (squeeze(inner.selectorText ?? '') !== selector) continue;
-        const value = inner.style?.getPropertyValue('--wb-dock-w') ?? '';
-        if (value.trim()) return { value: value.trim(), media: media.trim() };
+        if (squeeze(inner.selectorText ?? '') !== wanted) continue;
+        found.push({ style: inner.style, media: media.trim() });
       }
     }
   }
+  return found;
+}
+
+/** The `--wb-dock-w` one dock panel is capped at inside that rule, or null. */
+function shippedPanelCap(panel) {
+  for (const rule of narrowRules(`.wb-dock[data-panel='${panel}']`)) {
+    const value = rule.style?.getPropertyValue('--wb-dock-w') ?? '';
+    if (value.trim()) return { value: value.trim(), media: rule.media };
+  }
   return null;
+}
+
+/** Where the 12 px inset a floating map takes lands from the stage's left edge. */
+function floatInset() {
+  const map = navigatorPanel();
+  const stage = document.querySelector('.wb-stage');
+  if (!map || !stage) return null;
+  return map.getBoundingClientRect().left - stage.getBoundingClientRect().left;
+}
+
+/** The inspector card's dock, when it is the panel on show. */
+function inspectorCard() {
+  if (dockHost()?.dataset.panel !== 'inspector') return null;
+  const rect = dockHost().getBoundingClientRect();
+  return rect.width > 2 ? rect : null;
 }
 
 /**
@@ -459,6 +487,69 @@ export async function runNavigatorSmoke(search = globalThis.location?.search ?? 
         fail(`the inspector is ${visual.toFixed(1)} px wide at ${globalThis.innerWidth} px; ${shareVw(INSPECTOR_SHARE)} caps it at ${wanted.toFixed(1)}`);
       }
       return { detail: `${INSPECTOR_WIDTH} → ${wanted.toFixed(0)} px at ${globalThis.innerWidth} px wide` };
+    });
+
+    await record(results, 'the ≤1100 px rule moves a floating map to the left corner', async () => {
+      const [rule] = narrowRules('.wb-stage > .wb-navigator');
+      if (!rule) fail('the stylesheet has no ≤1100 px rule for a floating map on the stage');
+      const right = rule.style?.getPropertyValue('right') ?? '';
+      const left = rule.style?.getPropertyValue('left') ?? '';
+      if (right !== 'auto') fail(`the floating map's narrow rule sets right: ${right || 'nothing'} instead of auto`);
+      if (left !== `${FLOAT_INSET}px`) {
+        fail(`the floating map's narrow rule sets left: ${left || 'nothing'} instead of ${FLOAT_INSET}px`);
+      }
+      return { detail: `${rule.media} → right: auto, left: ${FLOAT_INSET}px, read from the shipped rule` };
+    });
+
+    await record(results, '…and a floating map beside the inspector takes the left corner', async () => {
+      await setPlacementVia(app, 'float');
+      const map = navigatorPanel();
+      if (!map || map.parentElement !== stage) fail('the navigator did not float onto the stage');
+      if (map.classList.contains('hidden')) fail('the floating map is hidden beside the inspector');
+      if (!stage.classList.contains('is-inspector-edge')) fail('the stage does not know the inspector holds its edge');
+      const card = inspectorCard();
+      if (!card) fail('the dock is not showing the inspector, so the map has nothing to sit beside');
+      const rect = map.getBoundingClientRect();
+      const inset = floatInset();
+      if (Math.abs(inset - FLOAT_INSET) > 1) {
+        fail(`the floating map sits ${inset.toFixed(1)} px from the stage's left edge instead of ${FLOAT_INSET}`);
+      }
+      // The inspector is drawn over the canvas's right edge, and on a narrow
+      // canvas the two cards can want more room than the stage has: clearance is
+      // only asked for where the corner leaves the map a place to sit.
+      const room = card.left - stage.getBoundingClientRect().left - FLOAT_INSET;
+      const clear = Math.round(card.left - rect.right);
+      if (room >= rect.width + 1 && clear < -1) {
+        fail(`the floating map reaches ${Math.round(rect.right)} px with ${Math.round(room)} px free beside it, under the inspector card at ${Math.round(card.left)} px`);
+      }
+      return {
+        detail: room >= rect.width + 1
+          ? `${Math.round(rect.width)}×${Math.round(rect.height)} at ${FLOAT_INSET} px from the left, ${clear} px clear of the inspector card`
+          : `${Math.round(rect.width)}×${Math.round(rect.height)} at ${FLOAT_INSET} px from the left; the ${Math.round(card.width)} px card leaves ${Math.round(room)} px, so they meet on this ${globalThis.innerWidth} px canvas`,
+      };
+    });
+
+    await record(results, '…and below the breakpoint it takes that corner without the inspector', async () => {
+      // The inspector's own tab shuts it, which clears the selection with it,
+      // so nothing but the media rule can be putting the map on the left.
+      const tab = [...dockHost().querySelectorAll('.dock-tab')]
+        .find((candidate) => candidate.textContent.trim().startsWith('Inspector'));
+      if (tab && !tab.classList.contains('hidden')) tab.click();
+      await wait(80);
+      if (globalThis.innerWidth > CAP_BREAKPOINT) {
+        return { skip: `the shipped corner is checked above and drawn beside the inspector at this ${globalThis.innerWidth} px window; the media rule alone only places a floating map when the window is ${CAP_BREAKPOINT} px or narrower, so the corner it takes with no inspector goes unmeasured here.` };
+      }
+      const map = navigatorPanel();
+      if (!map || map.parentElement !== stage) fail('the navigator is not floating on the stage');
+      if (map.classList.contains('hidden')) fail('the floating map is hidden with no inspector beside it');
+      if (stage.classList.contains('is-inspector-edge')) fail('the stage still holds the inspector edge, so the inspector, not the rule, moves the map');
+      const inset = floatInset();
+      if (Math.abs(inset - FLOAT_INSET) > 1) {
+        fail(`the floating map sits ${inset.toFixed(1)} px from the stage's left edge instead of ${FLOAT_INSET}`);
+      }
+      const fromRight = stage.getBoundingClientRect().right - map.getBoundingClientRect().right;
+      if (fromRight <= FLOAT_INSET + 1) fail(`the floating map is ${fromRight.toFixed(1)} px from the right edge, not the left corner`);
+      return { detail: `${FLOAT_INSET} px from the left at ${globalThis.innerWidth} px wide, ${Math.round(fromRight)} px short of the right corner` };
     });
 
     await record(results, 'the canvas is left with the settings it had', async () => {

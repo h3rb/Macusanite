@@ -822,7 +822,9 @@ body.resizing {
 }
 
 .search-tip {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-top: 6px;
 }
 
@@ -1255,8 +1257,22 @@ mark.search-hit {
 }
 
 .editor-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--text-faint);
   font-size: 12px;
+}
+
+/* The × that closes a teaching note: read as part of the sentence, still
+ * big enough to aim at. Settings → Reading → Reset tutorials is the way back. */
+.search-tip-close,
+.editor-hint-close {
+  padding: 0 5px;
+  min-height: 0;
+  line-height: 1.4;
+  font-size: 13px;
+  color: var(--text-faint);
 }
 
 .editor-textarea {
@@ -4248,11 +4264,23 @@ body:not(.nav-dock-drawer) .wb-dock.is-open {
   cursor: grabbing;
 }
 
+/* A group is a region of the map: a tint of the group’s own colour under the
+ * cards, and a matching edge over them, so a cluster reads as one object at a
+ * glance and its boundary never disappears beneath the cards it holds. The
+ * fill stays translucent so each card keeps its own colour; the edge is the
+ * canvas frame’s colour, at the width a 196px map can afford. */
 .wb-nav-group {
+  stroke: none;
+  fill-opacity: 0.14;
+  pointer-events: none;
+}
+
+.wb-nav-group-edge {
   fill: none;
-  stroke: var(--border-strong);
-  stroke-width: 0.7;
-  opacity: 0.8;
+  stroke-width: 1.2;
+  stroke-opacity: 0.95;
+  stroke-linejoin: round;
+  pointer-events: none;
 }
 
 /* Cards keep their section's colour, at enough strength to read as the vein's

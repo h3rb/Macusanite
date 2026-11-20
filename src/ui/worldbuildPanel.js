@@ -13,7 +13,8 @@ import { createDock } from './dock.js';
 import { renderMarkdown, renderMermaidIn } from './markdown.js';
 import { searchIcons } from '../lib/iconSet.js';
 import {
-  parseNotes, serializeNotes, updateNote, updateIntro, addNote, nextNoteTitle, removeNote,
+  parseNotes, serializeNotes, updateNote, updateIntro, addNote, addPresetNote, nextNoteTitle, removeNote,
+  renameSectionLinks, insertNoteAfter, insertChildNote, promoteNote, demoteNote, moveNoteUp, moveNoteDown, outlineCaps,
   noteEdges, noteStats, countWords, DEFAULT_LEVEL,
   normalizeTag, addNoteTags, removeNoteTag, tagRecord, tagTarget,
   RELATION_KINDS, DEFAULT_RELATION, relationOf, relationKind, relationKey, groupEndpoint,
@@ -33,7 +34,7 @@ import {
   NODE_IMAGE_MAX_SIDE, NODE_IMAGE_QUALITY, nodeImageSize,
   nodeFileRef, nodeFileMetaName, cleanNodeResources, normalizeWebUrl,
   referencedNodeFileMetaNames, orphanedNodeFileMetaNames, NODE_FILE_MAX_BYTES, NODE_RESOURCE_LIMIT,
-  canvasSnapshot as snapshotCanvas, renameHistoryAnchor, pruneHistoryStack,
+  canvasSnapshot as snapshotCanvas, moveHistoryAnchors, pruneHistoryStack,
   connectedAnchors, lineageAnchors, anchorsInRect, curvesInRect, relationshipDepths, canvasSearch,
   connectorList, connectorKey, nextConnectorSelection, lensFocus, forgePalette, pathAnchors, effectiveRouting, spreadConnectorCurves, cleanCardModes, cleanCardSizes, cleanCardDims, cleanStackOrder, cleanCollapsedGroups, cleanSavedViews, proseLinkBetween, unlinkProseBetween,
   cleanGroupFrame, pinnedGroupFrame, capturePinnedGroupFrames,
@@ -779,6 +780,9 @@ export function createWorldbuildPanel({ app, root }) {
   let selectionQuiet = false;
   let selectMenuEl = null;
   let arrangeMenuEl = null;
+  // The quick-add palette's dropdown: the toolbar's way to add a blank note or
+  // a card seeded from one of the vault's presets.
+  let addMenuEl = null;
   // Canvas search state: matches, the current jump target, and — while
   // isolated — the connected subgraph kept bright.
   let searchMatches = [];
@@ -849,6 +853,7 @@ export function createWorldbuildPanel({ app, root }) {
       closeMoreMenu({ returnFocus: false });
       closeSelectMenu();
       closeArrangeMenu();
+      closeAddMenu({ returnFocus: false });
       mounted = false;
       model = null;
       currentPath = null;
@@ -883,6 +888,10 @@ export function createWorldbuildPanel({ app, root }) {
       isolatedAnchors = null;
       searchInput.value = '';
       tableSelection = new Map();
+      // Each visit re-arms the once-ever object-map check; the reader's closed
+      // notes still decide whether it opens, so Settings → Reset tutorials can
+      // bring the note back on the next visit without reviving it mid-pan.
+      zoomTipState = 'unasked';
     }
     if (currentPath === doc.path && lastText !== null && text !== lastText) overviewFolded = null;
     currentPath = doc.path;
@@ -1164,8 +1173,12 @@ export function createWorldbuildPanel({ app, root }) {
       redoBtn,
       historyBtn,
       el('button', {
-        class: 'btn btn-ghost btn-mini', type: 'button', text: '+ Note',
-        title: 'Add a note to this vein', onclick: addNewNote,
+        class: 'btn btn-ghost btn-mini', type: 'button', text: '+ Add ▾',
+        'data-add-toggle': '',
+        'aria-haspopup': 'menu',
+        'aria-expanded': 'false',
+        title: 'Add a card — a blank note, or a Person, Place, Scene or Faction preset',
+        onclick: (event) => toggleAddMenu(event.currentTarget),
       }),
       el('button', {
         class: 'btn btn-ghost btn-mini', type: 'button', text: 'Arrange ▾',
@@ -1846,8 +1859,41 @@ export function createWorldbuildPanel({ app, root }) {
 
   /** Rewrite a card rename through every undo and redo snapshot. */
   function renameHistorySnapshots(before, after) {
-    renameHistoryAnchor(historyFor(currentPath), before, after);
+    migrateHistoryAnchors([{ before, after }]);
+  }
+
+  /**
+   * Follow anchors that changed hands through every stored step, so a later
+   * undo or redo puts each card's canvas data back on the card it belonged to
+   * rather than on whichever card owns that name now.
+   */
+  function migrateHistoryAnchors(pairs) {
+    if (!pairs?.length) return;
+    moveHistoryAnchors(historyFor(currentPath), pairs);
     saveHistory(currentPath);
+  }
+
+  /**
+   * Take the record slices a rename or an outline move handed back, so the
+   * panel's own copies match what the vein record now holds.
+   */
+  function adoptMovedAnchors(moved) {
+    if (!moved) return;
+    nodeTypes = moved.types ?? nodeTypes;
+    fieldValues = moved.fields ?? fieldValues;
+    folded = moved.folded ?? folded;
+    nodeColors = moved.colors ?? nodeColors;
+    nodeImages = moved.images ?? nodeImages;
+    pinned = moved.pinned ?? pinned;
+    nodeLocked = moved.locked ?? nodeLocked;
+    cardModes = moved.cardModes ?? cardModes;
+    cardSizes = moved.cardSizes ?? cardSizes;
+    cardDims = moved.cardDims ?? cardDims;
+    stackOrder = moved.stack ?? stackOrder;
+    nodeResources = moved.resources ?? nodeResources;
+    groups = moved.groups ?? groups;
+    relations = moved.relations ?? relations;
+    bondNotes = moved.bondNotes ?? bondNotes;
   }
 
   /** Keep deleted cards and dissolved groups out of all stored snapshots. */
@@ -3826,44 +3872,32 @@ export function createWorldbuildPanel({ app, root }) {
       contentObservers.push(observer);
     }
 
-    title.addEventListener('input', () => {
-      const before = model.notes[index]?.anchor;
-      model = updateNote(model, index, { title: title.value });
-      // A rename changes the anchor: follow the card's place to the new name.
-      // Bonds named the old anchor are dropped with it, like section colours.
-      const after = model.notes[index]?.anchor;
-      if (before && after && before !== after) {
-        if (positions.has(before)) positions.set(after, positions.get(before));
-        positions.delete(before);
-        if (tableSelection.has(before)) tableSelection.set(after, tableSelection.get(before));
-        tableSelection.delete(before);
-        relations = app.dropWorldRelations(currentPath, before) ?? relations;
-        const moved = app.renameWorldAnchor(currentPath, before, after);
-        if (moved) {
-          nodeTypes = moved.types;
-          fieldValues = moved.fields;
-          folded = moved.folded ?? folded;
-          nodeColors = moved.colors ?? nodeColors;
-          nodeImages = moved.images ?? nodeImages;
-          pinned = moved.pinned ?? pinned;
-          nodeLocked = moved.locked ?? nodeLocked;
-          cardModes = moved.cardModes ?? cardModes;
-          cardSizes = moved.cardSizes ?? cardSizes;
-          cardDims = moved.cardDims ?? cardDims;
-          stackOrder = moved.stack ?? stackOrder;
-          nodeResources = moved.resources ?? nodeResources;
-          groups = moved.groups ?? groups;
-          if (raisedCards.has(before)) {
-            raisedCards.set(after, raisedCards.get(before));
-            raisedCards.delete(before);
-          }
-        }
-        savePositions();
-        renameHistorySnapshots(before, after);
+    // A title commits on Enter or when the field is left, never on each
+    // keystroke: a half-typed name is not a heading yet, and every keystroke
+    // used to rename the anchor, drop the card's bonds and rewrite the draft.
+    // Escape puts the heading back.
+    const commitTitle = () => {
+      if (renameCard(index, title.value)) {
+        build();
+        return;
       }
-      commit();
-      refreshWords();
+      title.value = model.notes[index]?.title ?? note.title;
+    };
+    title.addEventListener('keydown', (event) => {
+      // The canvas's own keys must not also act on a title being committed or
+      // abandoned: leaving the field is the field's business, not the view's.
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        event.stopPropagation();
+        commitTitle();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        title.value = model.notes[index]?.title ?? note.title;
+        title.blur();
+      }
     });
+    title.addEventListener('blur', commitTitle);
 
     body.addEventListener('input', () => {
       const live = model.notes[index];
@@ -4083,6 +4117,103 @@ export function createWorldbuildPanel({ app, root }) {
   }
 
   /**
+   * Add a card from a preset. The heading and the seed markdown are written
+   * into the vein here, once — the preset is not stored on the card, marked in
+   * the prose or consulted again — and the preset's node type, which is canvas
+   * metadata like a colour, goes into the vein's record.
+   */
+  function addPreset(preset) {
+    if (!model || !preset) return;
+    const added = addPresetNote(model, preset);
+    model = added.model;
+    const note = model.notes[added.index];
+    if (preset.type) nodeTypes = app.setWorldNodeType(currentPath, note.anchor, preset.type) ?? nodeTypes;
+    commit();
+    build();
+    focusNewNote(added.index);
+    app.toast(`Added “${note.title}”`, 'ok', 1500);
+  }
+
+  /* ------------------------------------------------- the quick-add palette -- */
+
+  /** The rows of the add menu: a blank note, then one row per preset. */
+  function addMenuRows() {
+    const rows = [
+      el('div', { class: 'wb-menu-label', text: 'Add a card' }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Blank note',
+        title: 'A new heading with an empty card',
+        onclick: () => {
+          closeAddMenu({ returnFocus: false });
+          addNewNote();
+        },
+      }),
+    ];
+    const presets = app.worldPresets?.() ?? [];
+    if (!presets.length) return rows;
+    rows.push(el('div', { class: 'wb-menu-label', text: 'Presets' }));
+    for (const preset of presets) {
+      // A preset with no type of its own (Faction) still wears its own glyph.
+      const icon = nodeType(preset.type)?.icon ?? preset.icon ?? '＋';
+      rows.push(el('button', {
+        class: 'wb-menu-item', type: 'button', text: `${icon} ${preset.label}`,
+        title: preset.hint
+          ? `${preset.title} — ${preset.hint}. Writes the heading and markdown once.`
+          : `${preset.title} — writes the heading and markdown once`,
+        onclick: () => {
+          closeAddMenu({ returnFocus: false });
+          addPreset(preset);
+        },
+      }));
+    }
+    return rows;
+  }
+
+  function toggleAddMenu(button) {
+    if (addMenuEl) {
+      closeAddMenu();
+      return;
+    }
+    addMenuEl = el('div', {
+      class: 'wb-menu wb-add-menu', role: 'menu', 'aria-label': 'Add a card',
+    }, addMenuRows());
+    addMenuEl._trigger = button;
+    document.body.append(addMenuEl);
+    button.setAttribute('aria-expanded', 'true');
+    const rect = button.getBoundingClientRect();
+    addMenuEl.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - addMenuEl.offsetWidth - 8))}px`;
+    addMenuEl.style.top = `${rect.bottom + 6}px`;
+    addMenuEl.style.maxHeight = `${Math.max(160, window.innerHeight - rect.bottom - 14)}px`;
+    const dismiss = (event) => {
+      if (!addMenuEl?.contains(event.target) && event.target !== button) closeAddMenu({ returnFocus: false });
+    };
+    addMenuEl.addEventListener('pointerdown', (event) => event.stopPropagation());
+    addMenuEl._dismiss = dismiss;
+    document.addEventListener('pointerdown', dismiss, true);
+    document.addEventListener('keydown', addEscape);
+    focusMenuStart(addMenuEl);
+  }
+
+  function addEscape(event) {
+    if (event.key !== 'Escape' || !addMenuEl) return;
+    event.stopPropagation();
+    closeAddMenu({ returnFocus: true });
+  }
+
+  /** Close the add menu; a keyboard dismissal hands focus back to its button. */
+  function closeAddMenu({ returnFocus = 'auto' } = {}) {
+    if (!addMenuEl) return;
+    const trigger = addMenuEl._trigger ?? null;
+    const hadFocus = addMenuEl.contains(document.activeElement);
+    if (addMenuEl._dismiss) document.removeEventListener('pointerdown', addMenuEl._dismiss, true);
+    document.removeEventListener('keydown', addEscape);
+    addMenuEl.remove();
+    addMenuEl = null;
+    toolbar.querySelector('[data-add-toggle]')?.setAttribute('aria-expanded', 'false');
+    if (returnFocus === true || (returnFocus === 'auto' && hadFocus)) focusMenuTrigger(trigger);
+  }
+
+  /**
    * The "Link to… + New Note" path: create a note in this vein and link the
    * current card to it, in one step.
    */
@@ -4119,6 +4250,138 @@ export function createWorldbuildPanel({ app, root }) {
     const input = cardEls[index]?.querySelector('.wb-card-title');
     input?.focus();
     input?.select();
+  }
+
+  /**
+   * Commit a card's title, which renames its heading in the markdown. The card
+   * keeps everything the canvas stores about it — place, type, fields, bonds
+   * and the notes those bonds carry follow the new anchor — and every
+   * same-vein link that named the old heading is rewritten to the new one. An
+   * empty title is refused, because a heading needs words to be a heading.
+   *
+   * @returns {boolean} whether the vein changed
+   */
+  function renameCard(index, rawTitle) {
+    const note = model?.notes?.[index];
+    if (!note) return false;
+    const wanted = String(rawTitle ?? '').trim();
+    if (!wanted || wanted === note.title) return false;
+    const before = note.anchor;
+    model = updateNote(model, index, { title: wanted });
+    const after = model.notes[index].anchor;
+    if (before !== after) {
+      // Links name the heading they point at, so they follow it to its new name.
+      model = renameSectionLinks(model, before, after, wanted).model;
+      if (positions.has(before)) positions.set(after, positions.get(before));
+      positions.delete(before);
+      if (tableSelection.has(before)) tableSelection.set(after, tableSelection.get(before));
+      tableSelection.delete(before);
+      const moved = app.renameWorldAnchor(currentPath, before, after);
+      adoptMovedAnchors(moved);
+      if (moved && raisedCards.has(before)) {
+        raisedCards.set(after, raisedCards.get(before));
+        raisedCards.delete(before);
+      }
+      savePositions();
+      renameHistorySnapshots(before, after);
+    }
+    commit();
+    return true;
+  }
+
+  /* ------------------------------------------------------------- outline -- */
+
+  /** Why an outline edit did nothing, in words the writer can act on. */
+  const OUTLINE_REFUSALS = {
+    'level-limit': 'That heading is already as deep or as shallow as this vein goes',
+    'no-sibling': 'There is no sibling that way to move past',
+    missing: 'That card is no longer on the canvas',
+  };
+
+  /**
+   * Run one outline edit and put the result on screen: the markdown is
+   * committed once, and any card that changed anchors hands its canvas record
+   * over with it — positions, types, fields, bonds, groups and stored steps.
+   *
+   * @returns {number|null} where the edited card now sits, or null when the
+   *   edit was refused, in which case it has already said why
+   */
+  function applyOutline(result, message) {
+    if (!result) return null;
+    if (result.index === null) {
+      app.toast(OUTLINE_REFUSALS[result.reason] ?? 'That outline edit cannot be made here', 'warn', 2400);
+      return null;
+    }
+    model = result.model;
+    if (result.anchors.length) {
+      adoptMovedAnchors(app.moveWorldAnchors?.(currentPath, result.anchors));
+      migrateHistoryAnchors(result.anchors);
+    }
+    commit();
+    build();
+    if (message) app.toast(message, 'ok', 1600);
+    return result.index;
+  }
+
+  /**
+   * The card menu's Outline submenu: add a sibling or a child, change the
+   * heading level, or reorder the card among its siblings. A move keeps the
+   * branch whole, so children travel with their card. An action that cannot
+   * apply is disabled and says why in its own tooltip.
+   */
+  function outlineMenuItems(index) {
+    const note = model?.notes?.[index];
+    const caps = outlineCaps(model ?? {}, index);
+    if (!note || !caps) return [];
+    const title = note.title || 'this card';
+    const run = (change, message, focus = false) => {
+      closeMenu();
+      const at = applyOutline(change, message);
+      if (at !== null && focus) focusNewNote(at);
+    };
+    return [
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Insert note after',
+        title: `Add a sibling below “${title}” and its branch`,
+        onclick: () => run(insertNoteAfter(model, index), `Added a card after “${title}”`, true),
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'New child note',
+        title: caps.child
+          ? `Add a first child under “${title}”`
+          : 'This heading is already six levels deep, so it cannot hold a child',
+        disabled: caps.child ? undefined : true,
+        onclick: () => run(insertChildNote(model, index), `Added a child under “${title}”`, true),
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Promote',
+        title: caps.promote ? `Outdent “${title}” and its branch one level` : 'This heading is already level 1',
+        disabled: caps.promote ? undefined : true,
+        onclick: () => run(promoteNote(model, index), `Promoted “${title}”`),
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Demote',
+        title: caps.demote ? `Indent “${title}” and its branch one level` : 'This branch is already six levels deep',
+        disabled: caps.demote ? undefined : true,
+        onclick: () => run(demoteNote(model, index), `Demoted “${title}”`),
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Move up',
+        title: caps.up
+          ? `Swap “${title}” with the sibling above it, branches whole`
+          : 'This card is the first at its level',
+        disabled: caps.up ? undefined : true,
+        onclick: () => run(moveNoteUp(model, index), `Moved “${title}” up`),
+      }),
+      el('button', {
+        class: 'wb-menu-item', type: 'button', text: 'Move down',
+        title: caps.down
+          ? `Swap “${title}” with the sibling below it, branches whole`
+          : 'This card is the last at its level',
+        disabled: caps.down ? undefined : true,
+        onclick: () => run(moveNoteDown(model, index), `Moved “${title}” down`),
+      }),
+    ];
   }
 
   /* -------------------------------------------------------------- canvas -- */
@@ -4232,7 +4495,7 @@ export function createWorldbuildPanel({ app, root }) {
     if (zoomTipState !== 'unasked' || !mode?.forge || !model) return;
     zoomTipState = 'asked';
     if (app.state.settings?.tutorials === false) return;
-    if (app.lowZoomTipSeen()) return;
+    if (app.tutorialSeen('object-map')) return;
     zoomTip.classList.remove('hidden');
     announce('Object map: drag a card’s corner ring to bond it to another card or group; a click picks instead. This note opens once.');
   }
@@ -4240,7 +4503,7 @@ export function createWorldbuildPanel({ app, root }) {
   /** Retire the note for good; the same story stays in Help. */
   function dismissZoomTip() {
     zoomTip.classList.add('hidden');
-    app.markLowZoomTipSeen();
+    app.closeTutorial('object-map');
     announce('Object map note dismissed');
   }
 
@@ -4523,16 +4786,26 @@ export function createWorldbuildPanel({ app, root }) {
       return;
     }
     navGeometry = map;
-    const shapes = svgNode('g');
+    // A group is a region of the map, not its furniture: the fill sits behind
+    // the cards and the edge is drawn over them, both in the group's own colour
+    // (the one its canvas frame uses). Two passes rather than one, because a
+    // tint under the cards cannot show its border where cards cover it, and a
+    // tint over them would muddy every card's own colour.
+    const groupFills = svgNode('g');
+    const groupEdges = svgNode('g');
     for (const group of Object.values(groups ?? {})) {
       const rect = groupDisplayRect(group);
       const box = rect ? navigatorProject(map, rect) : null;
       if (!box) continue;
-      shapes.append(svgNode('rect', {
-        class: 'wb-nav-group',
+      const color = group.color || GROUP_DEFAULT_COLOR;
+      const shape = {
         x: box.x, y: box.y, width: box.width, height: box.height, rx: 2,
-      }));
+        fill: color, stroke: color,
+      };
+      groupFills.append(svgNode('rect', { class: 'wb-nav-group', ...shape }));
+      groupEdges.append(svgNode('rect', { class: 'wb-nav-group-edge', ...shape }));
     }
+    const shapes = svgNode('g');
     (model.notes ?? []).forEach((note, index) => {
       if (isGroupHidden(note.anchor)) return;
       const box = navigatorProject(map, rectOf(index));
@@ -4550,7 +4823,7 @@ export function createWorldbuildPanel({ app, root }) {
     });
     navMarkerLayer = svgNode('g', { class: 'wb-nav-markers', 'aria-hidden': 'true' });
     navMarkersStale = true;
-    navMap.append(shapes, navMarkerLayer, navViewport);
+    navMap.append(groupFills, shapes, groupEdges, navMarkerLayer, navViewport);
     syncNavigatorViewport();
   }
 
@@ -10751,19 +11024,23 @@ export function createWorldbuildPanel({ app, root }) {
         onclick: () => addNodeUrl(anchor),
       })]);
       items.push(anchorLocked ? disableSubmenu(attachmentMenu, lockedContentNote) : attachmentMenu);
+      const cardIndex = model.notes.findIndex((note) => note.anchor === anchor);
       items.push(el('button', {
         class: 'wb-menu-item', type: 'button', text: 'Rename node',
         title: anchorLocked ? 'Locked group contents cannot be renamed' : 'Edit this note’s title in place',
         disabled: anchorLocked ? true : undefined,
         onclick: () => {
           closeMenu();
-          const index = model.notes.findIndex((note) => note.anchor === anchor);
-          const input = cardEls[index]?.querySelector('.wb-card-title');
+          const input = cardEls[cardIndex]?.querySelector('.wb-card-title');
           if (!input) return;
           input.focus();
           input.select();
         },
       }));
+      if (cardIndex >= 0) {
+        const outlineMenu = submenuItem('Outline', outlineMenuItems(cardIndex), `Level ${model.notes[cardIndex].level}`);
+        items.push(anchorLocked ? disableSubmenu(outlineMenu, lockedContentNote) : outlineMenu);
+      }
       const modeItems = [];
       for (const [label, mode] of [['Full card', 'full'], ['Compact card', 'compact'], ['Card thumbnail', 'thumbnail']]) {
         modeItems.push(el('button', {

@@ -17,7 +17,9 @@ import {
   navigatorMap, navigatorProject, navigatorViewport, navigatorWorldPoint, navigatorModeLabel, readingOrder, coveredGroups, tightestGroup,
   FORGE_ZOOM, isForgeZoom, syncForgeZoomClass, ICON_ZOOM, isIconZoom,
   DROP_MIN_PX, dropMembershipKind,
-  canvasSnapshot, pruneSnapshotAnchors, renameAnchorIn,
+  canvasSnapshot, pruneSnapshotAnchors, renameAnchorIn, renameSectionLinks, renameRelations, renameBondNotes,
+  CARD_PRESETS, CARD_PRESET_LIMIT, CARD_PRESET_BODY_MAX, builtinCardPresets, cleanCardPresets, cardPresets, addPresetNote,
+  OUTLINE_MAX_LEVEL, subtreeEnd, insertNoteAfter, insertChildNote, shiftNoteLevel, promoteNote, demoteNote, moveNoteUp, moveNoteDown, outlineCaps, moveAnchorsIn, moveHistoryAnchors,
   DEFAULT_STEP_NAME, normalizeHistoryEntry, cleanHistoryStack, historyJump, historyKey,
   cleanView, restoreSnapshot, canvasRecordPatch,
   pushHistoryStep, rewriteHistoryStack, renameHistoryAnchor, pruneHistoryStack, dropAnchorFromGroups, cleanGroupFrame, pinnedGroupFrame, capturePinnedGroupFrames, fitView,
@@ -139,11 +141,245 @@ test('nextNoteTitle numbers fresh default notes without reusing a label', () => 
   assert.equal(nextNoteTitle([{ title: 'Unrelated' }]), 'New Note');
 });
 
+test('the built-in presets seed a person, place, scene and faction', () => {
+  assert.deepEqual(CARD_PRESETS.map((preset) => preset.id), ['person', 'place', 'scene', 'faction']);
+  for (const preset of CARD_PRESETS) {
+    assert.ok(preset.label && preset.title && preset.body, `${preset.id} is complete seed data`);
+    // A heading in the seed would open a second card; one preset makes one card.
+    assert.equal(/^#{1,6}[ \t]/m.test(preset.body), false, `${preset.id} seeds no headings`);
+  }
+  // The three that name a type name one the canvas knows.
+  assert.deepEqual(
+    CARD_PRESETS.filter((preset) => preset.type).map((preset) => preset.type),
+    ['person', 'place', 'scene'],
+  );
+  for (const preset of CARD_PRESETS.filter((p) => p.type)) assert.ok(nodeType(preset.type));
+  // A faction has no type of its own, so its markdown says what it is instead.
+  const faction = CARD_PRESETS.find((preset) => preset.id === 'faction');
+  assert.equal('type' in faction, false);
+  assert.match(faction.body, /#faction/);
+});
+
+test('a preset writes its heading and seed into the markdown once', () => {
+  const person = cardPresets([]).find((preset) => preset.id === 'person');
+  const model = parseNotes('# Cast\n\nIntro.\n');
+  const seeded = addPresetNote(model, person);
+  assert.equal(seeded.index, 1);
+  assert.equal(seeded.model.notes[1].title, 'New Person');
+  assert.equal(seeded.model.notes[1].level, DEFAULT_LEVEL);
+  assert.equal(seeded.model.notes[1].body, person.body);
+  // The type is canvas metadata, so the prose never carries it.
+  assert.equal(seeded.model.notes[1].type, undefined);
+  assert.equal(serializeNotes(seeded.model), `# Cast\n\nIntro.\n\n## New Person\n\n${person.body}\n`);
+  // Reading the written vein back gives the same card, presets out of the picture.
+  const again = parseNotes(serializeNotes(seeded.model));
+  assert.equal(again.notes[1].title, 'New Person');
+  assert.equal(again.notes[1].body, person.body);
+  // A second card takes the next free heading rather than sharing one.
+  assert.equal(addPresetNote(again, person).model.notes[2].title, 'New Person 1');
+  assert.equal(addPresetNote(addPresetNote(again, person).model, person).model.notes[3].title, 'New Person 2');
+  // Seed data only: editing the preset afterwards cannot reach a card it made,
+  // and editing a copy cannot reach the built-in template either.
+  person.body = 'Rewritten later.';
+  assert.equal(again.notes[1].body, CARD_PRESETS.find((preset) => preset.id === 'person').body);
+  assert.equal(builtinCardPresets()[0].body, CARD_PRESETS[0].body);
+});
+
+test('cleaning a vault’s presets keeps usable seed data and refuses the rest', () => {
+  const clean = cleanCardPresets([
+    { id: 'Ghost', label: 'Ghost', title: 'New Ghost', type: 'person', hint: 'Haunts', body: '  #ghost\n\nBoards.  ', extra: 'dropped' },
+    { id: 'ghost', label: 'Ghost again', title: 'Duplicate id' },
+    { id: '', label: 'No id', title: 'No id' },
+    { id: 'label', label: '', title: 'No label' },
+    { id: 'title', label: 'No title', title: '  ' },
+    { id: 'typed', label: 'Typed', title: 'New Thing', type: 'not-a-type', body: 7 },
+  ]);
+  assert.deepEqual(clean.map((preset) => preset.id), ['ghost', 'typed']);
+  assert.equal(clean[0].type, 'person', 'a known type is kept');
+  assert.equal('type' in clean[1], false, 'an unknown type is dropped, not guessed');
+  assert.equal(clean[0].body, '#ghost\n\nBoards.', 'seed prose is trimmed');
+  assert.equal(clean[1].body, '7', 'seed prose is always text');
+  assert.equal('extra' in clean[0], false, 'unknown keys are dropped');
+  assert.equal(clean[0].hint, 'Haunts');
+  // The record's list stands in for the built-ins; nothing at all takes them.
+  assert.deepEqual(cardPresets([{ id: 'only', label: 'Only', title: 'One' }]).map((p) => p.id), ['only']);
+  assert.deepEqual(cardPresets(undefined).map((p) => p.id), CARD_PRESETS.map((p) => p.id));
+  assert.deepEqual(cardPresets([{ id: '', label: '', title: '' }]).map((p) => p.id), CARD_PRESETS.map((p) => p.id));
+  // A long list is capped, and a long seed is cut rather than refused.
+  const many = Array.from({ length: CARD_PRESET_LIMIT + 5 }, (_, i) => ({ id: `p${i}`, label: `P${i}`, title: `P${i}` }));
+  assert.equal(cleanCardPresets(many).length, CARD_PRESET_LIMIT);
+  const long = cleanCardPresets([{ id: 'long', label: 'Long', title: 'Long', body: 'x'.repeat(CARD_PRESET_BODY_MAX + 50) }]);
+  assert.equal(long[0].body.length, CARD_PRESET_BODY_MAX);
+});
+
 test('removeNote drops that note’s heading and prose', () => {
   const model = parseNotes('# Title\n\nBody.\n## Next\n\nMore.\n');
   const next = removeNote(model, 0);
   assert.equal(next.notes.length, 1);
   assert.equal(serializeNotes(next), '## Next\n\nMore.\n');
+});
+
+/** A four-card outline with one branch: Sieve series holds Composition. */
+const OUTLINE = '# Fieldwork\n\nIntro.\n\n## Sieve series\n\nCoarse to fine.\n\n### Composition\n\nMostly glass.\n\n## Composition\n\nSecond one.\n';
+
+const shape = (model) => model.notes.map((note) => [note.title, note.level, note.anchor]);
+
+/** The outline as a fresh parse would read it: one round trip through markdown. */
+const reread = (model) => parseNotes(serializeNotes(model));
+
+test('subtreeEnd closes a branch at the next heading that is not deeper', () => {
+  const model = parseNotes(OUTLINE);
+  assert.equal(subtreeEnd(model, 1), 2, 'Sieve series ends at its child');
+  assert.equal(subtreeEnd(model, 2), 2, 'a leaf is its own subtree');
+  assert.equal(subtreeEnd(model, 0), 3, 'the root holds every deeper heading');
+  assert.equal(subtreeEnd(model, 9), -1, 'no such card');
+  // A branch's range includes its own nested branches, not just its children.
+  const nested = parseNotes('## A\n\n### B\n\n#### C\n\n## D\n');
+  assert.equal(subtreeEnd(nested, 0), 2);
+});
+
+test('inserting after a card lands below its whole subtree, so it keeps its children', () => {
+  const model = parseNotes(OUTLINE);
+  const added = insertNoteAfter(model, 1, { body: 'New prose.' });
+  assert.equal(added.index, 3);
+  assert.equal(added.reason, '');
+  assert.deepEqual(shape(added.model), [
+    ['Fieldwork', 1, 'fieldwork'],
+    ['Sieve series', 2, 'sieve-series'],
+    ['Composition', 3, 'composition'],
+    ['New Note', 2, 'new-note'],
+    ['Composition', 2, 'composition-1'],
+  ]);
+  // Composition is still Sieve series' child, and the new card is its sibling.
+  assert.equal(added.model.notes[2].body, 'Mostly glass.');
+  assert.equal(added.model.notes[3].body, 'New prose.');
+  assert.deepEqual(reread(added.model).notes.map((note) => note.title), ['Fieldwork', 'Sieve series', 'Composition', 'New Note', 'Composition']);
+  assert.deepEqual(added.anchors, [], 'nothing changed hands');
+  // A second insert takes the next free title rather than sharing a heading.
+  const twice = insertNoteAfter(added.model, 3);
+  assert.equal(twice.model.notes[4].title, 'New Note 1');
+});
+
+test('a new child note opens the branch it belongs to', () => {
+  const model = parseNotes(OUTLINE);
+  const child = insertChildNote(model, 1, { title: 'Scratch' });
+  assert.equal(child.index, 2);
+  assert.equal(child.model.notes[2].title, 'Scratch');
+  assert.equal(child.model.notes[2].level, 3);
+  // It is the first child, so it sits above the child that was there.
+  assert.equal(child.model.notes[3].title, 'Composition');
+  assert.deepEqual(hierarchyEdges(child.model).filter((edge) => edge.from === 1).map((edge) => edge.to), [2, 3]);
+  // A level-6 heading has nowhere deeper to put a child, so nothing is written.
+  const deep = parseNotes('###### Six\n\nProse.\n');
+  assert.equal(OUTLINE_MAX_LEVEL, 6);
+  const refused = insertChildNote(deep, 0);
+  assert.equal(refused.index, null);
+  assert.equal(refused.reason, 'level-limit');
+  assert.equal(refused.model, deep);
+});
+
+test('promote and demote shift a whole branch, children included', () => {
+  const model = parseNotes(OUTLINE);
+  const promoted = promoteNote(model, 1);
+  assert.deepEqual([promoted.index, promoted.reason], [1, '']);
+  assert.deepEqual(shape(promoted.model).map(([title, level]) => [title, level]), [
+    ['Fieldwork', 1], ['Sieve series', 1], ['Composition', 2], ['Composition', 2],
+  ]);
+  // The demoted branch keeps its shape: the child stays one level under it.
+  const demoted = demoteNote(model, 1);
+  assert.deepEqual(shape(demoted.model).map(([title, level]) => [title, level]), [
+    ['Fieldwork', 1], ['Sieve series', 3], ['Composition', 4], ['Composition', 2],
+  ]);
+  assert.equal(hierarchyEdges(demoted.model).find((edge) => edge.to === 2).from, 1);
+  // Levels never leave 1–6, and a refused shift writes nothing at all.
+  assert.equal(promoteNote(model, 0).reason, 'level-limit');
+  assert.equal(promoteNote(model, 0).model, model);
+  const six = parseNotes('##### Five\n\n###### Six\n');
+  assert.equal(demoteNote(six, 0).reason, 'level-limit', 'the branch is already six deep');
+  assert.equal(shiftNoteLevel(model, 1, 0).reason, '', 'no step is no edit');
+  assert.equal(shiftNoteLevel(model, 1, 0).anchors.length, 0);
+  // Levels are heading levels, so a branch never lands on level 0 or 7.
+  const low = parseNotes('## A\n\n### B\n');
+  const shallow = promoteNote(low, 0).model;
+  assert.equal(promoteNote(shallow, 0).reason, 'level-limit');
+});
+
+test('moving up and down swaps whole sibling branches, never half of one', () => {
+  const model = parseNotes(OUTLINE);
+  const up = moveNoteUp(model, 3);
+  assert.equal(up.index, 1, 'the moved card starts where the sibling it passed did');
+  assert.deepEqual(shape(up.model).map(([title, level]) => [title, level]), [
+    ['Fieldwork', 1], ['Composition', 2], ['Sieve series', 2], ['Composition', 3],
+  ]);
+  assert.equal(hierarchyEdges(up.model).find((edge) => edge.to === 3).from, 2, 'Composition stays under Sieve series');
+  const down = moveNoteDown(model, 1);
+  assert.equal(down.index, 2, 'Sieve series now starts after the sibling it passed');
+  assert.deepEqual(shape(down.model).map(([title, level]) => [title, level]), [
+    ['Fieldwork', 1], ['Composition', 2], ['Sieve series', 2], ['Composition', 3],
+  ]);
+  assert.equal(hierarchyEdges(down.model).find((edge) => edge.to === 3).from, 2, 'Composition travelled with it');
+  assert.deepEqual(reread(down.model).notes.map((note) => note.title), ['Fieldwork', 'Composition', 'Sieve series', 'Composition']);
+  // The ends of a level have nothing to swap with, in either direction.
+  assert.equal(moveNoteUp(model, 0).reason, 'no-sibling');
+  assert.equal(moveNoteUp(model, 1).reason, 'no-sibling', 'Sieve series is its parent’s first child');
+  assert.equal(moveNoteDown(model, 3).reason, 'no-sibling');
+  assert.equal(moveNoteDown(model, 2).reason, 'no-sibling', 'a branch does not move past its parent');
+  assert.equal(moveNoteUp(model, 0).model, model);
+});
+
+test('an outline move hands canvas anchors over safely when titles repeat', () => {
+  const model = parseNotes('# A\n\n## C\n\nFirst.\n\n## C\n\nSecond.\n');
+  assert.deepEqual(model.notes.map((note) => note.anchor), ['a', 'c', 'c-1']);
+  const moved = moveNoteUp(model, 2);
+  assert.deepEqual(shape(moved.model), [['A', 1, 'a'], ['C', 2, 'c'], ['C', 2, 'c-1']]);
+  // The second card now owns `c`, so part of the id in record.
+  // Reported in document order, after the move.
+  assert.deepEqual(moved.anchors, [
+    { before: 'c-1', after: 'c' },
+    { before: 'c', after: 'c-1' },
+  ]);
+  const record = {
+    positions: { a: { x: 0, y: 0 }, c: { x: 10, y: 10 }, 'c-1': { x: 20, y: 20 } },
+    types: { c: 'stat', 'c-1': 'place' },
+    relations: { 'c->a': 'ally', 'a->c-1': 'foe' },
+    bondNotes: { 'c->a': 'The first one.' },
+    groups: { g: { id: 'g', members: ['c', 'c-1'] } },
+    stack: ['c', 'c-1'],
+  };
+  const after = moveAnchorsIn(record, moved.anchors);
+  assert.deepEqual(after.positions, { a: { x: 0, y: 0 }, 'c-1': { x: 10, y: 10 }, c: { x: 20, y: 20 } });
+  assert.deepEqual(after.types, { 'c-1': 'stat', c: 'place' });
+  assert.deepEqual(after.relations, { 'c-1->a': 'ally', 'a->c': 'foe' });
+  assert.deepEqual(after.bondNotes, { 'c-1->a': 'The first one.' });
+  assert.deepEqual(after.groups.g.members, ['c-1', 'c']);
+  assert.deepEqual(after.stack, ['c-1', 'c']);
+  // A move with nothing to hand over leaves the record exactly as it is.
+  const plain = moveNoteUp(parseNotes(OUTLINE), 2);
+  assert.deepEqual(plain.anchors, []);
+  assert.equal(moveAnchorsIn(record, []), record);
+  // Stored undo steps follow the same mapping, so a later redo cannot put the
+  // first card's data on the second one.
+  const stack = { past: [{ name: 'Move', snap: canvasSnapshot({ positions: record.positions }) }], future: [] };
+  moveHistoryAnchors(stack, moved.anchors);
+  assert.deepEqual(JSON.parse(stack.past[0].snap).positions, after.positions);
+});
+
+test('outlineCaps says which outline edits a card can take', () => {
+  const model = parseNotes(OUTLINE);
+  assert.deepEqual(outlineCaps(model, 1), {
+    after: true, child: true, promote: true, demote: true, up: false, down: true,
+  });
+  assert.deepEqual(outlineCaps(model, 0), {
+    after: true, child: true, promote: false, demote: true, up: false, down: false,
+  });
+  assert.deepEqual(outlineCaps(model, 2), {
+    after: true, child: true, promote: true, demote: true, up: false, down: false,
+  });
+  // A six-deep branch can be promoted but neither take a child nor go deeper.
+  assert.deepEqual(outlineCaps(parseNotes('###### Six\n'), 0), {
+    after: true, child: false, promote: true, demote: false, up: false, down: false,
+  });
+  assert.equal(outlineCaps(model, 42), null);
 });
 
 test('noteEdges joins notes by same-page links and by title', () => {
@@ -783,10 +1019,13 @@ test('canvas snapshots and renames keep bond notes with their bonds', () => {
   const restored = restoreSnapshot(snap, new Set(['a', 'b']));
   assert.deepEqual(restored.bondNotes, { 'a->b': 'Friends since the siege.' });
 
-  // Renaming a card drops the bonds it was an end of, notes included.
+  // Renaming a card keeps the bonds it was an end of, notes included.
   const renamed = renameAnchorIn(JSON.parse(snap), 'b', 'b2');
-  assert.deepEqual(renamed.relations, { 'a->gone': 'foe' });
-  assert.deepEqual(renamed.bondNotes, { 'a->gone': 'Lost when the card left.' });
+  assert.deepEqual(renamed.relations, { 'a->b2': 'ally', 'a->gone': 'foe' });
+  assert.deepEqual(renamed.bondNotes, {
+    'a->b2': 'Friends since the siege.',
+    'a->gone': 'Lost when the card left.',
+  });
 });
 
 test('canvas snapshots carry deleted notes for prose undo and redo', () => {
@@ -829,6 +1068,72 @@ test('proseLinkBetween reports the markdown link a bond removal leaves behind', 
   assert.equal(proseLinkBetween(bare, 'a', 'b'), null);
   assert.equal(proseLinkBetween(mention, 'a', 'missing'), null);
   assert.equal(proseLinkBetween(mention, 'a', 'a'), null);
+});
+
+test('renameSectionLinks rewrites the same-vein links that named a heading', () => {
+  const model = parseNotes([
+    '# Fieldwork',
+    '',
+    '## Coarse sieve',
+    '',
+    'Coarse to fine, see [[#Fine sieve]].',
+    '',
+    '## Fine sieve',
+    '',
+    'Back to [[#Coarse sieve]], [[#Coarse sieve|the coarse end]] and ![[#Coarse sieve]].',
+    '',
+    '```md',
+    '[[#Coarse sieve]]',
+    '```',
+    '',
+    'Left alone: [[#Elsewhere]] and [[Other note#Coarse sieve]].',
+  ].join('\n'));
+  // The panel renames the heading first and then points its links at the new
+  // name, so the two are committed together.
+  const retitled = updateNote(model, 1, { title: 'Coarse mesh' });
+  const renamed = renameSectionLinks(retitled, 'coarse-sieve', retitled.notes[1].anchor, 'Coarse mesh');
+  // The plain link, its aliased twin and the embed. The example in the fence, a
+  // same-vein link to another heading and a link into another vein stay put.
+  assert.equal(renamed.rewritten, 3);
+  assert.equal(renamed.model.notes[1].body, 'Coarse to fine, see [[#Fine sieve]].');
+  assert.equal(
+    renamed.model.notes[2].body,
+    'Back to [[#Coarse mesh]], [[#Coarse mesh|the coarse end]] and ![[#Coarse mesh]].\n\n```md\n[[#Coarse sieve]]\n```\n\nLeft alone: [[#Elsewhere]] and [[Other note#Coarse sieve]].',
+  );
+  // The rewritten markdown reads back as links to the renamed card, so the wire
+  // the prose draws survives the rename in both directions.
+  const again = parseNotes(serializeNotes(renamed.model));
+  // The link into another vein still names the old heading: repairing those is
+  // a separate pass over the whole vault, not this vein's rename.
+  assert.deepEqual(again.notes[2].links.map((link) => link.anchor), ['coarse-mesh', 'coarse-mesh', 'coarse-mesh', 'elsewhere', 'coarse-sieve']);
+  assert.deepEqual(
+    noteEdges(again).filter((edge) => edge.kind === 'section').map((edge) => [edge.from, edge.to]),
+    [[1, 2], [2, 1]],
+  );
+  // A block reference names a block, not a heading, so it is not a heading's to rename.
+  const block = parseNotes('# A\n\nSee [[#^quote]].\n');
+  assert.equal(renameSectionLinks(block, 'a', 'b', 'B').rewritten, 0);
+  // Nothing to do: the same model comes back, not a copy of it.
+  assert.equal(renameSectionLinks(model, 'fine-sieve', 'fine-sieve', 'Fine sieve').model, model);
+  assert.equal(renameSectionLinks(model, 'coarse-sieve', 'coarse-mesh', '   ').model, model);
+  // A title that cannot be written inside brackets leaves the links readable.
+  assert.equal(renameSectionLinks(model, 'coarse-sieve', 'coarse-mesh', 'Coarse | mesh').model, model);
+});
+
+test('bonds and the notes they carry follow a renamed card', () => {
+  const relations = { 'a->b': 'ally', 'b->c': 'foe', 'c->b': 'contains', 'b->gone': 'controls' };
+  assert.deepEqual(renameRelations(relations, 'b', 'b2'), {
+    'a->b2': 'ally', 'b2->c': 'foe', 'c->b2': 'contains', 'b2->gone': 'controls',
+  });
+  assert.deepEqual(renameBondNotes({ 'a->b': 'Friends.', 'c->b': 'Holds the river.' }, 'b', 'b2'), {
+    'a->b2': 'Friends.', 'c->b2': 'Holds the river.',
+  });
+  // A bond the new name already carries wins, and renaming a card onto the
+  // other end of a bond would join it to itself, so that bond goes.
+  assert.deepEqual(renameRelations({ 'a->b': 'ally', 'a->c': 'foe' }, 'b', 'c'), { 'a->c': 'foe' });
+  assert.deepEqual(renameRelations({ 'a->b': 'ally' }, 'a', 'b'), {});
+  // Nothing to rename is the record back again.
+  assert.equal(renameRelations(relations, 'b', 'b'), relations);
 });
 
 test('unlinkProseBetween takes the markdown link out and keeps its words', () => {
@@ -2290,8 +2595,8 @@ test('renameAnchorIn carries types and fields onto the new name', () => {
   assert.deepEqual(renamed.folded, { new: { card: true } });
   assert.deepEqual(renamed.types, { new: 'stat' });
   assert.deepEqual(renamed.fields, { new: { min: '5' } });
-  // Bonds naming the old name drop, as the record's do; members follow.
-  assert.deepEqual(renamed.relations, { 'a->b': 'foe' });
+  // Bonds naming the old name move with it, as the record's do; members follow.
+  assert.deepEqual(renamed.relations, { 'new->a': 'ally', 'a->b': 'foe' });
   assert.deepEqual(renamed.groups.g.members, ['new', 'a']);
   // Snapshots without types/fields stay that way.
   const old = JSON.parse(JSON.stringify(snap));
@@ -2567,7 +2872,11 @@ test('renameHistoryAnchor moves every anchored slice in every past and future sn
       assert.ok('new' in snap[slice], `${slice} carries the new anchor`);
     }
     assert.deepEqual(snap.groups.g.members, ['new', 'a']);
-    assert.deepEqual(snap.relations, { 'a->b': 'contains' }, 'bonds naming the old name drop');
+    assert.deepEqual(
+      snap.relations,
+      { 'new->a': 'ally', 'a->new': 'foe', 'a->b': 'contains' },
+      'bonds naming the old name move with it',
+    );
     assert.deepEqual(snap.collapsedGroups, { g: true }, 'group ids are not note anchors');
     assert.deepEqual(snap.view, { x: 1, y: 2, s: 1.5 });
   }
@@ -2815,7 +3124,7 @@ test('renameAnchor in a record carries colours onto the new name', () => {
   assert.deepEqual(renamed.types, { new: 'stat' });
   assert.deepEqual(renamed.folded, { new: { card: true } });
   assert.deepEqual(renamed.groups.g.members, ['new', 'a']);
-  assert.deepEqual(renamed.relations, { 'a->b': 'foe' });
+  assert.deepEqual(renamed.relations, { 'new->a': 'ally', 'a->b': 'foe' });
   // Snapshots without colours stay that way.
   const plain = JSON.parse(canvasSnapshot({ positions: { old: { x: 1, y: 1 } } }));
   delete plain.colors;

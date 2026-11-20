@@ -196,6 +196,128 @@ export function addNote(model, { title = 'New Note', level = DEFAULT_LEVEL, body
   return { model: { ...model, notes }, index: notes.length - 1 };
 }
 
+/* ------------------------------------------------------------- presets -- */
+
+/** How many presets a vault record may hold. */
+export const CARD_PRESET_LIMIT = 24;
+
+/** How much seed prose one preset may write into a note. */
+export const CARD_PRESET_BODY_MAX = 2000;
+
+/**
+ * The built-in card presets: a heading, a node type and a little markdown to
+ * start the writer off. They are *seed data only*. A preset is read once, when
+ * a card is added, and what it writes into the vein is ordinary markdown from
+ * then on — editing, renaming or emptying the card never consults the preset
+ * again, and a later change to the vault's preset list cannot reach a card
+ * that was already created.
+ *
+ * A preset's `type` is canvas metadata, like a colour, so it never appears in
+ * the prose. Faction has no node type of its own: the closest would have been
+ * Actor, which is not what a faction is, so that preset carries a `#faction`
+ * tag in its markdown instead and stays a plain note on the canvas.
+ *
+ * Seed bodies hold no headings on purpose. A heading would open a second card,
+ * and one preset should make one card.
+ */
+export const CARD_PRESETS = [
+  {
+    id: 'person',
+    label: 'Person',
+    title: 'New Person',
+    type: 'person',
+    hint: 'Role, wants and ties',
+    body: '- **Role:**\n- **Wants:**\n- **Ties:**',
+  },
+  {
+    id: 'place',
+    label: 'Place',
+    title: 'New Place',
+    type: 'place',
+    hint: 'Where it is, who is there, what it hides',
+    body: '- **Where:**\n- **Who is here:**\n- **What it hides:**',
+  },
+  {
+    id: 'scene',
+    label: 'Scene',
+    title: 'New Scene',
+    type: 'scene',
+    hint: 'Cast, goal and the turn',
+    body: '- **Cast:**\n- **Goal:**\n- **Turn:**',
+  },
+  {
+    id: 'faction',
+    label: 'Faction',
+    title: 'New Faction',
+    icon: '⚑',
+    hint: 'Members, aims and standing',
+    body: '- **Members:**\n- **Aims:**\n- **Standing:**\n\n#faction',
+  },
+];
+
+/** A fresh copy of the built-in presets, so a caller cannot edit the template. */
+export function builtinCardPresets() {
+  return CARD_PRESETS.map((preset) => ({ ...preset }));
+}
+
+/**
+ * A vault's preset list, cleaned of anything a card cannot be seeded from: a
+ * slug id, a label, a title, an optional known node type and icon, and one
+ * block of markdown. Unknown keys are dropped, a duplicate id keeps its first
+ * entry, and the list is capped.
+ */
+export function cleanCardPresets(raw) {
+  const out = [];
+  const seen = new Set();
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    if (out.length >= CARD_PRESET_LIMIT) break;
+    const id = String(entry?.id ?? '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 32);
+    const label = String(entry?.label ?? '').trim().slice(0, 40);
+    const title = String(entry?.title ?? '').trim().slice(0, 80);
+    if (!id || !label || !title || seen.has(id)) continue;
+    seen.add(id);
+    const type = nodeType(entry?.type)?.id ?? '';
+    const icon = String(entry?.icon ?? '').trim().slice(0, 4);
+    const hint = String(entry?.hint ?? '').trim().slice(0, 80);
+    const body = String(entry?.body ?? '').trim().slice(0, CARD_PRESET_BODY_MAX);
+    out.push({
+      id,
+      label,
+      title,
+      ...(type ? { type } : {}),
+      ...(icon ? { icon } : {}),
+      ...(hint ? { hint } : {}),
+      ...(body ? { body } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * The presets a vault offers: its own list once it has one, the built-ins
+ * otherwise. A record that says nothing (a vault written before presets
+ * existed, or a list that cleaned away entirely) gets the built-ins rather
+ * than an empty palette.
+ */
+export function cardPresets(raw) {
+  const clean = cleanCardPresets(raw);
+  return clean.length ? clean : builtinCardPresets();
+}
+
+/**
+ * Add a card from a preset: the heading and the seed markdown are copied into
+ * the vein here, once. The preset is not kept, referenced or re-read, so what
+ * lands in the file is all there is. A title the vein already uses is numbered
+ * the way any new note's is.
+ *
+ * @returns {{model: object, index: number}} the new model and the new card's
+ *   index — the first free title and `DEFAULT_LEVEL`
+ */
+export function addPresetNote(model = {}, preset = {}) {
+  const title = nextNoteTitle(model.notes, preset.title ?? 'New Note');
+  return addNote(model, { title, level: DEFAULT_LEVEL, body: preset.body ?? '' });
+}
+
 /** Remove a note. Its heading and prose leave the file with it. */
 export function removeNote(model, index) {
   const notes = (model.notes ?? []).filter((_, i) => i !== index);
@@ -205,6 +327,232 @@ export function removeNote(model, index) {
 /** Replace the prose that sits before the first heading. */
 export function updateIntro(model, intro) {
   return { ...model, intro: trimBlock(intro) };
+}
+
+/* ------------------------------------------------------------- outline -- */
+
+/** The deepest heading a vein can carry: `###### Six` is level 6. */
+export const OUTLINE_MAX_LEVEL = 6;
+
+/** A note's heading level, clamped to the levels markdown headings have. */
+function levelOf(note) {
+  return Math.min(OUTLINE_MAX_LEVEL, Math.max(1, Number(note?.level) || DEFAULT_LEVEL));
+}
+
+/**
+ * The last index of one note's subtree, the note itself included.
+ *
+ * The outline is the heading tree `hierarchyEdges` draws: a note's children
+ * are the headings after it that are deeper, and the subtree ends at the next
+ * heading that is not deeper, because from there on every heading belongs to
+ * something shallower. Nested branches are inside the range, so moving a note
+ * moves its whole branch.
+ */
+export function subtreeEnd(model = {}, index) {
+  const notes = model.notes ?? [];
+  if (!notes[index]) return -1;
+  const level = levelOf(notes[index]);
+  let end = index;
+  while (end + 1 < notes.length && levelOf(notes[end + 1]) > level) end += 1;
+  return end;
+}
+
+/** A refusal that changed nothing, carrying why for the caller to say. */
+function outlineRefusal(model, reason) {
+  return { model, index: null, anchors: [], reason };
+}
+
+/** A note that is not in the model yet: no anchor until the outline settles. */
+function freshNote({ title, level, body = '' }) {
+  const text = trimBlock(body);
+  return {
+    index: -1,
+    level,
+    title: String(title),
+    anchor: '',
+    body: text,
+    ...describeBody(text),
+  };
+}
+
+/**
+ * Assemble an outline edit: the notes in the new order, each with its heading
+ * level, and their anchors derived exactly the way `parseNotes` derives them
+ * (a repeated title takes `-1`, `-2`, … by position). Moving a card can hand
+ * its anchor to another card — two `## Composition` headings swap names when
+ * they swap places — so the pairs whose anchor changed come back with the
+ * result, for the caller to move the canvas record with.
+ *
+ * @returns {{model: object, index: number|null, anchors: Array<{before: string,
+ *            after: string}>, reason: string}}
+ */
+function outlineResult(model, entries, focus, reason = '') {
+  const notes = entries.map(({ note, level }, position) => ({
+    ...note,
+    index: position,
+    level: level ?? levelOf(note),
+  }));
+  const seen = new Map();
+  notes.forEach((note, position) => {
+    const base = slugify(String(note.title ?? '')) || `section-${position + 1}`;
+    const count = seen.get(base) ?? 0;
+    seen.set(base, count + 1);
+    note.anchor = count === 0 ? base : `${base}-${count}`;
+  });
+  const anchors = [];
+  entries.forEach(({ note }, position) => {
+    if (!note.anchor || note.anchor === notes[position].anchor) return;
+    anchors.push({ before: note.anchor, after: notes[position].anchor });
+  });
+  return { model: { ...model, notes }, index: focus, anchors, reason };
+}
+
+/** The notes in order, with one more spliced in at `at`. */
+function withInserted(model, at, note) {
+  const notes = model.notes ?? [];
+  return [
+    ...notes.slice(0, at).map((entry) => ({ note: entry })),
+    { note },
+    ...notes.slice(at).map((entry) => ({ note: entry })),
+  ];
+}
+
+/**
+ * Add a sibling after a note, as a card of the same heading level. The card
+ * lands after the note's whole subtree, so the note keeps its children instead
+ * of handing them to the card that arrived below it.
+ */
+export function insertNoteAfter(model = {}, index, { title = 'New Note', body = '' } = {}) {
+  const notes = model.notes ?? [];
+  if (!notes[index]) return outlineRefusal(model, 'missing');
+  const at = subtreeEnd(model, index) + 1;
+  const note = freshNote({ title: nextNoteTitle(notes, title), level: levelOf(notes[index]), body });
+  return outlineResult(model, withInserted(model, at, note), at);
+}
+
+/**
+ * Add a note inside another: one heading level deeper, as its first child. A
+ * level-6 note has nowhere deeper to put one, so the edit is refused rather
+ * than quietly made a sibling.
+ */
+export function insertChildNote(model = {}, index, { title = 'New Note', body = '' } = {}) {
+  const notes = model.notes ?? [];
+  const parent = notes[index];
+  if (!parent) return outlineRefusal(model, 'missing');
+  const level = levelOf(parent) + 1;
+  if (level > OUTLINE_MAX_LEVEL) return outlineRefusal(model, 'level-limit');
+  const at = index + 1;
+  const note = freshNote({ title: nextNoteTitle(notes, title), level, body });
+  return outlineResult(model, withInserted(model, at, note), at);
+}
+
+/**
+ * Move a note and everything under it one heading level shallower or deeper.
+ * The subtree keeps its shape: every descendant shifts with it, so a demoted
+ * note's children stay its children. Promoting a level-1 note, or demoting a
+ * branch that is already six deep, is refused.
+ */
+export function shiftNoteLevel(model = {}, index, delta) {
+  const notes = model.notes ?? [];
+  const note = notes[index];
+  if (!note) return outlineRefusal(model, 'missing');
+  const step = Math.sign(Number(delta) || 0);
+  if (!step) return { model, index, anchors: [], reason: '' };
+  const end = subtreeEnd(model, index);
+  const levels = notes.slice(index, end + 1).map(levelOf);
+  const shallowest = Math.min(...levels) + step;
+  const deepest = Math.max(...levels) + step;
+  if (shallowest < 1 || deepest > OUTLINE_MAX_LEVEL) return outlineRefusal(model, 'level-limit');
+  const entries = notes.map((entry, position) => (position >= index && position <= end
+    ? { note: entry, level: levelOf(entry) + step }
+    : { note: entry }));
+  return outlineResult(model, entries, index);
+}
+
+/** Outdent a note and its subtree one level. */
+export function promoteNote(model = {}, index) {
+  return shiftNoteLevel(model, index, -1);
+}
+
+/** Indent a note and its subtree one level. */
+export function demoteNote(model = {}, index) {
+  return shiftNoteLevel(model, index, 1);
+}
+
+/** The previous heading at or above a note's level, or -1 at the first sibling. */
+function previousSibling(model, index) {
+  const notes = model.notes ?? [];
+  const level = levelOf(notes[index]);
+  let previous = index - 1;
+  while (previous >= 0 && levelOf(notes[previous]) > level) previous -= 1;
+  return previous >= 0 && levelOf(notes[previous]) === level ? previous : -1;
+}
+
+/**
+ * Move a note above its previous sibling. Both branches travel whole, and the
+ * moved note's heading level does not change: this reorders the outline, it
+ * does not re-nest it. The first sibling has nothing to move above.
+ */
+export function moveNoteUp(model = {}, index) {
+  const notes = model.notes ?? [];
+  if (!notes[index]) return outlineRefusal(model, 'missing');
+  const previous = previousSibling(model, index);
+  if (previous < 0) return outlineRefusal(model, 'no-sibling');
+  const end = subtreeEnd(model, index);
+  const entries = [
+    ...notes.slice(0, previous).map((entry) => ({ note: entry })),
+    ...notes.slice(index, end + 1).map((entry) => ({ note: entry })),
+    ...notes.slice(previous, index).map((entry) => ({ note: entry })),
+    ...notes.slice(end + 1).map((entry) => ({ note: entry })),
+  ];
+  return outlineResult(model, entries, previous);
+}
+
+/**
+ * Move a note below its next sibling, both branches whole. The last sibling has
+ * nothing to move below; moving past the end of a branch is a re-nest, which
+ * promote and demote do instead.
+ */
+export function moveNoteDown(model = {}, index) {
+  const notes = model.notes ?? [];
+  if (!notes[index]) return outlineRefusal(model, 'missing');
+  const level = levelOf(notes[index]);
+  const end = subtreeEnd(model, index);
+  const next = end + 1;
+  if (next >= notes.length || levelOf(notes[next]) !== level) return outlineRefusal(model, 'no-sibling');
+  const nextEnd = subtreeEnd(model, next);
+  const entries = [
+    ...notes.slice(0, index).map((entry) => ({ note: entry })),
+    ...notes.slice(next, nextEnd + 1).map((entry) => ({ note: entry })),
+    ...notes.slice(index, end + 1).map((entry) => ({ note: entry })),
+    ...notes.slice(nextEnd + 1).map((entry) => ({ note: entry })),
+  ];
+  return outlineResult(model, entries, index + (nextEnd - next + 1));
+}
+
+/**
+ * Which outline edits a note can take right now, so a menu can offer the ones
+ * that would do something and leave the rest out. A refusal's reason names why
+ * the edit is impossible: `missing` for no such card, `level-limit` for a
+ * heading that cannot go shallower or deeper, `no-sibling` for the first or
+ * last card at its level.
+ */
+export function outlineCaps(model = {}, index) {
+  const notes = model.notes ?? [];
+  const note = notes[index];
+  if (!note) return null;
+  const level = levelOf(note);
+  const end = subtreeEnd(model, index);
+  const levels = notes.slice(index, end + 1).map(levelOf);
+  const next = end + 1;
+  return {
+    after: true,
+    child: level < OUTLINE_MAX_LEVEL,
+    promote: Math.min(...levels) > 1,
+    demote: Math.max(...levels) < OUTLINE_MAX_LEVEL,
+    up: previousSibling(model, index) >= 0,
+    down: next < notes.length && levelOf(notes[next]) === level,
+  };
 }
 
 /**
@@ -2116,6 +2464,15 @@ export function renameHistoryAnchor(stack, before, after) {
 }
 
 /**
+ * Follow an outline move through every stored step: anchors that changed hands
+ * are re-pointed, so a later undo or redo puts each card's canvas data back on
+ * the card it belonged to rather than on whichever one now owns the name.
+ */
+export function moveHistoryAnchors(stack, pairs) {
+  return rewriteHistoryStack(stack, (snap) => moveAnchorsIn(snap, pairs));
+}
+
+/**
  * Prune deleted-card references from every stored snapshot, on both sides of
  * the history stack. Malformed legacy entries are retained unchanged; valid
  * snapshots are always anchor-safe before a future restore.
@@ -2176,56 +2533,55 @@ export function historyJump(stack, kind, count, currentSnap) {
 }
 
 /**
- * A rename inside a stored snapshot: positions, folds, types, fields and
- * group members follow the new name, as they do in the vein record, while
- * bonds naming the old name drop, as the record's do.
+ * Several anchors renamed in one snapshot: positions, folds, types, fields,
+ * group members, bonds and the notes those bonds carry all follow the new
+ * names. A move through duplicate headings can hand one card's anchor to
+ * another, so the pairs can swap; every slice is rebuilt from the record as it
+ * stood, which is what makes a swap come out right.
+ *
+ * A rename is this function with one pair.
  */
-export function renameAnchorIn(snap, before, after) {
-  const move = (obj) => {
-    const next = { ...(obj ?? {}) };
-    if (before in next) {
-      next[after] = next[before];
-      delete next[before];
-    }
-    return next;
-  };
-  const relations = {};
-  for (const [key, kind] of Object.entries(snap.relations ?? {})) {
-    const [from, to] = key.split('->');
-    if (from === before || to === before) continue;
-    relations[key] = kind;
+export function moveAnchorsIn(snap, pairs = []) {
+  const map = new Map();
+  for (const pair of pairs ?? []) {
+    const before = String(pair?.before ?? '');
+    const after = String(pair?.after ?? '');
+    if (before && after && before !== after) map.set(before, after);
   }
-  // A note explains a bond, and a renamed card's bonds do not carry over.
-  const bondNotes = {};
-  for (const [key, text] of Object.entries(cleanBondNotes(snap.bondNotes))) {
-    const [from, to] = key.split('->');
-    if (from === before || to === before) continue;
-    bondNotes[key] = text;
-  }
+  if (!map.size) return snap;
+  const move = (anchor) => map.get(anchor) ?? anchor;
+  const keyed = (record) => recordMoved(record, move);
   const groups = {};
   for (const [id, group] of Object.entries(snap.groups ?? {})) {
-    groups[id] = { ...group, members: (group.members ?? []).map((anchor) => (anchor === before ? after : anchor)) };
+    groups[id] = { ...group, members: (group.members ?? []).map(move) };
   }
   return {
     ...snap,
-    positions: move(snap.positions),
-    folded: move(snap.folded),
-    cardModes: move(snap.cardModes),
-    cardSizes: move(snap.cardSizes),
-    cardDims: move(snap.cardDims),
-    stack: cleanStackOrder(snap.stack).map((anchor) => (anchor === before ? after : anchor)),
-    relations,
-    bondNotes,
+    positions: keyed(snap.positions),
+    folded: keyed(snap.folded),
+    cardModes: keyed(snap.cardModes),
+    cardSizes: keyed(snap.cardSizes),
+    cardDims: keyed(snap.cardDims),
+    stack: cleanStackOrder(snap.stack).map(move),
+    relations: bondsMoved(snap.relations, move),
+    bondNotes: bondsMoved(cleanBondNotes(snap.bondNotes), move),
     groups,
-    ...(snap.types ? { types: move(snap.types) } : {}),
-    ...(snap.fields ? { fields: move(snap.fields) } : {}),
-    ...(snap.colors ? { colors: move(snap.colors) } : {}),
-    ...(snap.images ? { images: move(snap.images) } : {}),
-    ...(snap.resources ? { resources: move(snap.resources) } : {}),
-    ...(snap.pinned ? { pinned: move(snap.pinned) } : {}),
-    ...(snap.locked ? { locked: move(snap.locked) } : {}),
-    ...(snap.tables ? { tables: move(snap.tables) } : {}),
+    ...(snap.types ? { types: keyed(snap.types) } : {}),
+    ...(snap.fields ? { fields: keyed(snap.fields) } : {}),
+    ...(snap.colors ? { colors: keyed(snap.colors) } : {}),
+    ...(snap.images ? { images: keyed(snap.images) } : {}),
+    ...(snap.resources ? { resources: keyed(snap.resources) } : {}),
+    ...(snap.pinned ? { pinned: keyed(snap.pinned) } : {}),
+    ...(snap.locked ? { locked: keyed(snap.locked) } : {}),
+    ...(snap.tables ? { tables: keyed(snap.tables) } : {}),
   };
+}
+
+/**
+ * A rename inside a stored snapshot: the one-pair case of `moveAnchorsIn`.
+ */
+export function renameAnchorIn(snap, before, after) {
+  return moveAnchorsIn(snap, [{ before, after }]);
 }
 
 /** The kind's record, or null for anything not on the list. */
@@ -2480,6 +2836,67 @@ export function dropRelations(relations = {}, endpoint) {
   return next;
 }
 
+/**
+ * One bond key with an endpoint renamed. A key that names no pair is left as
+ * it is — a malformed legacy key is somebody else's problem — and a bond that
+ * would end up joining a card to itself is gone, because nothing can assert
+ * it.
+ */
+/**
+ * A record with its keys renamed by `keyMove`: keys that stay put are written
+ * first, then the moved keys land where nothing already sits. A key that maps
+ * to itself is left alone, and one that maps nowhere (`''`) is forgotten.
+ */
+function recordMoved(record, keyMove) {
+  const entries = Object.entries(record ?? {});
+  const next = {};
+  // Keys that stay put go in first, so they win against a moved key below.
+  for (const [key, value] of entries) {
+    if (keyMove(key) === key) next[key] = value;
+  }
+  for (const [key, value] of entries) {
+    const to = keyMove(key);
+    if (!to || to === key || to in next) continue;
+    next[to] = value;
+  }
+  return next;
+}
+
+/**
+ * A bond record with its endpoints renamed through `move`. A bond that would
+ * end up joining a card to itself is gone, because nothing can assert it, and
+ * one that lands on a key the record already holds gives way to it, since that
+ * name already meant a card or group on this canvas.
+ */
+function bondsMoved(record, move) {
+  return recordMoved(record, (key) => {
+    const ends = splitRelationKey(key);
+    if (!ends) return key;
+    const from = move(ends.from);
+    const to = move(ends.to);
+    return from === to ? '' : relationKey(from, to);
+  });
+}
+
+/**
+ * Every bond that named one card, moved onto its new name, so a renamed card
+ * keeps the relationships it was part of.
+ */
+export function renameRelations(relations = {}, before, after) {
+  if (!before || !after || before === after) return relations;
+  return bondsMoved(relations, (anchor) => (anchor === before ? after : anchor));
+}
+
+/**
+ * The notes bonds carry, moved with their bonds, so a rename keeps the
+ * sentence written on a wire as well as the wire.
+ */
+export function renameBondNotes(bondNotes = {}, before, after) {
+  if (!before || !after || before === after) return cleanBondNotes(bondNotes);
+  const move = (anchor) => (anchor === before ? after : anchor);
+  return bondsMoved(cleanBondNotes(bondNotes), move);
+}
+
 /** The longest bond note kept: a sentence or a citation, not an essay. */
 export const BOND_NOTE_MAX = 400;
 
@@ -2617,6 +3034,43 @@ export function proseLinkBetween(model = {}, from, to) {
     return (source === from && target === to) || (source === to && target === from);
   });
   return edge ? { from: anchorOf(edge.from), to: anchorOf(edge.to), kind: edge.kind } : null;
+}
+
+/**
+ * Rewrite every same-vein link that named one heading so it names another:
+ * renaming a card cannot leave the links that pointed at it resolving to a
+ * heading that is no longer there. `[[#Old]]` becomes `[[#New]]`, and an
+ * alias is kept as it was written (`[[#Old|the old one]]` →
+ * `[[#New|the old one]]`). A block reference (`[[#^quote]]`) names a block
+ * rather than a heading and is left alone, as is any link in code, which
+ * `parseWikiLinks` already skips. A title that cannot be written inside
+ * brackets — one holding a pipe or square brackets — leaves the links as they
+ * are rather than writing markdown that would not read back.
+ *
+ * @returns {{model: object, rewritten: number}} a new model and how many links
+ *   changed — the same model and 0 when there was nothing to rewrite
+ */
+export function renameSectionLinks(model = {}, before, after, title) {
+  const wanted = String(title ?? '').trim();
+  if (!before || !after || before === after || !wanted) return { model, rewritten: 0 };
+  if (/[[\]|]/.test(wanted)) return { model, rewritten: 0 };
+  let rewritten = 0;
+  const notes = (model.notes ?? []).map((note) => {
+    const hits = parseWikiLinks(note.body)
+      .filter((link) => link.samePage
+        && !String(link.section ?? '').startsWith('^')
+        && link.anchor === before);
+    if (!hits.length) return note;
+    let body = note.body;
+    // Right to left, so each edit leaves the offsets before it alone.
+    for (const hit of hits.sort((a, b) => b.start - a.start)) {
+      const alias = hit.alias ? `|${hit.alias}` : '';
+      body = `${body.slice(0, hit.start)}${hit.embed ? '!' : ''}[[#${wanted}${alias}]]${body.slice(hit.end)}`;
+      rewritten += 1;
+    }
+    return { ...note, body, ...describeBody(body) };
+  });
+  return rewritten ? { model: { ...model, notes }, rewritten } : { model, rewritten: 0 };
 }
 
 /**

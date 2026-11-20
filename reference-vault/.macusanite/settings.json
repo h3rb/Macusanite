@@ -8,6 +8,7 @@
   },
   "icons": true,
   "tutorials": true,
+  "tutorialSeen": {},
   "autosave": true,
   "autosaveDelayMs": 800,
   "fontSize": 16,

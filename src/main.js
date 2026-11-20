@@ -14,6 +14,7 @@ import { LIVE_META, isWatched, isLiveMeta, metaChanges, metaPlan, planRefresh, c
 import { mergeVein, hasMergeMarkers, countConflicts, describeMerge } from './lib/merge.js';
 import { tokenize, plainText, buildSearchCorpus, searchVault } from './lib/search.js';
 import { mergeSettings, mergeVaultMeta, rememberColor, DEFAULT_SETTINGS } from './lib/settings.js';
+import { tutorialWasSeen, markTutorialSeen, clearTutorialSeen } from './lib/tutorials.js';
 import { THEME_HUE_VARS, cleanThemeHues, rotateHue } from './lib/themeHue.js';
 import { mermaidThemeVariables } from './lib/mermaidTheme.js';
 import * as colorStore from './lib/colorStore.js';
@@ -28,7 +29,7 @@ import {
   referencedNodeImageMetaNames,
   normalizeUnit, rememberUnit,
   cleanForgePrefs, rememberForgeKind as forgePrefsAfterUse, toggleForgeFavourite as forgePrefsAfterPin,
-  cleanBondNotes,
+  cleanBondNotes, cardPresets, moveAnchorsIn,
 } from './lib/worldbuild.js';
 import { resolveTarget } from './lib/wikilinks.js';
 import { dirname, join, basename, titleFromPath, slugify, isMarkdown } from './lib/path.js';
@@ -94,6 +95,10 @@ const state = {
   // Pure viewer bookkeeping — saved to `.macusanite/state.json`, never to the
   // vault's undo history.
   world: {},
+  // The vault's card presets: seed data a new card is copied from, kept in the
+  // same record as the canvases it feeds. Empty until a vault is opened; the
+  // built-ins stand in for a record written before presets existed.
+  presets: [],
   ui: {
     mode: 'read',
     filter: '',
@@ -213,6 +218,31 @@ const readMetaJson = async (name, fallback = null) => {
     return fallback;
   }
 };
+
+/**
+ * The record slices a canvas keeps in step when a card's anchor moves: a
+ * rename or an outline edit hands them back, so the panel can swap the copies
+ * it holds without re-reading the whole record.
+ */
+function anchorViewOf(record) {
+  return {
+    types: record.types ?? {},
+    fields: record.fields ?? {},
+    folded: record.folded ?? {},
+    colors: record.colors ?? {},
+    images: record.images ?? {},
+    pinned: record.pinned ?? {},
+    locked: record.locked ?? {},
+    cardModes: record.cardModes ?? {},
+    cardSizes: record.cardSizes ?? {},
+    cardDims: record.cardDims ?? {},
+    stack: record.stack ?? [],
+    resources: record.resources ?? {},
+    groups: record.groups ?? {},
+    relations: record.relations ?? {},
+    bondNotes: record.bondNotes ?? {},
+  };
+}
 
 /* ── the app object ───────────────────────────────────────────────────── */
 
@@ -412,6 +442,10 @@ const app = {
     state.world = (saved?.world && typeof saved.world === 'object' && !Array.isArray(saved.world))
       ? Object.fromEntries(Object.entries(saved.world).map(([path, record]) => [path, migrateCanvasRecord(record)]))
       : {};
+    // A preset is only ever seed data, so a record that carries none (or a
+    // list that cleaned away) takes the built-ins. They are written back with
+    // the rest of the state, so the vault owns its palette from then on.
+    state.presets = cardPresets(saved?.presets);
     if (saved?.ui?.expanded) state.ui.expanded = { ...saved.ui.expanded };
     if (saved?.ui?.mode === 'edit') state.ui.mode = 'edit';
     if (saved?.ui?.pane === 'search') app.setPane('search');
@@ -1540,33 +1574,35 @@ const app = {
 
   /**
    * A renamed note is still the same node: its type and fields follow the new
-   * anchor, the way its position does. (Relationships are dropped instead of
-   * moved — they name link targets, and the old name no longer resolves.)
+   * anchor, the way its position does, and so do its bonds, because the cards
+   * they join did not change.
    */
   renameWorldAnchor(path, before, after) {
     const record = state.world[path];
     if (!record || !before || !after || before === after) return null;
     // The record and a history snapshot rename the same way: positions,
-    // types, fields, folds and colours follow the new anchor, group
-    // members sit under it, and bonds naming the old name drop.
+    // types, fields, folds, colours, group members, bonds and the notes those
+    // bonds carry follow the new anchor.
     const moved = renameAnchorIn(record, before, after);
     state.world[path] = { ...record, ...moved };
     app.scheduleStatePersist();
-    return {
-      types: moved.types ?? {},
-      fields: moved.fields ?? {},
-      folded: moved.folded ?? {},
-      colors: moved.colors ?? {},
-      images: moved.images ?? {},
-      pinned: moved.pinned ?? {},
-      locked: moved.locked ?? {},
-      cardModes: moved.cardModes ?? {},
-      cardSizes: moved.cardSizes ?? {},
-      cardDims: moved.cardDims ?? {},
-      stack: moved.stack ?? [],
-      resources: moved.resources ?? {},
-      groups: moved.groups ?? {},
-    };
+    return anchorViewOf(moved);
+  },
+
+  /**
+   * Follow an outline edit that handed anchors from one card to another — two
+   * headings with the same title swap names when they swap places. The pairs
+   * are applied to the record as one mapping, so a swap lands both ways at
+   * once, and every slice a canvas stores by anchor follows its card.
+   */
+  moveWorldAnchors(path, pairs) {
+    const record = state.world[path];
+    if (!record || !Array.isArray(pairs) || !pairs.length) return null;
+    const moved = moveAnchorsIn(record, pairs);
+    if (moved === record) return null;
+    state.world[path] = { ...record, ...moved };
+    app.scheduleStatePersist();
+    return anchorViewOf(moved);
   },
 
   revertDraft() {
@@ -1859,6 +1895,15 @@ const app = {
   },
 
   /**
+   * The vault's card presets, for the quick-add palette. They are seed data:
+   * adding a card copies the preset's heading and markdown into the vein once,
+   * and nothing reads the preset afterwards.
+   */
+  worldPresets() {
+    return cardPresets(state.presets);
+  },
+
+  /**
    * The quick-forge palette's shortlist and its memory of the last kind used
    * for each source→target type pair. It lives in settings because it follows
    * the writer between veins rather than belonging to any one canvas.
@@ -1874,15 +1919,38 @@ const app = {
     return next;
   },
 
-  /** Whether the one-time object-map note has already been shown. */
-  lowZoomTipSeen() {
-    return state.settings.worldbuild?.lowZoomTipSeen === true;
+  /** Whether the reader has closed one of the window's teaching notes. */
+  tutorialSeen(id) {
+    return tutorialWasSeen(state.settings.tutorialSeen, id);
   },
 
-  /** Retire the object-map note: it is shown once, on the first pass below 65%. */
-  markLowZoomTipSeen() {
-    state.settings.worldbuild = { ...(state.settings.worldbuild ?? {}), lowZoomTipSeen: true };
+  /**
+   * Remember that a teaching note was closed, so it stays closed for this
+   * vault. Settings → Reading → Reset tutorials is the way back; the master
+   * Tutorial notes switch hides notes without forgetting them.
+   */
+  closeTutorial(id) {
+    state.settings.tutorialSeen = markTutorialSeen(state.settings.tutorialSeen, id);
     app.persistSettings({ record: false });
+    return true;
+  },
+
+  /**
+   * Every teaching note may teach again: forget which ones were closed, and
+   * switch teaching notes back on so the reset actually shows something. The
+   * notes themselves reappear as their own conditions arrive — the object-map
+   * note on the next pass below 65%, the search tip the next empty query, the
+   * editor hint the next time the source pane opens.
+   */
+  async resetTutorials() {
+    state.settings.tutorialSeen = clearTutorialSeen();
+    state.settings.tutorials = true;
+    await app.updateSettings({});
+    // The panes that draw teaching notes read the record as they paint: the
+    // search pane now shows its tip again, and the viewer its editor hint (the
+    // rerender above). The dialog may be open on the switch just turned on.
+    searchPanel?.render();
+    settingsDialog?.refresh();
     return true;
   },
 
@@ -2555,6 +2623,7 @@ const app = {
       lastPath: state.current?.path ?? null,
       nav: state.nav.toJSON(),
       world: state.world,
+      presets: state.presets,
       ui: { expanded: state.ui.expanded, mode: state.ui.mode, pane: state.ui.pane },
       savedAt: new Date().toISOString(),
     };

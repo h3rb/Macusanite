@@ -8,6 +8,7 @@
 import { normalizeColor, PALETTE } from './colors.js';
 import { normalizeUnit, UNIT_VOCABULARY_LIMIT } from './worldbuild.js';
 import { cleanThemeHues, DEFAULT_THEME_HUES } from './themeHue.js';
+import { cleanTutorialSeen } from './tutorials.js';
 
 /** Every page, link and section starts white unless the vault says otherwise. */
 export const DEFAULT_COLOR = '#ffffff';
@@ -34,8 +35,13 @@ export const DEFAULT_SETTINGS = {
   // Instructional notes the viewer teaches with: the one-time object-map note
   // on the canvas, the search tip and the editor's shortcut hint. On by
   // default; off leaves the window free of teaching text, and Help keeps the
-  // same story for anyone who turns them back on.
+  // same story for anyone who turns them back on. The switch hides the notes
+  // without forgetting which ones a reader closed — `tutorialSeen` keeps that.
   tutorials: true,
+  // Teaching notes the reader has closed, by id, with the stamp of the
+  // decision. Settings → Reading → Reset tutorials empties it so every note
+  // can teach again; see src/lib/tutorials.js for the ids.
+  tutorialSeen: {},
   autosave: true,
   autosaveDelayMs: 800,
   fontSize: 16,
@@ -116,6 +122,14 @@ export const DEFAULT_VAULT_META = {
 const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /**
+ * Settings slices whose keys are data — ids the reader's decisions created —
+ * rather than a fixed shape the defaults declare. Everything else drops keys
+ * the defaults do not know, so an older build's leftovers never ride along;
+ * these maps keep every entry and are bounded by their own cleaners instead.
+ */
+const OPEN_MAP_KEYS = new Set(['tutorialSeen']);
+
+/**
  * Merge `saved` over `base`, dropping unknown keys, then validate once.
  *
  * The recursion deliberately does *not* validate: `validateSettings` shapes the
@@ -126,13 +140,13 @@ export function mergeSettings(base, saved) {
   return validateSettings(deepMerge(base, saved));
 }
 
-function deepMerge(base, saved) {
+function deepMerge(base, saved, open = false) {
   if (!isPlainObject(saved)) return structuredCloneSafe(base);
   const out = structuredCloneSafe(base);
   for (const [key, value] of Object.entries(saved)) {
-    if (!(key in out)) continue;
+    if (!open && !(key in out)) continue;
     if (isPlainObject(out[key]) && isPlainObject(value)) {
-      out[key] = deepMerge(out[key], value);
+      out[key] = deepMerge(out[key], value, open || OPEN_MAP_KEYS.has(key));
     } else if (Array.isArray(out[key])) {
       if (Array.isArray(value)) out[key] = value.slice();
     } else if (value !== undefined && value !== null) {
@@ -164,6 +178,7 @@ export function validateSettings(settings) {
   s.themeHues = cleanThemeHues(s.themeHues);
   s.icons = s.icons !== false;
   s.tutorials = s.tutorials !== false;
+  s.tutorialSeen = cleanTutorialSeen(s.tutorialSeen);
   s.autosave = s.autosave !== false;
   s.graph = {
     ...DEFAULT_SETTINGS.graph,
@@ -185,6 +200,13 @@ export function validateSettings(settings) {
   s.worldbuild.navigatorDock = s.worldbuild.navigatorDock === 'drawer' ? 'drawer' : 'float';
   s.worldbuild.navigatorWidth = clamp(Number(s.worldbuild.navigatorWidth), 160, 420, DEFAULT_SETTINGS.worldbuild.navigatorWidth);
   s.worldbuild.lowZoomTipSeen = s.worldbuild.lowZoomTipSeen === true;
+  // Before `tutorialSeen` existed, the object-map note's “Got it” was
+  // remembered here. Fold that decision in once, so an upgrade does not reopen
+  // a note the reader closed; the new record is the only place it lives after.
+  if (s.worldbuild.lowZoomTipSeen && !s.tutorialSeen['object-map']) {
+    s.tutorialSeen = { ...s.tutorialSeen, 'object-map': 'legacy' };
+  }
+  s.worldbuild.lowZoomTipSeen = false;
   s.worldbuild.touch = s.worldbuild.touch === true;
   s.worldbuild.units = (Array.isArray(s.worldbuild.units) ? s.worldbuild.units : [])
     .filter((unit) => typeof unit === 'string')

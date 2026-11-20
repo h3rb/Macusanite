@@ -111,7 +111,22 @@ export function createSearchPanel({ app, root }) {
     if (!search.terms.length) {
       results.append(el('p', { class: 'search-empty' }, [
         el('span', { text: 'Search titles, sections, tags and body text. ' }),
-        el('span', { class: 'search-tip', text: 'Quote a run — "sieve series" — to require the exact phrase.' }),
+        // Closed once and remembered; Settings → Reading → Reset tutorials
+        // brings it back. The switch above it hides it without forgetting.
+        app.tutorialSeen('search-quote') ? null : el('span', { class: 'search-tip' }, [
+          el('span', { text: 'Quote a run — "sieve series" — to require the exact phrase.' }),
+          el('button', {
+            class: 'btn btn-ghost btn-mini search-tip-close',
+            type: 'button',
+            text: '×',
+            'aria-label': 'Close this search tip',
+            title: 'Close this tip — Settings → Reading → Reset tutorials brings it back',
+            onclick: () => {
+              app.closeTutorial('search-quote');
+              render();
+            },
+          }),
+        ]),
       ]));
       return;
     }
