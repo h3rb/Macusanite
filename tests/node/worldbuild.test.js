@@ -1120,6 +1120,40 @@ test('renameSectionLinks rewrites the same-vein links that named a heading', () 
   assert.equal(renameSectionLinks(model, 'coarse-sieve', 'coarse-mesh', 'Coarse | mesh').model, model);
 });
 
+test('renameSectionLinks follows links that spell this vein out', () => {
+  const model = parseNotes([
+    '# Fieldwork',
+    '',
+    '## Coarse sieve',
+    '',
+    'See [[#Coarse sieve]], [[Fieldwork#Coarse sieve|the coarse end]] and [[Other note#Coarse sieve]].',
+  ].join('\n'));
+  // The canvas knows which vein the card belongs to, so it widens the rewrite to
+  // links that name it: `[[Fieldwork#Coarse sieve]]` written in Fieldwork.md is
+  // the same heading as `[[#Coarse sieve]]`.
+  const reaches = (link) => (link.samePage
+    ? link.anchor === 'coarse-sieve'
+    : link.target === 'Fieldwork' && link.anchor === 'coarse-sieve');
+  const renamed = renameSectionLinks(model, 'coarse-sieve', 'coarse-mesh', 'Coarse mesh', reaches);
+  assert.equal(renamed.rewritten, 2);
+  assert.equal(
+    renamed.model.notes[1].body,
+    'See [[#Coarse mesh]], [[Fieldwork#Coarse mesh|the coarse end]] and [[Other note#Coarse sieve]].',
+  );
+  // Without the predicate only the same-page link moves: another vein's link is
+  // the save-time pass's business, not this model's.
+  const sameVeinOnly = renameSectionLinks(model, 'coarse-sieve', 'coarse-mesh', 'Coarse mesh');
+  assert.equal(sameVeinOnly.rewritten, 1);
+  assert.equal(
+    sameVeinOnly.model.notes[1].body,
+    'See [[#Coarse mesh]], [[Fieldwork#Coarse sieve|the coarse end]] and [[Other note#Coarse sieve]].',
+  );
+  // A block reference still names a block, not the heading, even when the
+  // predicate would otherwise say yes.
+  const block = parseNotes('# A\n\nSee [[#^quote]].\n');
+  assert.equal(renameSectionLinks(block, 'a', 'b', 'B', (link) => link.anchor === 'a').rewritten, 0);
+});
+
 test('bonds and the notes they carry follow a renamed card', () => {
   const relations = { 'a->b': 'ally', 'b->c': 'foe', 'c->b': 'contains', 'b->gone': 'controls' };
   assert.deepEqual(renameRelations(relations, 'b', 'b2'), {

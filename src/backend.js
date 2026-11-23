@@ -579,6 +579,9 @@ export const META = {
   state: 'state.json',
   // The document index cache: per-file headings, links and tags, keyed by stat.
   index: 'index.json',
+  // Link rewrites a save owes: a heading moved, and other veins' links may not
+  // have followed yet. Written before the vein, removed once they have.
+  retitles: 'retitles.json',
 };
 
 export { virtual as virtualVault, basename, dirname, stem };

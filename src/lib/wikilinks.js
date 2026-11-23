@@ -100,7 +100,6 @@ export function outgoingLinks(text) {
 export function resolveTarget(link, fromPath, index) {
   const docs = normalizeIndex(index);
   const anchor = link.anchor ?? (link.section ? slugify(link.section.replace(/^\^/, '')) : '');
-
   if (link.samePage) {
     return { ok: true, path: fromPath ?? null, anchor, candidates: [], samePage: true };
   }
@@ -177,6 +176,70 @@ export function normalizeIndex(index) {
         : (entry.depth ?? path.split('/').length - 1),
     };
   });
+}
+
+/**
+ * The links in one document that name one heading of one vein, as a click on
+ * them would open it: `[[Methods#Sieve series]]` counts when it resolves to
+ * `path`, however the target was spelled — path, file name or alias.
+ *
+ * Same-page links are left out: those never name a vein, and the whole-document
+ * rename rewrites them where the document is already open. Block references
+ * (`[[#^quote]]`) and section-less links are left out too.
+ *
+ * @param {Array} links `parseWikiLinks` output, or the `links` of an index entry
+ * @param {{fromPath?: string, index?: Array, path?: string, anchor?: string}} where
+ * @returns {Array} the links to rewrite, in source order
+ */
+export function linksToHeading(links = [], { fromPath = null, index = [], path = '', anchor = '' } = {}) {
+  const wanted = String(anchor ?? '');
+  if (!path || !wanted) return [];
+  const docs = normalizeIndex(index);
+  const out = [];
+  for (const link of links ?? []) {
+    if (link.samePage) continue;
+    const section = String(link.section ?? '');
+    if (!section || section.startsWith('^')) continue;
+    if ((link.anchor ?? slugify(section)) !== wanted) continue;
+    const resolved = resolveTarget({ target: String(link.target ?? ''), section }, fromPath, docs);
+    if (resolved.ok && resolved.path === path) out.push(link);
+  }
+  return out;
+}
+
+/**
+ * Point links that named one heading at another title: `[[Other#Old]]` becomes
+ * `[[Other#New]]`. The target is kept exactly as it was written, and so are an
+ * alias (`[[Other#Old|the old one]]` → `[[Other#New|the old one]]`) and an embed
+ * marker. Edits run right to left, so each one leaves the offsets before it
+ * alone.
+ *
+ * A title that cannot be written inside brackets — one holding a pipe or square
+ * brackets — leaves the text as it is rather than writing markdown that would
+ * not read back.
+ *
+ * @param {string} text the document body
+ * @param {Array} hits links from {@link linksToHeading} or `parseWikiLinks`
+ * @param {string} title the heading's new title, written verbatim
+ * @returns {{text: string, rewritten: number}} the body and how many links
+ *   changed — the same text and 0 when there was nothing to rewrite
+ */
+export function retitleSectionLinks(text, hits = [], title = '') {
+  const src = String(text ?? '');
+  const wanted = String(title ?? '').trim();
+  const usable = (hits ?? []).filter((link) => Number.isFinite(link?.start)
+    && Number.isFinite(link?.end) && link.end > link.start);
+  if (!wanted || /[[\]|]/.test(wanted) || !usable.length) return { text: src, rewritten: 0 };
+  let out = src;
+  let rewritten = 0;
+  for (const hit of [...usable].sort((a, b) => b.start - a.start)) {
+    const target = String(hit.target ?? '').trim();
+    const alias = hit.alias ? `|${hit.alias}` : '';
+    const body = target ? `${target}#${wanted}${alias}` : `#${wanted}${alias}`;
+    out = `${out.slice(0, hit.start)}${hit.embed ? '!' : ''}[[${body}]]${out.slice(hit.end)}`;
+    rewritten += 1;
+  }
+  return { text: out, rewritten };
 }
 
 /** Display text for a rendered link. */

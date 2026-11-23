@@ -12,7 +12,7 @@
  * "did the file survive a round trip through the canvas?" a unit test.
  */
 import { parseFrontmatter } from './frontmatter.js';
-import { parseTags, parseWikiLinks } from './wikilinks.js';
+import { parseTags, parseWikiLinks, retitleSectionLinks } from './wikilinks.js';
 import { slugify } from './path.js';
 
 const HEADING_RE = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/;
@@ -3037,7 +3037,7 @@ export function proseLinkBetween(model = {}, from, to) {
 }
 
 /**
- * Rewrite every same-vein link that named one heading so it names another:
+ * Rewrite every link in this vein that named one heading so it names another:
  * renaming a card cannot leave the links that pointed at it resolving to a
  * heading that is no longer there. `[[#Old]]` becomes `[[#New]]`, and an
  * alias is kept as it was written (`[[#Old|the old one]]` →
@@ -3047,28 +3047,37 @@ export function proseLinkBetween(model = {}, from, to) {
  * brackets — one holding a pipe or square brackets — leaves the links as they
  * are rather than writing markdown that would not read back.
  *
+ * Only same-page links are rewritten by default. Pass `reaches` to widen that:
+ * the canvas passes a predicate that also matches links naming this very vein
+ * by path or file name, so `[[Home#Old]]` written inside Home.md follows too.
+ * Links into other veins are a separate pass, because they live in other files
+ * (`app.renameHeadingLinks`).
+ *
+ * @param {object} model the vein read as notes
+ * @param {string} before the heading's old anchor
+ * @param {string} after its new anchor
+ * @param {string} title the heading's new title, written into the links
+ * @param {((link: object) => boolean)|null} [reaches] which links name the
+ *   heading, beyond the same-page ones
  * @returns {{model: object, rewritten: number}} a new model and how many links
  *   changed — the same model and 0 when there was nothing to rewrite
  */
-export function renameSectionLinks(model = {}, before, after, title) {
+export function renameSectionLinks(model = {}, before, after, title, reaches = null) {
   const wanted = String(title ?? '').trim();
   if (!before || !after || before === after || !wanted) return { model, rewritten: 0 };
   if (/[[\]|]/.test(wanted)) return { model, rewritten: 0 };
+  const namesHeading = (link) => !String(link.section ?? '').startsWith('^')
+    && (typeof reaches === 'function'
+      ? reaches(link)
+      : link.samePage && link.anchor === before);
   let rewritten = 0;
   const notes = (model.notes ?? []).map((note) => {
-    const hits = parseWikiLinks(note.body)
-      .filter((link) => link.samePage
-        && !String(link.section ?? '').startsWith('^')
-        && link.anchor === before);
+    const hits = parseWikiLinks(note.body).filter(namesHeading);
     if (!hits.length) return note;
-    let body = note.body;
-    // Right to left, so each edit leaves the offsets before it alone.
-    for (const hit of hits.sort((a, b) => b.start - a.start)) {
-      const alias = hit.alias ? `|${hit.alias}` : '';
-      body = `${body.slice(0, hit.start)}${hit.embed ? '!' : ''}[[#${wanted}${alias}]]${body.slice(hit.end)}`;
-      rewritten += 1;
-    }
-    return { ...note, body, ...describeBody(body) };
+    const retitled = retitleSectionLinks(note.body, hits, wanted);
+    if (!retitled.rewritten) return note;
+    rewritten += retitled.rewritten;
+    return { ...note, body: retitled.text, ...describeBody(retitled.text) };
   });
   return rewritten ? { model: { ...model, notes }, rewritten } : { model, rewritten: 0 };
 }

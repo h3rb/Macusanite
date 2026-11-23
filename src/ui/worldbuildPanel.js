@@ -4270,8 +4270,15 @@ export function createWorldbuildPanel({ app, root }) {
     model = updateNote(model, index, { title: wanted });
     const after = model.notes[index].anchor;
     if (before !== after) {
-      // Links name the heading they point at, so they follow it to its new name.
-      model = renameSectionLinks(model, before, after, wanted).model;
+      // Links name the heading they point at, so this vein's follow it here —
+      // `[[#Old]]` and a spelled-out `[[This vein#Old]]` alike. Other veins'
+      // links follow when the save finds the same rename against the file.
+      const namesHeading = (link) => {
+        if (link.samePage) return link.anchor === before;
+        const resolved = app.resolveLink(link, currentPath);
+        return Boolean(resolved.ok) && resolved.path === currentPath && resolved.anchor === before;
+      };
+      model = renameSectionLinks(model, before, after, wanted, namesHeading).model;
       if (positions.has(before)) positions.set(after, positions.get(before));
       positions.delete(before);
       if (tableSelection.has(before)) tableSelection.set(after, tableSelection.get(before));

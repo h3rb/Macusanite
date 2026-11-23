@@ -31,7 +31,8 @@ import {
   cleanForgePrefs, rememberForgeKind as forgePrefsAfterUse, toggleForgeFavourite as forgePrefsAfterPin,
   cleanBondNotes, cardPresets, moveAnchorsIn,
 } from './lib/worldbuild.js';
-import { resolveTarget } from './lib/wikilinks.js';
+import { resolveTarget, linksToHeading, retitleSectionLinks, parseWikiLinks } from './lib/wikilinks.js';
+import { readRetitleJournal, retitleJournalText, renameReachedFile, retypedHeadings } from './lib/retitles.js';
 import { dirname, join, basename, titleFromPath, slugify, isMarkdown } from './lib/path.js';
 import { ancestorPaths, findNode } from './lib/tree.js';
 import { el, qs, createToaster, askText, askConfirm } from './ui/dom.js';
@@ -170,6 +171,7 @@ let searchCorpus = null;
 const externalQueue = [];
 let externalBusy = false;
 
+
 // Metadata files whose external change arrived while a write of ours was still
 // on its way. Applied the moment that write lands. See `applyExternalMeta`.
 const deferredMeta = new Set();
@@ -208,6 +210,26 @@ const debounce = (fn, delay) => {
   wrapped.pending = () => timer !== null || running;
   return wrapped;
 };
+
+/**
+ * Put the link rewrites still owed on disk, or take the record away when none
+ * are left. Written before the change it describes, so a window that closes in
+ * the middle finds it; an empty journal is deleted rather than written, so the
+ * file's presence alone means something is outstanding.
+ *
+ * @param {Array} entries heading renames a save owes
+ */
+async function writeRetitleJournal(entries = []) {
+  if (!state.vault) return;
+  try {
+    if (!entries.length) await backend.deleteMeta(META.retitles);
+    else await backend.writeMeta(META.retitles, retitleJournalText(entries), 'pending link rewrites', false);
+  } catch (error) {
+    // The save can still go ahead: without the record it is only as durable as
+    // the window, which is how it was before there was one.
+    await backend.log('warn', `could not record the link rewrites still owed: ${error.message}`);
+  }
+}
 
 const readMetaJson = async (name, fallback = null) => {
   const raw = await backend.readMeta(name);
@@ -464,6 +486,12 @@ const app = {
       read: 0,
       pending: plan.toRead.length,
     };
+
+    // A save or a rename cut short — the window closed while other veins' links
+    // were still following — left its record in `retitles.json`. It is finished
+    // here, before the start vein is opened, so that vein's own text is written
+    // by this pass instead of under an open draft.
+    await app.resumeLinkRewrites();
 
     if (target) await app.openPath(target, { fromState: true });
     else {
@@ -1605,6 +1633,169 @@ const app = {
     return anchorViewOf(moved);
   },
 
+  /**
+   * Finish the link rewrites an earlier window did not get to.
+   *
+   * Run on open, before the start vein is read: the journal is the window's own
+   * note to itself, and the only way a rewrite survives the window closing right
+   * after Save or a rename. Each entry is checked against the vault on disk, so a
+   * change that never landed is dropped rather than pointed at something that is
+   * still where it was.
+   *
+   * @returns {Promise<{files: number, links: number}>} what the last window left
+   */
+  async resumeLinkRewrites() {
+    let raw = null;
+    try {
+      raw = await backend.readMeta(META.retitles);
+    } catch (error) {
+      await backend.log('warn', `could not read the link rewrites still owed: ${error.message}`);
+      return { files: 0, links: 0 };
+    }
+    const entries = readRetitleJournal(raw);
+    if (!entries.length) return { files: 0, links: 0 };
+    const total = { files: 0, links: 0 };
+
+    const byPath = new Map();
+    for (const entry of entries) {
+      if (!byPath.has(entry.path)) byPath.set(entry.path, []);
+      byPath.get(entry.path).push(entry);
+    }
+    for (const [path, renames] of byPath) {
+      try {
+        const text = await backend.readVein(path);
+        state.bodies[path] = text;
+        // The reopened index may still hold a stub for the renamed vein.
+        // Describing it again is what lets links spelled with its title or an
+        // alias resolve.
+        await app.reindex([path], { text });
+        const changed = await app.applyHeadingRenames(path, renames, text);
+        total.files += changed.files;
+        total.links += changed.links;
+      } catch (error) {
+        await backend.log('warn', `could not finish the link rewrites left for ${path}: ${error.message}`);
+      }
+    }
+
+    await writeRetitleJournal();
+    if (total.links) {
+      await backend.log('info', `finished ${total.links} link rewrite(s) left over from the last window`);
+    }
+    return total;
+  },
+
+  /**
+   * Point other veins' links at the headings one vein renamed.
+   *
+   * A card's title is a heading, and another vein names it as
+   * `[[Other vein#Heading]]`; leaving those behind would turn every such link
+   * into a section that is no longer there. The links are found the way a click
+   * finds them — resolved against the index, so a link written as a path, a file
+   * name or a title all count — then rewritten in place, one history step per
+   * file, and re-indexed so a later rename sees the new text.
+   *
+   * The renames are the same whether a card was retitled or a heading retyped in
+   * the source editor: `saveCurrent` finds both by reading the draft against the
+   * vein's last headings, and awaits this, so a save is not finished — or
+   * reported — before the links are. `retitles.json` holds them until they are,
+   * which is what lets a window closed in the middle finish on the next open.
+   *
+   * This vein itself is skipped: its own links were rewritten in the draft before
+   * it was saved. Veins the index has not described yet are read for their links,
+   * because skipping them would quietly miss them.
+   *
+   * @param {string} path the vein whose heading moved
+   * @param {Array<{before: string, after: string, title: string}>} renames
+   * @param {string|null} [savedText] its text as just written, when the caller has
+   *   it; read back from disk otherwise
+   * @returns {Promise<{files: number, links: number}>} what changed on disk
+   */
+  async applyHeadingRenames(path, renames = [], savedText = null) {
+    if (!state.vault || !path || !renames.length) return { files: 0, links: 0 };
+    let text = typeof savedText === 'string' ? savedText : null;
+    if (text === null) {
+      try {
+        text = await backend.readVein(path);
+      } catch (error) {
+        await backend.log('warn', `could not read ${path} to finish its link rewrites: ${error.message}`);
+        return { files: 0, links: 0 };
+      }
+    }
+    const total = { files: 0, links: 0 };
+    for (const rename of renames) {
+      // A journal written before its save can outlive a save that failed.
+      if (!renameReachedFile(text, rename.before)) continue;
+      try {
+        const changed = await app.renameHeadingLinks(path, rename.before, rename.after, rename.title);
+        total.files += changed.files;
+        total.links += changed.links;
+      } catch (error) {
+        // The save itself succeeded; this is only the links that name it.
+        app.toast(`Could not update links in other veins: ${error.message}`, 'warn', 3600);
+        await backend.log('warn', `could not retitle links for ${path}#${rename.before}: ${error.message}`);
+      }
+    }
+    if (total.links) {
+      app.toast(
+        `Updated ${total.links} link${total.links === 1 ? '' : 's'} in ${total.files} other vein${total.files === 1 ? '' : 's'}`,
+        'ok',
+        2600,
+      );
+    }
+    return total;
+  },
+
+  /**
+   * Rewrite the links other veins write to one heading of one vein.
+   *
+   * @returns {Promise<{files: number, links: number}>} the files written and the
+   *   links changed
+   */
+  async renameHeadingLinks(path, before, after, title) {
+    const wanted = String(title ?? '').trim();
+    const nothing = { files: 0, links: 0 };
+    if (!state.vault || !path || !before || !after || before === after || !wanted) return nothing;
+    if (/[[\]|]/.test(wanted)) return nothing;
+    let files = 0;
+    let links = 0;
+    for (const doc of state.index) {
+      if (doc.path === path || state.virtualDocs[doc.path]) continue;
+      let text = null;
+      let found = doc.links ?? [];
+      if (isStub(doc)) {
+        try {
+          text = await backend.readVein(doc.path);
+        } catch {
+          continue;
+        }
+        found = parseWikiLinks(text);
+      }
+      // The index entry only says a matching link exists; its links carry the
+      // offset a link starts at but not where it ends, so the rewrite itself runs
+      // over the text, parsed whole.
+      if (!linksToHeading(found, { fromPath: doc.path, index: state.index, path, anchor: before }).length) continue;
+      if (typeof text !== 'string') {
+        try {
+          text = await backend.readVein(doc.path);
+        } catch {
+          continue;
+        }
+      }
+      const hits = linksToHeading(parseWikiLinks(text), { fromPath: doc.path, index: state.index, path, anchor: before });
+      if (!hits.length) continue;
+      const retitled = retitleSectionLinks(text, hits, wanted);
+      if (!retitled.rewritten) continue;
+      await backend.writeVein(doc.path, retitled.text, `retitle ${before} -> ${wanted} in ${doc.path}`);
+      await app.reindex([doc.path], { text: retitled.text });
+      files += 1;
+      links += retitled.rewritten;
+    }
+    if (links) {
+      await backend.log('info', `renamed ${path}#${before} to “${wanted}” — rewrote ${links} link(s) in ${files} other vein(s)`);
+    }
+    return { files, links };
+  },
+
   revertDraft() {
     if (!state.current) return;
     // Discarding the draft answers the clash too: there is no second version left
@@ -1645,8 +1836,23 @@ const app = {
         return;
       }
     }
+    // The headings this save leaves behind, read once and wanted twice: to find
+    // what the draft retyped, and to be the vein's headings from here on.
+    const path = state.current.path;
+    const headings = buildDocumentIndex({ [path]: text })[0]?.headings ?? [];
+    // Every heading this save moves, whether a card's title was retitled or the
+    // heading was retyped in the source editor: the draft read against the
+    // headings the vein was last known by. A draft that changed nothing — a
+    // rename taken back, a card retitled and then reverted — finds none.
+    const renames = retypedHeadings(state.current.headings ?? [], headings)
+      .map((rename) => ({ path, ...rename }));
+    let wroteVein = false;
     try {
+      // On disk before the vein: a window that closes between the two writes
+      // leaves a record of what still has to follow.
+      if (renames.length) await writeRetitleJournal(renames);
       await backend.writeVein(state.current.path, text, `edit ${state.current.path}`);
+      wroteVein = true;
       state.bodies[state.current.path] = text;
       const { data, body } = parseFrontmatter(text);
       state.current.raw = text;
@@ -1654,11 +1860,17 @@ const app = {
       state.current.body = body;
       state.current.frontmatter = data;
       state.current.meta = documentMeta(data);
-      state.current.headings = buildDocumentIndex({ [state.current.path]: text })[0]?.headings ?? [];
+      state.current.headings = headings;
       markDirty(false);
       state.lockedBlocked = [];
       state.lockedNotice = '';
       await app.reindex([state.current.path], { text });
+      // The headings are on disk now, so links other veins write to their old
+      // titles can safely follow. Awaited: the save is not over — and Save is not
+      // reported — until they have, and what a closed window cuts short stays in
+      // `retitles.json` for the next open.
+      await app.applyHeadingRenames(path, renames, text);
+      if (renames.length) await writeRetitleJournal([]);
       await viewer.render(state.current);
       await app.refreshGraph();
       chrome.render();
@@ -1676,6 +1888,9 @@ const app = {
       // on, this schedules one after the typing settles.
       backupDialog?.noteSaved();
     } catch (error) {
+      // Nothing reached the file, so no heading really moved: take the record
+      // back out instead of leaving a rewrite for the next open to guess at.
+      if (!wroteVein && renames.length) await writeRetitleJournal([]);
       app.toast(`Save failed: ${error.message}`, 'error');
     }
   },

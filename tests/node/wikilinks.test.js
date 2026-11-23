@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseWikiLinks, parseLinkBody, outgoingLinks, resolveTarget, parseTags, maskCode,
+  linksToHeading, retitleSectionLinks,
 } from '../../src/lib/wikilinks.js';
 import { buildDocumentIndex } from '../../src/lib/graph.js';
 
@@ -101,6 +102,60 @@ test('an unwritten target is a ghost with a suggested path', () => {
 test('slugified headings stay reachable through section links', () => {
   const doc = index.find((d) => d.path === 'Chambers/Lab/Analytical Methods.md');
   assert.deepEqual(doc.headings.map((h) => h.anchor), ['analytical-methods', 'sieve-series']);
+});
+
+test('linksToHeading finds the links that name one heading of one vein', () => {
+  const text = [
+    'See [[Analytical Methods#Sieve series]], [[Chambers/Lab/Analytical Methods#Sieve series|the sieves]]',
+    'and ![[Analytical Methods#Sieve series|the embeds]].',
+    '',
+    'Elsewhere: [[Sampling Plan#Sieve series]], [[Analytical Methods#Other]], [[Analytical Methods#^block]]',
+    'and [[#Sieve series]].',
+  ].join('\n');
+  const links = parseWikiLinks(text);
+  const hits = linksToHeading(links, {
+    fromPath: 'Home.md',
+    index,
+    path: 'Chambers/Lab/Analytical Methods.md',
+    anchor: 'sieve-series',
+  });
+  // The plain link, the one written as a full path and the embed: all three name
+  // the same heading. Another vein's heading, another heading of this one, a
+  // block reference and a same-page link are not that heading.
+  assert.deepEqual(hits.map((link) => link.target), [
+    'Analytical Methods', 'Chambers/Lab/Analytical Methods', 'Analytical Methods',
+  ]);
+  assert.equal(linksToHeading(links, { fromPath: 'Home.md', index, path: '', anchor: 'sieve-series' }).length, 0);
+  assert.equal(linksToHeading(links, { fromPath: 'Home.md', index, path: 'Chambers/Lab/Analytical Methods.md', anchor: '' }).length, 0);
+});
+
+test('retitleSectionLinks points the named links at a new title', () => {
+  const text = [
+    'See [[Analytical Methods#Sieve series]], [[Analytical Methods#Sieve series|the sieves]] and ![[Analytical Methods#Sieve series|the embeds]].',
+    '',
+    '```md',
+    '[[Analytical Methods#Sieve series]]',
+    '```',
+  ].join('\n');
+  const hits = linksToHeading(parseWikiLinks(text), {
+    fromPath: 'Home.md',
+    index,
+    path: 'Chambers/Lab/Analytical Methods.md',
+    anchor: 'sieve-series',
+  });
+  const retitled = retitleSectionLinks(text, hits, 'Sieve ladder');
+  assert.equal(retitled.rewritten, 3);
+  assert.equal(retitled.text, [
+    'See [[Analytical Methods#Sieve ladder]], [[Analytical Methods#Sieve ladder|the sieves]] and ![[Analytical Methods#Sieve ladder|the embeds]].',
+    '',
+    '```md',
+    '[[Analytical Methods#Sieve series]]',
+    '```',
+  ].join('\n'));
+  // A title that cannot be written inside brackets leaves the prose alone rather
+  // than writing markdown that would not read back.
+  assert.deepEqual(retitleSectionLinks(text, hits, 'Sieve | ladder'), { text, rewritten: 0 });
+  assert.deepEqual(retitleSectionLinks(text, [], 'Sieve ladder'), { text, rewritten: 0 });
 });
 
 test('parseTags finds tags in prose but ignores headings and code', () => {
