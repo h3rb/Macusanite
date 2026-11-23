@@ -159,9 +159,12 @@ test('the live index stays path-sorted as entries arrive', () => {
   assert.equal(index.indexed, 2);
   assert.equal(index.find('b.md').title, 'Again');
 
-  // Removed veins leave the list.
+  // Removed veins leave the list — the same list, because the viewer holds it
+  // as `state.index` and a rename drops the paths it moved.
+  const held = index.list;
   assert.equal(index.drop(['a.md', 'nope.md']), 1);
-  assert.deepEqual(index.list.map((d) => d.path), ['b.md', 'c.md', 'd.md']);
+  assert.equal(index.list, held);
+  assert.deepEqual(held.map((d) => d.path), ['b.md', 'c.md', 'd.md']);
   assert.equal(index.indexed, 1);
   assert.equal(index.drop([]), 0);
 });

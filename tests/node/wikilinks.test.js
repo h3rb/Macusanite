@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseWikiLinks, parseLinkBody, outgoingLinks, resolveTarget, parseTags, maskCode,
-  linksToHeading, retitleSectionLinks,
+  linksToHeading, retitleSectionLinks, linksToFiles, retargetFileLinks,
 } from '../../src/lib/wikilinks.js';
 import { buildDocumentIndex } from '../../src/lib/graph.js';
+import { indexBeforeMoves } from '../../src/lib/retitles.js';
 
 const index = buildDocumentIndex({
   'Home.md': '# Home\n',
@@ -156,6 +157,103 @@ test('retitleSectionLinks points the named links at a new title', () => {
   // than writing markdown that would not read back.
   assert.deepEqual(retitleSectionLinks(text, hits, 'Sieve | ladder'), { text, rewritten: 0 });
   assert.deepEqual(retitleSectionLinks(text, [], 'Sieve ladder'), { text, rewritten: 0 });
+});
+
+test('a renamed vein takes the links that named it, however they were written', () => {
+  const home = [
+    'See [[Analytical Methods]], [[Chambers/Lab/Analytical Methods#Sieve series|the sieves]] and [[Sampling Plan]].',
+    '',
+    '```md',
+    '[[Analytical Methods]]',
+    '```',
+  ].join('\n');
+  const move = { from: 'Chambers/Lab/Analytical Methods.md', to: 'Chambers/Lab/Sieve Methods.md' };
+  const after = buildDocumentIndex({
+    'Home.md': home,
+    'Chambers/Lab/Sieve Methods.md': '# Analytical Methods\n## Sieve series\n',
+    'Chambers/Fieldwork/Sampling Plan.md': '# Sampling Plan\n',
+  });
+  const before = indexBeforeMoves(after, [move]);
+  const hits = linksToFiles(parseWikiLinks(home), { fromPath: 'Home.md', index: before, moves: [move] });
+  assert.deepEqual(hits.map((hit) => hit.target), [
+    'Analytical Methods', 'Chambers/Lab/Analytical Methods',
+  ]);
+  assert.deepEqual(hits.map((hit) => hit.to), [move.to, move.to]);
+  // The index's own link list carries the start offset but no end; it is enough
+  // to decide whether a vein is worth reading, which is all the viewer asks it.
+  assert.equal(
+    linksToFiles(after.find((doc) => doc.path === 'Home.md').links, {
+      fromPath: 'Home.md', index: before, moves: [move],
+    }).length,
+    2,
+  );
+
+  const retargeted = retargetFileLinks(home, hits, { index: after, fromPath: 'Home.md' });
+  assert.equal(retargeted.rewritten, 2);
+  assert.equal(retargeted.text, [
+    'See [[Sieve Methods]], [[Chambers/Lab/Sieve Methods#Sieve series|the sieves]] and [[Sampling Plan]].',
+    '',
+    '```md',
+    '[[Analytical Methods]]',
+    '```',
+  ].join('\n'));
+});
+
+test('a chamber move rewrites what broke and leaves every link that still opens', () => {
+  const home = '[[Analytical Methods]], [[Chambers/Lab/Analytical Methods#Sieve series]] and ![[Chambers/Lab/Analytical Methods]]';
+  const move = { from: 'Chambers/Lab/Analytical Methods.md', to: 'Chambers/Methods/Analytical Methods.md' };
+  const after = buildDocumentIndex({
+    'Home.md': home,
+    'Chambers/Methods/Analytical Methods.md': '# Analytical Methods\n## Sieve series\n',
+  });
+  const before = indexBeforeMoves(after, [move]);
+  const hits = linksToFiles(parseWikiLinks(home), { fromPath: 'Home.md', index: before, moves: [move] });
+  assert.equal(hits.length, 3);
+  const retargeted = retargetFileLinks(home, hits, { index: after, fromPath: 'Home.md' });
+  // The bare name still finds the vein where it landed; the two full paths did not.
+  assert.equal(retargeted.rewritten, 2);
+  assert.equal(
+    retargeted.text,
+    '[[Analytical Methods]], [[Chambers/Methods/Analytical Methods#Sieve series]] and ![[Chambers/Methods/Analytical Methods]]',
+  );
+
+  // A link that still resolves through a front-matter alias is content the move
+  // did not touch, and is left exactly as written.
+  const aliased = buildDocumentIndex({
+    'Home.md': '[[FI]] and [[Chambers/Mineralogy/Fluid Inclusions]]',
+    'Chambers/Mineralogy/Fluid Traps.md': '---\naliases: [FI]\n---\n# Fluid Inclusions\n',
+  });
+  const fluid = { from: 'Chambers/Mineralogy/Fluid Inclusions.md', to: 'Chambers/Mineralogy/Fluid Traps.md' };
+  const fluidBefore = indexBeforeMoves(aliased, [fluid]);
+  const fluidHits = linksToFiles(parseWikiLinks('[[FI]] and [[Chambers/Mineralogy/Fluid Inclusions]]'), {
+    fromPath: 'Home.md', index: fluidBefore, moves: [fluid],
+  });
+  const fluidRetargeted = retargetFileLinks('[[FI]] and [[Chambers/Mineralogy/Fluid Inclusions]]', fluidHits, {
+    index: aliased, fromPath: 'Home.md',
+  });
+  assert.equal(fluidRetargeted.rewritten, 1);
+  assert.equal(fluidRetargeted.text, '[[FI]] and [[Chambers/Mineralogy/Fluid Traps]]');
+});
+
+test('a bare new name that would resolve elsewhere falls back to the full path', () => {
+  const home = 'See [[Analytical Methods]].';
+  const move = { from: 'Chambers/Lab/Analytical Methods.md', to: 'Chambers/Lab/Methods.md' };
+  const after = buildDocumentIndex({
+    'Home.md': home,
+    // A shallower vein of that name: `[[Methods]]` would stop finding the moved one.
+    'Methods.md': '# Methods\n',
+    'Chambers/Lab/Methods.md': '# Analytical Methods\n',
+  });
+  const hits = linksToFiles(parseWikiLinks(home), {
+    fromPath: 'Home.md', index: indexBeforeMoves(after, [move]), moves: [move],
+  });
+  const retargeted = retargetFileLinks(home, hits, { index: after, fromPath: 'Home.md' });
+  assert.equal(retargeted.text, 'See [[Chambers/Lab/Methods]].');
+  // A name that cannot be written between brackets leaves the link alone.
+  assert.deepEqual(
+    retargetFileLinks('[[Old]]', [{ target: 'Old', start: 0, end: 7, to: 'New | Name.md' }], { index: after }),
+    { text: '[[Old]]', rewritten: 0 },
+  );
 });
 
 test('parseTags finds tags in prose but ignores headings and code', () => {

@@ -31,8 +31,14 @@ import {
   cleanForgePrefs, rememberForgeKind as forgePrefsAfterUse, toggleForgeFavourite as forgePrefsAfterPin,
   cleanBondNotes, cardPresets, moveAnchorsIn,
 } from './lib/worldbuild.js';
-import { resolveTarget, linksToHeading, retitleSectionLinks, parseWikiLinks } from './lib/wikilinks.js';
-import { readRetitleJournal, retitleJournalText, renameReachedFile, retypedHeadings } from './lib/retitles.js';
+import {
+  resolveTarget, linksToHeading, retitleSectionLinks, linksToFiles, retargetFileLinks,
+  parseWikiLinks,
+} from './lib/wikilinks.js';
+import {
+  readRetitleJournal, retitleJournalText, renameReachedFile, retypedHeadings,
+  readMoveJournal, movedPairs, renameReachedPaths, indexBeforeMoves,
+} from './lib/retitles.js';
 import { dirname, join, basename, titleFromPath, slugify, isMarkdown } from './lib/path.js';
 import { ancestorPaths, findNode } from './lib/tree.js';
 import { el, qs, createToaster, askText, askConfirm } from './ui/dom.js';
@@ -218,17 +224,56 @@ const debounce = (fn, delay) => {
  * file's presence alone means something is outstanding.
  *
  * @param {Array} entries heading renames a save owes
+ * @param {Array} moves file moves a rename owes
  */
-async function writeRetitleJournal(entries = []) {
+async function writeRetitleJournal(entries = [], moves = []) {
   if (!state.vault) return;
   try {
-    if (!entries.length) await backend.deleteMeta(META.retitles);
-    else await backend.writeMeta(META.retitles, retitleJournalText(entries), 'pending link rewrites', false);
+    if (!entries.length && !moves.length) await backend.deleteMeta(META.retitles);
+    else await backend.writeMeta(META.retitles, retitleJournalText({ pending: entries, moves }), 'pending link rewrites', false);
   } catch (error) {
     // The save can still go ahead: without the record it is only as durable as
     // the window, which is how it was before there was one.
     await backend.log('warn', `could not record the link rewrites still owed: ${error.message}`);
   }
+}
+
+/**
+ * Rename a vein or chamber on disk and make the links that name it follow.
+ *
+ * The move goes into the journal before the filesystem is touched, so a window
+ * closed between the two leaves the record the next open finishes; it is taken
+ * back out once every link has followed. The vault is re-walked between them so
+ * links are matched against the files where they used to be, and the index pass
+ * waits until the rewrites are done rather than reading a file twice.
+ *
+ * @param {'vein'|'chamber'} kind
+ * @param {string} from the path before the move
+ * @param {string} to the path after it
+ * @param {() => Promise<{moved?: boolean}>} rename the filesystem move
+ * @param {(() => void)|null} [onMoved] runs once the move landed and before the
+ *   vault is walked again, so the open document is never briefly missing
+ * @returns {Promise<boolean>} whether anything moved
+ */
+async function renamePathWithLinkRepair(kind, from, to, rename, onMoved = null) {
+  await writeRetitleJournal([], [{ kind, from, to }]);
+  let moved = false;
+  try {
+    moved = Boolean((await rename())?.moved);
+  } catch (error) {
+    await writeRetitleJournal();
+    throw error;
+  }
+  if (!moved) {
+    await writeRetitleJournal();
+    return false;
+  }
+  onMoved?.();
+  await app.reloadVault({ tree: true });
+  await app.applyMovedLinks([{ kind, from, to }]);
+  await writeRetitleJournal();
+  app.startIndexPass();
+  return true;
 }
 
 const readMetaJson = async (name, fallback = null) => {
@@ -1653,7 +1698,8 @@ const app = {
       return { files: 0, links: 0 };
     }
     const entries = readRetitleJournal(raw);
-    if (!entries.length) return { files: 0, links: 0 };
+    const moves = readMoveJournal(raw);
+    if (!entries.length && !moves.length) return { files: 0, links: 0 };
     const total = { files: 0, links: 0 };
 
     const byPath = new Map();
@@ -1675,6 +1721,13 @@ const app = {
       } catch (error) {
         await backend.log('warn', `could not finish the link rewrites left for ${path}: ${error.message}`);
       }
+    }
+
+    const landed = moves.filter((move) => renameReachedPaths(state.veins, move));
+    if (landed.length) {
+      const changed = await app.applyMovedLinks(landed);
+      total.files += changed.files;
+      total.links += changed.links;
     }
 
     await writeRetitleJournal();
@@ -1792,6 +1845,79 @@ const app = {
     }
     if (links) {
       await backend.log('info', `renamed ${path}#${before} to “${wanted}” — rewrote ${links} link(s) in ${files} other vein(s)`);
+    }
+    return { files, links };
+  },
+
+  /**
+   * Point other veins' links at a vein or chamber that just moved.
+   *
+   * A vein is named as `[[Home]]`, `[[Chambers/Lab/Methods]]` or
+   * `[[Methods#Sieve series]]`, and a chamber rename moves every vein under it;
+   * leaving those behind would turn every such link into one that opens nothing.
+   * The links that named a moved file are found the way a click finds them —
+   * resolved against the vault as it was before the move, so a path, a file name
+   * or an alias all count — then rewritten in place, one history step per file,
+   * and re-indexed so a later rename sees the new text.
+   *
+   * A link that still opens the file is left exactly as written: a bare name
+   * survives a chamber move, and a front-matter alias is content the move never
+   * touched. `retitles.json` holds the move until every link has followed, which
+   * is what lets a window closed in the middle finish on the next open.
+   *
+   * @param {Array<{kind: 'vein'|'chamber', from: string, to: string}>} entries
+   * @returns {Promise<{files: number, links: number}>} what changed on disk
+   */
+  async applyMovedLinks(entries = []) {
+    const pairs = movedPairs(entries, state.veins);
+    if (!state.vault || !pairs.length) return { files: 0, links: 0 };
+    // The vault as it was before the move: a link written against an old name
+    // only resolves to the file it named while the index still describes the
+    // file there.
+    const before = indexBeforeMoves(state.index, pairs);
+    const oldPathOf = new Map(pairs.map((pair) => [pair.to, pair.from]));
+    const moves = pairs.map((pair) => ({ from: pair.from, to: pair.to }));
+    const description = entries.map((entry) => `${entry.from} -> ${entry.to}`).join(', ');
+    let files = 0;
+    let links = 0;
+    for (const doc of state.index) {
+      if (state.virtualDocs[doc.path]) continue;
+      const fromPath = oldPathOf.get(doc.path) ?? doc.path;
+      let text = null;
+      let found = doc.links ?? [];
+      if (isStub(doc)) {
+        try {
+          text = await backend.readVein(doc.path);
+        } catch {
+          continue;
+        }
+        found = parseWikiLinks(text);
+      }
+      if (!linksToFiles(found, { fromPath, index: before, moves }).length) continue;
+      if (typeof text !== 'string') {
+        try {
+          text = await backend.readVein(doc.path);
+        } catch {
+          continue;
+        }
+      }
+      const hits = linksToFiles(parseWikiLinks(text), { fromPath, index: before, moves });
+      if (!hits.length) continue;
+      const retargeted = retargetFileLinks(text, hits, { index: state.index, fromPath: doc.path });
+      if (!retargeted.rewritten) continue;
+      await backend.writeVein(doc.path, retargeted.text, `retarget ${description} in ${doc.path}`);
+      await app.reindex([doc.path], { text: retargeted.text });
+      state.bodies[doc.path] = retargeted.text;
+      files += 1;
+      links += retargeted.rewritten;
+    }
+    if (links) {
+      await backend.log('info', `${description} — rewrote ${links} link(s) in ${files} vein(s)`);
+      app.toast(
+        `Updated ${links} link${links === 1 ? '' : 's'} in ${files} vein${files === 1 ? '' : 's'}`,
+        'ok',
+        2600,
+      );
     }
     return { files, links };
   },
@@ -2625,10 +2751,16 @@ const app = {
         await app.saveCurrent();
         if (state.dirty) return;
       }
-      const result = await backend.renameVein(path, target);
-      if (!result?.moved) return;
-      migrateTreePath(path, target);
-      await app.reloadVault({ tree: true, index: true });
+      // The links that name the old file follow it; the intent is on disk first,
+      // so a window closed in the middle finishes them on the next open.
+      const moved = await renamePathWithLinkRepair(
+        'vein',
+        path,
+        target,
+        () => backend.renameVein(path, target),
+        () => migrateTreePath(path, target),
+      );
+      if (!moved) return;
       await refreshHistory();
       if (wasOpen) await app.openPath(target, { fromState: true });
       app.scheduleStatePersist();
@@ -2697,10 +2829,14 @@ const app = {
         await app.saveCurrent();
         if (state.dirty) return;
       }
-      const result = await backend.renameChamber(path, target);
-      if (!result?.moved) return;
-      migrateTreePath(path, target);
-      await app.reloadVault({ tree: true, index: true });
+      const moved = await renamePathWithLinkRepair(
+        'chamber',
+        path,
+        target,
+        () => backend.renameChamber(path, target),
+        () => migrateTreePath(path, target),
+      );
+      if (!moved) return;
       await refreshHistory();
       if (wasOpen) await app.openPath(`${target}${currentPath.slice(path.length)}`, { fromState: true });
       app.scheduleStatePersist();
@@ -2759,15 +2895,19 @@ const app = {
       if (state.dirty) return;
     }
     try {
-      const result = isVein
-        ? await backend.renameVein(path, target)
-        : await backend.renameChamber(path, target);
-      if (!result?.moved) return;
-      migrateTreePath(path, target);
-      if (chamber) state.ui.expanded[chamber] = true;
-      if (!isVein) state.ui.expanded[target] = true;
-      for (const ancestor of ancestorPaths(target)) state.ui.expanded[ancestor] = true;
-      await app.reloadVault({ tree: true, index: true });
+      const moved = await renamePathWithLinkRepair(
+        isVein ? 'vein' : 'chamber',
+        path,
+        target,
+        () => (isVein ? backend.renameVein(path, target) : backend.renameChamber(path, target)),
+        () => {
+          migrateTreePath(path, target);
+          if (chamber) state.ui.expanded[chamber] = true;
+          if (!isVein) state.ui.expanded[target] = true;
+          for (const ancestor of ancestorPaths(target)) state.ui.expanded[ancestor] = true;
+        },
+      );
+      if (!moved) return;
       await refreshHistory();
       if (openInside) {
         const reopened = isVein ? target : `${target}${currentPath.slice(path.length)}`;

@@ -171,7 +171,13 @@ export function createIndex(entries = []) {
       return entry;
     },
     insert,
-    /** Forget veins that are no longer in the vault. */
+    /**
+     * Forget veins that are no longer in the vault.
+     *
+     * The list is emptied and refilled in place rather than replaced: `list` is
+     * handed out (the viewer keeps it as `state.index`), and a rename that drops
+     * the old path must not leave that holder looking at the old array.
+     */
     drop(paths) {
       const gone = new Set(paths);
       if (!gone.size) return 0;
@@ -184,7 +190,7 @@ export function createIndex(entries = []) {
         kept.push(entry);
       }
       const dropped = list.length - kept.length;
-      list = kept;
+      list.splice(0, list.length, ...kept);
       positions.clear();
       list.forEach((entry, i) => positions.set(entry.path, i));
       return dropped;

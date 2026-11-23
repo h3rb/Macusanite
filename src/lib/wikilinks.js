@@ -5,9 +5,12 @@
  * The scanner is fence/code aware so markdown examples never turn into links,
  * and every token carries the offsets needed to recolour a rendered document.
  */
-import { normalize, dirname, stem, slugify, titleFromPath } from './path.js';
+import { normalize, dirname, basename, stem, slugify, titleFromPath } from './path.js';
 
 const LINK_RE = /(!?)\[\[([^\[\]]+?)\]\]/g;
+const MARKDOWN_EXT = /\.(md|markdown|mdx)$/i;
+/** A path that can be written between brackets, where a link can read it back. */
+const writableTarget = (path) => Boolean(path) && !/[\[\]|]/.test(path);
 
 /** Strip fenced blocks and inline code, replacing them with spaces (offsets kept). */
 export function maskCode(text) {
@@ -236,6 +239,96 @@ export function retitleSectionLinks(text, hits = [], title = '') {
     const target = String(hit.target ?? '').trim();
     const alias = hit.alias ? `|${hit.alias}` : '';
     const body = target ? `${target}#${wanted}${alias}` : `#${wanted}${alias}`;
+    out = `${out.slice(0, hit.start)}${hit.embed ? '!' : ''}[[${body}]]${out.slice(hit.end)}`;
+    rewritten += 1;
+  }
+  return { text: out, rewritten };
+}
+
+/**
+ * The links in one document that name one of the files a rename moved.
+ *
+ * A link names a file the way a click would open it — as a path, a file name or
+ * a front-matter alias — so this resolves every link against the index once and
+ * keeps the ones that land on a moved document. `index` is the vault as it was
+ * *before* the move (see `indexBeforeMoves`), which is what makes an old name
+ * still resolve. Each hit carries the new path as `to`.
+ *
+ * Same-page links name no file and are left out.
+ *
+ * @param {Array} links `parseWikiLinks` output, or the `links` of an index entry
+ * @param {{fromPath?: string, index?: Array, moves?: Array<{from: string, to: string}>}} where
+ * @returns {Array} the links to rewrite, in source order
+ */
+export function linksToFiles(links = [], { fromPath = null, index = [], moves = [] } = {}) {
+  const destinations = new Map((moves ?? []).map((move) => [move.from, move.to]));
+  if (!destinations.size) return [];
+  const docs = normalizeIndex(index);
+  const out = [];
+  for (const link of links ?? []) {
+    if (link.samePage) continue;
+    const target = String(link.target ?? '').trim();
+    if (!target) continue;
+    const resolved = resolveTarget(
+      { target, section: String(link.section ?? ''), samePage: false },
+      fromPath,
+      docs,
+    );
+    if (!resolved.ok || !destinations.has(resolved.path)) continue;
+    out.push({ ...link, to: destinations.get(resolved.path) });
+  }
+  return out;
+}
+
+/**
+ * Point links that named a file at the name it has now: `[[Old]]` becomes
+ * `[[New]]`, `[[Chambers/Lab/Old]]` becomes `[[Chambers/Methods/Old]]`.
+ *
+ * The target is rewritten the way it was written: a full path stays a full path,
+ * a bare name stays bare, and a written extension is kept. A link that still
+ * opens the moved file is left alone — a bare name survives a chamber move, and
+ * a front-matter alias is content the rename did not touch. A bare new name that
+ * would now resolve somewhere else falls back to the full path, so the link
+ * still lands on the file it named before. The alias, the section and an embed
+ * marker are kept, and the edits run right to left so each leaves the offsets
+ * before it alone.
+ *
+ * @param {string} text the document body
+ * @param {Array} hits links from {@link linksToFiles}, each carrying its `to`
+ * @param {{index?: Array, fromPath?: string}} where the vault as it is now, so a
+ *   rewritten link can be checked against what it will resolve to
+ * @returns {{text: string, rewritten: number}} the body and how many links
+ *   changed — the same text and 0 when there was nothing to rewrite
+ */
+export function retargetFileLinks(text, hits = [], { index = [], fromPath = null } = {}) {
+  const src = String(text ?? '');
+  const usable = (hits ?? []).filter((hit) => writableTarget(hit?.to)
+    && Number.isFinite(hit?.start) && Number.isFinite(hit?.end) && hit.end > hit.start);
+  if (!usable.length) return { text: src, rewritten: 0 };
+  const docs = normalizeIndex(index);
+  const names = (target, path) => {
+    const resolved = resolveTarget({ target, section: '', samePage: false }, fromPath, docs);
+    return resolved.ok && resolved.path === path;
+  };
+
+  let out = src;
+  let rewritten = 0;
+  for (const hit of [...usable].sort((a, b) => b.start - a.start)) {
+    const written = String(hit.target ?? '').trim();
+    const to = String(hit.to);
+    if (!written || written === to) continue;
+    // A bare name still opens the file after a chamber move, and an alias is
+    // content the move never touched. A written path is the old path itself, so
+    // it is rewritten even when the file's name alone would still find it.
+    if (!written.includes('/') && names(written, to)) continue;
+    const keepsExtension = MARKDOWN_EXT.test(written);
+    const full = keepsExtension ? to : to.replace(MARKDOWN_EXT, '');
+    const bare = keepsExtension ? basename(to) : stem(to);
+    const target = written.includes('/') || !names(bare, to) ? full : bare;
+    if (!target || target === written) continue;
+    const section = String(hit.section ?? '');
+    const alias = hit.alias ? `|${hit.alias}` : '';
+    const body = `${target}${section ? `#${section}` : ''}${alias}`;
     out = `${out.slice(0, hit.start)}${hit.embed ? '!' : ''}[[${body}]]${out.slice(hit.end)}`;
     rewritten += 1;
   }

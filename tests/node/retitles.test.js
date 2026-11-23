@@ -3,15 +3,16 @@
  * veins' links have followed.
  *
  * The Node suite cannot open a window, so what it proves here is the record's
- * own rules: what counts as an entry, which headings read as one renamed, and —
- * the part a retry depends on — how to tell a change that reached the vein from
- * one that failed before touching it.
+ * own rules: what counts as an entry, which one wins when two describe the same
+ * heading or the same file, and — the part a retry depends on — how to tell a
+ * change that reached the vault from one that failed before touching it.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
   readRetitleJournal, retitleJournalText, renameReachedFile, retypedHeadings,
+  readMoveJournal, movedPairs, renameReachedPaths, indexBeforeMoves,
 } from '../../src/lib/retitles.js';
 import { buildDocumentIndex } from '../../src/lib/graph.js';
 
@@ -51,6 +52,76 @@ test('retitleJournalText writes what readRetitleJournal reads back', () => {
   // An empty journal is never written in place of being deleted; if one is asked
   // for it still reads back as nothing.
   assert.deepEqual(JSON.parse(retitleJournalText([])), { pending: [] });
+});
+
+test('a journal file carries file moves beside the heading renames it holds', () => {
+  const heading = { path: 'Home.md', before: 'old', after: 'new', title: 'New' };
+  const moves = [
+    { kind: 'vein', from: 'Chambers/Lab/Methods.md', to: 'Chambers/Lab/Sieve Methods.md' },
+    { kind: 'chamber', from: 'Chambers/Lab', to: 'Chambers/Methods' },
+  ];
+  const raw = retitleJournalText({ pending: [heading], moves });
+  assert.deepEqual(readRetitleJournal(raw), [heading]);
+  assert.deepEqual(readMoveJournal(raw), moves);
+  // A journal written before moves existed says nothing about them.
+  assert.deepEqual(readMoveJournal(retitleJournalText([heading])), []);
+  // Anything that names no move is dropped rather than guessed at.
+  assert.deepEqual(readMoveJournal(JSON.stringify({
+    moves: [
+      moves[0],
+      { ...moves[0], to: moves[0].from },
+      { ...moves[0], from: '' },
+      { ...moves[0], kind: 'folder' },
+      null,
+    ],
+  })), [moves[0]]);
+  assert.deepEqual(readMoveJournal(null), []);
+});
+
+test('movedPairs names every file a move carried, and renameReachedPaths says it landed', () => {
+  const veins = ['Home.md', 'Chambers/Methods/Methods.md', 'Chambers/Methods/Notes/Field.md'];
+  assert.deepEqual(
+    movedPairs([{ kind: 'chamber', from: 'Chambers/Lab', to: 'Chambers/Methods' }], veins),
+    [
+      { from: 'Chambers/Lab/Methods.md', to: 'Chambers/Methods/Methods.md' },
+      { from: 'Chambers/Lab/Notes/Field.md', to: 'Chambers/Methods/Notes/Field.md' },
+    ],
+  );
+  // A folder whose name merely starts with the old one is not that folder.
+  assert.deepEqual(movedPairs([{ kind: 'chamber', from: 'Lab', to: 'Methods' }], ['Laboratory/A.md']), []);
+
+  const vein = { kind: 'vein', from: 'Home.md', to: 'Index.md' };
+  assert.deepEqual(movedPairs([vein], ['Index.md']), [{ from: 'Home.md', to: 'Index.md' }]);
+  // A vein whose file never appeared is no pair, so nothing is rewritten.
+  assert.deepEqual(movedPairs([vein], ['Home.md']), []);
+
+  // The move landed: what it named is there and what it left is not.
+  assert.equal(renameReachedPaths(['Index.md'], vein), true);
+  assert.equal(renameReachedPaths(['Home.md'], vein), false);
+  // Both halves have to hold: a copy left behind is not a rename.
+  assert.equal(renameReachedPaths(['Home.md', 'Index.md'], vein), false);
+  const chamber = { kind: 'chamber', from: 'Chambers/Lab', to: 'Chambers/Methods' };
+  assert.equal(renameReachedPaths(veins, chamber), true);
+  assert.equal(renameReachedPaths(['Chambers/Lab/Methods.md'], chamber), false);
+  assert.equal(renameReachedPaths([], vein), false);
+  assert.equal(renameReachedPaths(['X.md'], { from: 'X.md', to: 'X.md' }), false);
+});
+
+test('indexBeforeMoves puts a moved vein back where its old links found it', () => {
+  const after = buildDocumentIndex({
+    'Home.md': '# Home\n',
+    'Chambers/Methods/Methods.md': '# Methods\n',
+  });
+  const pairs = [{ from: 'Chambers/Lab/Methods.md', to: 'Chambers/Methods/Methods.md' }];
+  const prior = indexBeforeMoves(after, pairs);
+  const moved = prior.find((entry) => entry.path === 'Chambers/Lab/Methods.md');
+  assert.equal(moved.stem, 'Methods');
+  assert.equal(moved.chamber, 'Chambers/Lab');
+  assert.equal(moved.depth, 2);
+  // Everything that did not move is the entry it was.
+  assert.equal(prior.find((entry) => entry.path === 'Home.md'), after.find((entry) => entry.path === 'Home.md'));
+  // Nothing moved: the index is handed back as it stands.
+  assert.deepEqual(indexBeforeMoves(after, []), after);
 });
 
 test('retypedHeadings finds a heading retyped in place, not the ones around it', () => {

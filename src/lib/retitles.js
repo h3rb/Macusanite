@@ -1,18 +1,21 @@
 /**
- * The record of heading renames whose links the viewer still owes.
+ * The record of link rewrites the viewer still owes.
  *
  * Renaming a heading writes the vein first and then points the links other veins
- * write to it at the new title: a promise made to a second write. If the window
- * closes in between, those links name a section that is no longer there. So the
- * intent is written to `.macusanite/retitles.json` before the change, and taken
- * back out once every link has followed. A window that comes back finds whatever
- * is left and finishes it.
+ * write to it at the new title; renaming a vein or a chamber moves the file those
+ * links name. Each is a promise made to a second write: if the window closes in
+ * between, the links name something that is no longer there. So the intent is
+ * written to `.macusanite/retitles.json` before the change, and taken back out
+ * once every link has followed. A window that comes back finds whatever is left
+ * and finishes it.
  *
  * Nothing here touches the viewer: an entry is plain data — the vein whose
- * heading moved, the anchor it left and the title it took.
+ * heading moved, the anchor it left and the title it took, or the path that moved
+ * and where it went.
  */
 import { extractHeadings } from './graph.js';
 import { parseFrontmatter } from './frontmatter.js';
+import { dirname, stem } from './path.js';
 
 /** Write a title inside `[[vein#title]]`, or say that it cannot be. */
 const writable = (title) => Boolean(title) && !/[\[\]|]/.test(title);
@@ -30,7 +33,7 @@ function parseJournal(raw) {
  * The heading renames a journal file holds.
  *
  * The file is this app's alone, so its shape is the one `retitleJournalText`
- * writes: `{ pending: [...] }`. Anything else in it — a file cut
+ * writes: `{ pending: [...], moves?: [...] }`. Anything else in it — a file cut
  * short by a crash mid-write, a hand-edited entry — is dropped rather than
  * guessed at.
  *
@@ -48,13 +51,106 @@ export function readRetitleJournal(raw) {
 }
 
 /**
+ * The file moves a journal file holds: `{ kind, from, to }`, where `kind` is
+ * `'vein'` for one file and `'chamber'` for every vein under a folder.
+ *
+ * @param {string|null} raw the file's text
+ * @returns {Array<{kind: 'vein'|'chamber', from: string, to: string}>}
+ */
+export function readMoveJournal(raw) {
+  const parsed = parseJournal(raw);
+  if (!Array.isArray(parsed?.moves)) return [];
+  return parsed.moves.filter((entry) => Boolean(entry) && typeof entry === 'object'
+    && (entry.kind === 'vein' || entry.kind === 'chamber')
+    && typeof entry.from === 'string' && Boolean(entry.from)
+    && typeof entry.to === 'string' && Boolean(entry.to) && entry.to !== entry.from);
+}
+
+/**
  * What the journal file holds. An empty journal is deleted, never written.
  *
- * A journal is `{ pending: [...] }`: the heading renames a save owes.
+ * A headings-only journal keeps its original shape (`{ pending: [...] }`), and a
+ * journal that also has moves carries them beside the headings.
  */
 export function retitleJournalText(journal = []) {
   const pending = (Array.isArray(journal) ? journal : journal?.pending) ?? [];
-  return `${JSON.stringify({ pending }, null, 2)}\n`;
+  const moves = Array.isArray(journal) ? [] : (journal?.moves ?? []);
+  return `${JSON.stringify(moves.length ? { pending, moves } : { pending }, null, 2)}\n`;
+}
+
+/**
+ * The moves a rename made, as old path → new path for every file it carried.
+ *
+ * A vein entry is its own pair. A chamber entry is expanded against the vault as
+ * it stands after the move, because that is the only list that says which files
+ * the folder held — on the next open, as on this one, the old paths are gone.
+ *
+ * @param {Array<{kind: string, from: string, to: string}>} entries
+ * @param {string[]} paths the vault's veins, after the move
+ * @returns {Array<{from: string, to: string}>}
+ */
+export function movedPairs(entries = [], paths = []) {
+  const veins = (paths ?? []).filter(Boolean);
+  const out = [];
+  for (const entry of entries ?? []) {
+    if (!entry) continue;
+    if (entry.kind === 'chamber') {
+      for (const path of veins) {
+        if (path === entry.to || path.startsWith(`${entry.to}/`)) {
+          out.push({ from: `${entry.from}${path.slice(entry.to.length)}`, to: path });
+        }
+      }
+    } else if (entry.kind === 'vein' && veins.includes(entry.to)) {
+      out.push({ from: entry.from, to: entry.to });
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether a move really reached the vault.
+ *
+ * The journal is written before the filesystem is touched, so a rename that
+ * failed leaves an entry whose old path is still there; moving links then would
+ * point them at a name nothing has. The vault's list of veins is what tells the
+ * two apart, prefix-wise, so one answer serves a vein and a whole chamber.
+ *
+ * @param {string[]} paths the vault's veins, as the current window sees them
+ * @param {{from: string, to: string}} entry
+ */
+export function renameReachedPaths(paths = [], entry = {}) {
+  const from = String(entry?.from ?? '');
+  const to = String(entry?.to ?? '');
+  if (!from || !to || from === to) return false;
+  const veins = (paths ?? []).filter(Boolean);
+  const holds = (path) => veins.some((vein) => vein === path || vein.startsWith(`${path}/`));
+  return holds(to) && !holds(from);
+}
+
+/**
+ * The document index as it was before a move.
+ *
+ * A link written against the old name only resolves to the file it named while
+ * the index still describes the file there, so matching links after a rename
+ * runs over the moved entries put back at their old paths.
+ *
+ * @param {Array} index the live index, describing the files where they are now
+ * @param {Array<{from: string, to: string}>} pairs
+ * @returns {Array} entries with the moved documents described at their old paths
+ */
+export function indexBeforeMoves(index = [], pairs = []) {
+  const previous = new Map((pairs ?? []).map((pair) => [pair.to, pair.from]));
+  return (index ?? []).map((entry) => {
+    const path = previous.get(entry.path);
+    if (!path) return entry;
+    return {
+      ...entry,
+      path,
+      stem: stem(path),
+      depth: path.split('/').length - 1,
+      chamber: dirname(path),
+    };
+  });
 }
 
 /** One heading, as `buildDocumentIndex` / `extractHeadings` describe it. */
