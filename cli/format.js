@@ -314,8 +314,10 @@ export function formatResult(command, result, { color = false } = {}) {
       break;
 
     case 'vein.resolve':
-      if (result.ok) lines.push(`${paint.green('→')} ${result.path}${result.anchor ? `#${result.anchor}` : ''}`);
-      else {
+      if (result.ok) {
+        lines.push(`${paint.green('→')} ${result.path}${result.anchor ? `#${result.anchor}` : ''}`);
+        if (result.sectionMissing) lines.push(`${paint.yellow('broken')} — ${result.path} has no section #${result.anchor}`);
+      } else {
         lines.push(`${paint.yellow('ghost')} — create it at ${result.suggestedPath}`);
         if (result.candidates?.length) lines.push(paint.dim(`candidates: ${result.candidates.join(', ')}`));
       }
@@ -344,7 +346,14 @@ export function formatResult(command, result, { color = false } = {}) {
       break;
 
     case 'ghosts':
-      lines.push(table(result ?? [], ['from', 'target', 'suggestedPath'], paint) || paint.green('every wiki link resolves'));
+      // A missing section has no vein to create, so the suggestion is blank and
+      // the section says which heading went missing.
+      lines.push(table((result ?? []).map((ghost) => ({
+        from: ghost.from,
+        target: ghost.target,
+        section: ghost.section ? `#${ghost.section}` : '',
+        suggestedPath: ghost.suggestedPath ?? '',
+      })), ['from', 'target', 'section', 'suggestedPath'], paint) || paint.green('every wiki link resolves'));
       break;
 
     case 'graph': {
@@ -353,6 +362,7 @@ export function formatResult(command, result, { color = false } = {}) {
         ['focus', result.focus],
         ['nodes', `${stats.nodes} (${stats.documents} documents, ${stats.sections} sections, ${stats.tags} tags)`],
         ['edges', `${stats.edges} (${stats.links} links, ${stats.contains} contains, ${stats.tagEdges} tags)`],
+        ['broken', stats.broken ? `${stats.broken} link${stats.broken === 1 ? '' : 's'} name a missing section` : ''],
       ], paint, { align: 8 }));
       const interesting = (result.nodes ?? []).filter((node) => node.kind !== 'section').slice(0, 30);
       if (interesting.length) {

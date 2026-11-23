@@ -6,7 +6,14 @@ const ctx = {
   currentPath: 'Home.md',
   resolveLink: (link) => (link.target === 'Glossary'
     ? { ok: false, path: null, anchor: link.anchor ?? '', label: 'Glossary', ghost: true, suggestedPath: 'Glossary.md' }
-    : { ok: true, path: `${link.target}.md`, anchor: link.anchor ?? '', label: link.target, ghost: false }),
+    : {
+      ok: true,
+      path: `${link.target}.md`,
+      anchor: link.anchor ?? '',
+      label: link.target,
+      ghost: false,
+      sectionMissing: link.section === 'Gone heading' || undefined,
+    }),
   colorFor: (kind, parts) => {
     if (kind === 'page') return parts.path === 'Home.md' ? '#ffd700' : '#87ceeb';
     if (kind === 'link') return '#ff8c00';
@@ -41,6 +48,18 @@ test('aliased links show the alias, section links show the heading', () => {
   const section = render('[[Fluid Inclusions#What they record]]').html;
   assert.match(section, /data-section="What they record"/);
   assert.match(section, /class="wikilink-section">#What they record</);
+});
+
+test('a heading the vein lost renders as broken, not as a ghost', () => {
+  const { html } = render('[[Analytical Methods#Gone heading]]');
+  assert.match(html, /wikilink-broken/);
+  assert.match(html, /data-broken="true"/);
+  assert.match(html, /has no section/);
+  // The vein exists, so clicking must not offer to create it.
+  assert.doesNotMatch(html, /data-ghost="true"/);
+  assert.doesNotMatch(html, /wikilink-ghost/);
+  // A section that is there keeps its ordinary link.
+  assert.doesNotMatch(render('[[Analytical Methods#Sieve series]]').html, /wikilink-broken/);
 });
 
 test('an unwritten target renders as a ghost that can be created', () => {

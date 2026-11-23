@@ -283,6 +283,8 @@ export function buildGraph({ index, settings, focusPath = null, colorOf }) {
           section: link.section ?? '',
           sourcePath: doc.path,
           targetPath: resolved.path ?? null,
+          // The line reaches the vein, but the section it names is gone.
+          broken: resolved.sectionMissing === true,
         });
 
         // Section-level anchors get their own node so a `[[doc#heading]]` link
@@ -389,6 +391,7 @@ export function graphStats(graph) {
     concepts: counts.concept,
     tags: counts.tag,
     ghosts: counts.concept,
+    broken: graph.edges.filter((edge) => edge.kind === EDGE.LINK && edge.broken).length,
   };
 }
 

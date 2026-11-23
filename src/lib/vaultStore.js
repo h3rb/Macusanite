@@ -38,7 +38,7 @@
  */
 import { buildDocumentIndex, buildGraph, graphStats } from './graph.js';
 import { parseFrontmatter, documentMeta } from './frontmatter.js';
-import { parseWikiLinks, resolveTarget } from './wikilinks.js';
+import { parseLinkBody, parseWikiLinks, resolveTarget } from './wikilinks.js';
 import { buildTree, countVeins } from './tree.js';
 import { isMarkdown, join, stem, dirname, basename, titleFromPath } from './path.js';
 import { mergeSettings, mergeVaultMeta, DEFAULT_SETTINGS, DEFAULT_VAULT_META } from './settings.js';
@@ -672,10 +672,15 @@ export function createVaultStore({ fs, root = '' }) {
     return out.sort((a, b) => a.title.localeCompare(b.title));
   }
 
-  /** Where a wiki link points, including the ghost suggestion when it does not. */
+  /**
+   * Where a wiki link points, including the ghost suggestion when it does not.
+   *
+   * A string is read as link syntax, so `Methods#Sieve series` names a section
+   * the same way `[[Methods#Sieve series]]` does — `sectionMissing` included.
+   */
   async function resolveLink(target, from = null) {
     const { index: docs } = await index();
-    const link = typeof target === 'string' ? { target, section: '' } : target;
+    const link = typeof target === 'string' ? parseLinkBody(target) : target;
     return resolveTarget(link, from, docs);
   }
 
@@ -687,10 +692,23 @@ export function createVaultStore({ fs, root = '' }) {
         const resolved = resolveTarget(link, doc.path, docs);
         if (!resolved.ok) {
           out.push({
+            kind: 'vein',
             from: doc.path,
             target: link.target,
             section: link.section || '',
             suggestedPath: resolved.suggestedPath ?? `${link.target}.md`,
+          });
+        } else if (resolved.sectionMissing) {
+          // The vein is written but the heading it names is not there: a rename
+          // that missed this link, or a heading retyped without its links
+          // following. There is no file to create, so no suggested path.
+          out.push({
+            kind: 'section',
+            from: doc.path,
+            target: link.target,
+            section: link.section || '',
+            path: resolved.path,
+            suggestedPath: null,
           });
         }
       }
@@ -698,7 +716,10 @@ export function createVaultStore({ fs, root = '' }) {
     return out;
   };
 
-  /** Every wiki link in the vault that points at nothing yet. */
+  /**
+   * Every wiki link in the vault that points at nothing: a vein that is not
+   * written yet, or a section the vein no longer has.
+   */
   async function ghosts() {
     const { index: docs } = await index();
     return ghostsOf(docs);

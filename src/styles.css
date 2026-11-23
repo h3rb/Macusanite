@@ -1235,6 +1235,19 @@ mark.search-hit {
   color: var(--warn);
 }
 
+/* A vein that exists but not the heading the link names: the link opens the
+   page, so it is not a ghost, but the section it promised is gone. */
+.wikilink-broken .wikilink-section {
+  color: var(--warn);
+  text-decoration: line-through;
+}
+
+.wikilink-broken::after {
+  content: '⚠';
+  font-size: 10px;
+  color: var(--warn);
+}
+
 .wikilink-embed-mark {
   font-size: 10.5px;
   color: var(--text-faint);

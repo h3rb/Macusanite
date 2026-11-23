@@ -326,14 +326,23 @@ test('document reports headings, links, tags and colours', async () => {
 test('ghosts, backlinks, tags and stats describe the whole vault', async () => {
   const root = tempVault('graph');
   const store = await openVault(root);
-  await store.createVein('Home.md', '# Home\n\nSee [[Chambers/Lab/Methods]] and [[Not Written Yet]].\n', { record: false });
+  await store.createVein('Home.md', '# Home\n\nSee [[Chambers/Lab/Methods]], [[Chambers/Lab/Methods#Sieve series]] and [[Not Written Yet]].\n', { record: false });
   await store.createVein('Chambers/Lab/Methods.md', '---\ntags: [lab]\n---\n\n# Methods\n\nSee [[Home]].\n', { record: false });
   await store.createVein('Orphan.md', '# Orphan\n\nNobody links here.\n', { record: false });
 
+  // Both kinds of link that point at nothing: a vein nobody wrote, and a heading
+  // this vein no longer has — the trace a rename leaves when a link is missed.
   const ghosts = await store.ghosts();
-  assert.equal(ghosts.length, 1);
-  assert.equal(ghosts[0].target, 'Not Written Yet');
-  assert.equal(ghosts[0].suggestedPath, 'Not Written Yet.md');
+  assert.equal(ghosts.length, 2);
+  const unwritten = ghosts.find((ghost) => ghost.kind === 'vein');
+  assert.equal(unwritten.target, 'Not Written Yet');
+  assert.equal(unwritten.suggestedPath, 'Not Written Yet.md');
+  const broken = ghosts.find((ghost) => ghost.kind === 'section');
+  assert.equal(broken.from, 'Home.md');
+  assert.equal(broken.target, 'Chambers/Lab/Methods');
+  assert.equal(broken.section, 'Sieve series');
+  assert.equal(broken.path, 'Chambers/Lab/Methods.md');
+  assert.equal(broken.suggestedPath, null, 'there is no file to create');
 
   const back = await store.backlinks('Chambers/Lab/Methods.md');
   assert.deepEqual(back.map((entry) => entry.path), ['Home.md']);
@@ -345,7 +354,7 @@ test('ghosts, backlinks, tags and stats describe the whole vault', async () => {
   const stats = await store.stats();
   assert.equal(stats.veins, 3);
   assert.equal(stats.chambers, 2, 'Chambers and its nested Lab, like the Rust walk reports');
-  assert.equal(stats.ghosts, 1);
+  assert.equal(stats.ghosts, 2, 'the section link counts with the unwritten one');
   assert.equal(stats.orphans, 1, 'Orphan.md links nowhere and nothing links to it');
   assert.equal(stats.tags, 1);
   assert.ok(stats.bytes > 0);
@@ -357,12 +366,17 @@ test('ghosts, backlinks, tags and stats describe the whole vault', async () => {
   const resolved = await store.resolveLink('Chambers/Lab/Methods');
   assert.equal(resolved.ok, true);
   assert.equal(resolved.path, 'Chambers/Lab/Methods.md');
+  const section = await store.resolveLink('Chambers/Lab/Methods#Sieve series');
+  assert.equal(section.ok, true, 'the vein still resolves');
+  assert.equal(section.path, 'Chambers/Lab/Methods.md');
+  assert.equal(section.sectionMissing, true);
   const missing = await store.resolveLink('Not Written Yet');
   assert.equal(missing.ok, false);
   assert.equal(missing.ghost, true);
 
   const graph = await store.graph({ focus: 'Home.md' });
   assert.ok(graph.stats.nodes >= 3);
+  assert.equal(graph.stats.broken, 1, 'and the graph counts the broken section');
   assert.ok(graph.nodes.some((node) => node.kind === 'concept'));
   assert.ok(graph.edges.some((edge) => edge.kind === 'link'));
 });

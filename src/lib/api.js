@@ -473,7 +473,7 @@ export function createVaultApi({
       const ghosts = await vault.ghosts();
       push('wiki links', ghosts.length === 0, ghosts.length === 0
         ? 'every link resolves'
-        : `${ghosts.length} link${ghosts.length === 1 ? '' : 's'} point at nothing: ${ghosts.slice(0, 5).map((g) => `${g.from} -> ${g.target}`).join('; ')}`);
+        : `${ghosts.length} link${ghosts.length === 1 ? '' : 's'} point at nothing: ${ghosts.slice(0, 5).map((g) => `${g.from} -> ${g.target}${g.section ? `#${g.section}` : ''}`).join('; ')}`);
 
       const stats = await vault.stats();
       push('orphans', stats.orphans === 0, stats.orphans === 0
@@ -576,6 +576,7 @@ export function createVaultApi({
         anchor: resolved.anchor ?? '',
         candidates: resolved.candidates ?? [],
         ghost: resolved.ok !== true,
+        sectionMissing: resolved.ok === true && resolved.sectionMissing === true,
         suggestedPath: resolved.suggestedPath ?? null,
       };
     },

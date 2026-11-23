@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseWikiLinks, parseLinkBody, outgoingLinks, resolveTarget, parseTags, maskCode,
-  linksToHeading, retitleSectionLinks, linksToFiles, retargetFileLinks,
+  linksToHeading, retitleSectionLinks, linksToFiles, retargetFileLinks, missingSection,
 } from '../../src/lib/wikilinks.js';
 import { buildDocumentIndex } from '../../src/lib/graph.js';
 import { indexBeforeMoves } from '../../src/lib/retitles.js';
@@ -87,6 +87,50 @@ test('resolution falls back to front-matter aliases', () => {
   );
   assert.equal(viaAlias.ok, true);
   assert.equal(viaAlias.path, 'Chambers/Mineralogy/Fluid Inclusions.md');
+});
+
+test('a section the vein no longer has is marked broken, not resolved away', () => {
+  const methods = 'Chambers/Lab/Analytical Methods.md';
+  const link = (section, extra = {}) => ({ target: 'Analytical Methods', section, samePage: false, ...extra });
+
+  const here = resolveTarget(link('Sieve series'), 'Home.md', index);
+  assert.equal(here.ok, true);
+  assert.equal(here.sectionMissing, undefined);
+
+  // The vein is found — every reader of the link still needs it — but the heading
+  // it names was renamed or removed without the link following.
+  const gone = resolveTarget(link('Sieve ladder'), 'Home.md', index);
+  assert.equal(gone.ok, true);
+  assert.equal(gone.path, methods);
+  assert.equal(gone.sectionMissing, true);
+
+  // A block reference names a block, not a heading, so there is nothing to check.
+  const block = resolveTarget(link('^quote', { anchor: 'quote' }), 'Home.md', index);
+  assert.equal(block.ok, true);
+  assert.equal(block.sectionMissing, undefined);
+
+  // A vein the index has not read yet cannot say either way.
+  const unread = resolveTarget(link('Sieve ladder'), 'Home.md', [
+    { path: methods, stem: 'Analytical Methods', headings: [], indexed: false },
+  ]);
+  assert.equal(unread.ok, true);
+  assert.equal(unread.sectionMissing, undefined);
+
+  // Same-page links are checked against the document they stay on.
+  const same = resolveTarget(
+    { target: '', section: 'Field checklist', samePage: true, anchor: 'field-checklist' },
+    'Home.md',
+    index,
+  );
+  assert.equal(same.ok, true);
+  assert.equal(same.sectionMissing, true);
+
+  // `missingSection` is the same answer for a caller that resolved the vein
+  // itself, with the open document's headings standing in for the index.
+  assert.equal(missingSection({ section: 'Sieve series' }, { path: methods, index }), false);
+  assert.equal(missingSection({ section: 'Sieve ladder' }, { path: methods, index }), true);
+  assert.equal(missingSection({ section: 'Sieve series' }, { path: methods, index, headings: [] }), true);
+  assert.equal(missingSection({ section: '' }, { path: methods, index }), false);
 });
 
 test('an unwritten target is a ghost with a suggested path', () => {

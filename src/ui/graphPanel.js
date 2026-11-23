@@ -172,6 +172,7 @@ export function createGraphPanel({ app, root }) {
       chipStat(`${stats.links} links`),
       chipStat(`${stats.sections} sections`),
       stats.ghosts ? chipStat(`${stats.ghosts} unwritten`, 'warn') : null,
+      stats.broken ? chipStat(`${stats.broken} broken`, 'warn') : null,
       chipStat(`${stats.tags} tags`),
     ]);
   }

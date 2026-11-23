@@ -162,6 +162,9 @@ function renderWikiLink(token, ctx) {
 
   const classes = ['wikilink'];
   if (!resolved.ok) classes.push('wikilink-ghost');
+  // The vein is there but the heading it names is not: a rename that missed this
+  // link, or a heading retyped without the links following.
+  if (resolved.ok && resolved.sectionMissing) classes.push('wikilink-broken');
   if (token.embed) classes.push('wikilink-embed');
   if (parsed.samePage) classes.push('wikilink-anchor');
 
@@ -171,15 +174,20 @@ function renderWikiLink(token, ctx) {
     parsed.section && !parsed.samePage ? `<span class="wikilink-section">#${escapeHtml(parsed.section)}</span>` : '',
   ].join('');
 
+  const title = resolved.ok
+    ? (resolved.sectionMissing
+      ? `${resolved.path} has no section “${parsed.section}” — rename the link or restore the heading`
+      : `Open ${resolved.path}${parsed.section ? ` § ${parsed.section}` : ''}`)
+    : `Create ${parsed.target || parsed.section}`;
+
   const attrs = [
     `class="${classes.join(' ')}"`,
     `data-target="${escapeAttr(parsed.target)}"`,
     `data-section="${escapeAttr(parsed.section)}"`,
     `data-resolved="${escapeAttr(resolved.path ?? '')}"`,
     resolved.ok ? '' : 'data-ghost="true"',
-    `title="${escapeAttr(resolved.ok
-      ? `Open ${resolved.path}${parsed.section ? ` § ${parsed.section}` : ''}`
-      : `Create ${parsed.target || parsed.section}`)}"`,
+    resolved.sectionMissing ? 'data-broken="true"' : '',
+    `title="${escapeAttr(title)}"`,
   ].filter(Boolean).join(' ');
 
   if (token.embed) {

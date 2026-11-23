@@ -87,6 +87,42 @@ export function outgoingLinks(text) {
   return out;
 }
 
+/** The heading a link names, or '' when it names no heading (or a block). */
+function sectionAnchor(link) {
+  const section = String(link?.section ?? '');
+  if (!section || section.startsWith('^')) return '';
+  return String(link?.anchor ?? slugify(section));
+}
+
+/** Is the heading gone from the vein, as far as the index can tell? */
+function sectionGone(entry, anchor) {
+  if (!anchor || !entry || entry.indexed === false) return false;
+  return !(entry.headings ?? []).some((heading) => heading.anchor === anchor);
+}
+
+/**
+ * Whether a link names a heading its vein does not have.
+ *
+ * A vein that was renamed, or whose heading was retyped, leaves the links behind
+ * naming a section that is no longer there; this is what lets the reader, the
+ * ghost list and the doctor see that as broken rather than as a working link.
+ * Block references (`[[Note#^quote]]`) name a block, not a heading, and a vein the
+ * index has not read yet (`indexed: false`) cannot say either way, so neither is
+ * reported.
+ *
+ * @param {{target?: string, section?: string, anchor?: string}} link
+ * @param {{path?: string|null, index?: Array, headings?: Array|null}} where
+ *   `headings` overrides the index, for a document whose draft is ahead of it
+ * @returns {boolean}
+ */
+export function missingSection(link, { path = null, index = [], headings = null } = {}) {
+  const anchor = sectionAnchor(link);
+  if (!anchor || !path) return false;
+  if (Array.isArray(headings)) return !headings.some((heading) => heading.anchor === anchor);
+  const entry = normalizeIndex(index).find((doc) => doc.path === path) ?? null;
+  return sectionGone(entry, anchor);
+}
+
 /**
  * Resolve a wiki link against the vault index.
  *
@@ -97,14 +133,31 @@ export function outgoingLinks(text) {
  *   4. a front-matter title / alias match
  *   5. a case-insensitive file-name match
  *
+ * A link whose vein is found but whose heading is not comes back `ok` with
+ * `sectionMissing: true`: the link opens a real vein, but not the section it
+ * names. That is kept separate from `ok` because every reader of a link — the
+ * rename pass, the graph, the click handler — still needs the vein it found.
+ *
  * @returns {{ok: boolean, path: string|null, anchor: string, reason?: string,
- *            candidates: string[], ghost?: boolean}}
+ *            candidates: string[], ghost?: boolean, sectionMissing?: boolean}}
  */
 export function resolveTarget(link, fromPath, index) {
   const docs = normalizeIndex(index);
   const anchor = link.anchor ?? (link.section ? slugify(link.section.replace(/^\^/, '')) : '');
+  const section = sectionAnchor({ section: link.section, anchor });
+  const found = (path, candidates = []) => {
+    const entry = path ? docs.find((doc) => doc.path === path) ?? null : null;
+    return {
+      ok: true,
+      path,
+      anchor,
+      candidates,
+      ...(sectionGone(entry, section) ? { sectionMissing: true } : {}),
+    };
+  };
+
   if (link.samePage) {
-    return { ok: true, path: fromPath ?? null, anchor, candidates: [], samePage: true };
+    return { ...found(fromPath ?? null), samePage: true };
   }
 
   const target = normalize(String(link.target ?? '').split('|')[0].trim());
@@ -116,7 +169,7 @@ export function resolveTarget(link, fromPath, index) {
   // 1. explicit path
   for (const candidate of [target, withExt]) {
     const hit = byPath.get(candidate.toLowerCase());
-    if (hit) return { ok: true, path: hit, anchor, candidates: [] };
+    if (hit) return found(hit);
   }
 
   // 2. same chamber first
@@ -137,7 +190,7 @@ export function resolveTarget(link, fromPath, index) {
   }
   if (scored.length) {
     scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
-    return { ok: true, path: scored[0].path, anchor, candidates: scored.map((s) => s.path) };
+    return found(scored[0].path, scored.map((s) => s.path));
   }
 
   // 4/5. aliases, then loose case-insensitive match
@@ -146,7 +199,7 @@ export function resolveTarget(link, fromPath, index) {
     .map((d) => d.path);
   if (loose.length) {
     loose.sort();
-    return { ok: true, path: loose[0], anchor, candidates: loose };
+    return found(loose[0], loose);
   }
 
   return {
@@ -174,6 +227,9 @@ export function normalizeIndex(index) {
       title: typeof entry === 'string' ? titleFromPath(path) : (entry.title ?? titleFromPath(path)),
       aliases: (typeof entry === 'string' ? [] : (entry.aliases ?? [])).map(String),
       headings: typeof entry === 'string' ? [] : (entry.headings ?? []),
+      // A stub has no headings yet: an empty list there says "not read", not
+      // "no sections", and a link must not be called broken on that evidence.
+      indexed: typeof entry !== 'string' && entry.indexed !== false,
       depth: typeof entry === 'string'
         ? path.split('/').length - 1
         : (entry.depth ?? path.split('/').length - 1),

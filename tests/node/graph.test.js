@@ -94,6 +94,26 @@ test('section links in the graph point at the exact heading node', () => {
   assert.ok(graph.edges.some((e) => e.to === anchorId), 'and the link points at it');
 });
 
+test('a link to a missing section is a broken link, not an unwritten page', () => {
+  const index = buildDocumentIndex({
+    'Home.md': '# Home\n\nSee [[Notes#Here]] and [[Notes#Gone]].\n',
+    'Notes.md': '# Notes\n\n## Here\n',
+  });
+  const graph = buildGraph({ index, settings: DEFAULT_SETTINGS, focusPath: 'Home.md', colorOf: makeColorOf() });
+  const stats = graphStats(graph);
+
+  assert.equal(stats.ghosts, 0, 'the vein is written, so nothing is unwritten');
+  assert.equal(graph.nodes.some((node) => node.ghost), false);
+  assert.equal(stats.broken, 1);
+  const broken = graph.edges.filter((edge) => edge.broken);
+  assert.equal(broken.length, 1);
+  assert.equal(broken[0].section, 'Gone');
+  assert.equal(broken[0].targetPath, 'Notes.md');
+  assert.equal(broken[0].to, docId('Notes.md'), 'the line still reaches the vein');
+  // The section that is there is not counted.
+  assert.equal(graph.edges.filter((edge) => edge.section === 'Here' && !edge.broken).length >= 1, true);
+});
+
 test('graph toggles actually remove node kinds', () => {
   const index = buildDocumentIndex(BODIES);
   const settings = {

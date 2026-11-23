@@ -33,7 +33,7 @@ import {
 } from './lib/worldbuild.js';
 import {
   resolveTarget, linksToHeading, retitleSectionLinks, linksToFiles, retargetFileLinks,
-  parseWikiLinks,
+  missingSection, parseWikiLinks,
 } from './lib/wikilinks.js';
 import {
   readRetitleJournal, retitleJournalText, renameReachedFile, retypedHeadings,
@@ -1030,12 +1030,21 @@ const app = {
 
   resolveLink(link, fromPath) {
     if (link.samePage) {
+      const anchor = link.section ? slugify(String(link.section).replace(/^\^/, '')) : '';
+      // The open document is the one place the draft is ahead of the index, so
+      // its links are checked against the headings the draft has now.
+      const sectionMissing = missingSection(link, {
+        path: fromPath,
+        index: state.index,
+        headings: state.current?.path === fromPath ? state.current.headings : null,
+      });
       return {
         ok: true,
         path: fromPath,
-        anchor: link.section ? slugify(String(link.section).replace(/^\^/, '')) : '',
+        anchor,
         label: link.section || 'this page',
         ghost: false,
+        sectionMissing,
       };
     }
     const resolved = resolveTarget(link, fromPath, state.index);

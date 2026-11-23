@@ -172,6 +172,47 @@ test('a session: create a sample vault, read it, write it, undo it', () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('vault doctor and ghosts report a link to a heading that is gone', () => {
+  const root = tempDir('doctor-section');
+  assert.equal(run(['vault', 'create', root, '--sample']).code, 0);
+
+  // A heading renamed without its links following: the links still open the
+  // vein, so nothing looks broken until the section is checked.
+  const methods = path.join(root, 'Chambers/Lab/Analytical Methods.md');
+  fs.writeFileSync(methods, fs.readFileSync(methods, 'utf8').replace('## Sieve series', '## Sieve ladder'));
+
+  const ghosts = run(['--vault', root, 'ghosts', '--json']).json();
+  const broken = ghosts.filter((ghost) => ghost.kind === 'section');
+  assert.equal(broken.length, 1);
+  assert.equal(broken[0].section, 'Sieve series');
+  assert.equal(broken[0].path, 'Chambers/Lab/Analytical Methods.md');
+  assert.equal(broken[0].suggestedPath, null, 'there is no file to create');
+
+  const doctor = run(['--vault', root, 'vault', 'doctor', '--json']);
+  assert.equal(doctor.code, 1);
+  const check = doctor.json().checks.find((entry) => entry.name === 'wiki links');
+  assert.equal(check.ok, false);
+  assert.match(check.detail, /#Sieve series/);
+  // The human list names the missing section beside the link.
+  assert.match(run(['--vault', root, 'ghosts']).stdout, /Sieve series/);
+
+  // Resolving the link keeps the vein it found and says the section is gone.
+  const resolved = run(['--vault', root, 'vein', 'resolve', 'Chambers/Lab/Analytical Methods#Sieve series', '--json']).json();
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.path, 'Chambers/Lab/Analytical Methods.md');
+  assert.equal(resolved.ghost, false);
+  assert.equal(resolved.sectionMissing, true);
+  assert.match(run(['--vault', root, 'vein', 'resolve', 'Chambers/Lab/Analytical Methods#Sieve series']).stdout, /no section #sieve-series/);
+
+  // Put the heading back: the section link is healthy again (the sample's
+  // unwritten Glossary is still a ghost, so the whole check stays red).
+  fs.writeFileSync(methods, fs.readFileSync(methods, 'utf8').replace('## Sieve ladder', '## Sieve series'));
+  const healed = run(['--vault', root, 'vault', 'doctor', '--json']).json().checks.find((entry) => entry.name === 'wiki links');
+  assert.doesNotMatch(healed.detail, /Sieve series/);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('the CLI reads and edits a worldbuilding canvas, and its checkpoints', () => {
   const root = tempDir('world');
   assert.equal(run(['vault', 'create', root, '--sample']).code, 0);
