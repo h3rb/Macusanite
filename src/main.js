@@ -14,6 +14,10 @@ import { LIVE_META, isWatched, isLiveMeta, metaChanges, metaPlan, planRefresh, c
 import { mergeVein, hasMergeMarkers, countConflicts, describeMerge } from './lib/merge.js';
 import { tokenize, plainText, buildSearchCorpus, searchVault } from './lib/search.js';
 import { mergeSettings, mergeVaultMeta, rememberColor, DEFAULT_SETTINGS } from './lib/settings.js';
+import {
+  REGISTRY_FILE, parseRegistry, serializeRegistry,
+  rememberVault as rememberKnownVault, knownVaults as selectKnownVaults,
+} from './lib/vaultRegistry.js';
 import { tutorialWasSeen, markTutorialSeen, clearTutorialSeen } from './lib/tutorials.js';
 import { THEME_HUE_VARS, cleanThemeHues, rotateHue } from './lib/themeHue.js';
 import { mermaidThemeVariables } from './lib/mermaidTheme.js';
@@ -75,6 +79,10 @@ const NEW_VEIN_TEMPLATE = (title) => `---\ntitle: ${title}\n---\n# ${title}\n\n`
 
 const state = {
   vault: null,
+  // Vaults this installation has opened, newest first. Shared by every window
+  // and every vault through the installation's local-storage folder; see
+  // src/lib/vaultRegistry.js.
+  knownVaults: [],
   tree: [],
   veins: [],
   bodies: {},
@@ -347,16 +355,21 @@ const app = {
     chrome.render();
     sidebar.render();
 
-    // Precedence: a vault named on the command line, then the last vault opened
-    // in this installation, then (in a plain browser) the sample vault.
+    // The known-vault list is read before anything opens, so the title bar can
+    // offer other vaults straight away — even when none is open.
+    await app.loadKnownVaults();
+
+    // Precedence: a vault named on the command line, then the most recently
+    // opened vault from the installation's shared list, then (in a plain
+    // browser) the sample vault.
     let initial = null;
     if (isDesktop) {
       try {
         const fromCli = await backend.startupVault();
-        initial = fromCli?.path ?? readLastVault();
+        initial = fromCli?.path ?? state.knownVaults[0]?.path ?? readLastVault();
       } catch (error) {
         await backend.log('warn', `startup_vault failed: ${error.message}`);
-        initial = readLastVault();
+        initial = state.knownVaults[0]?.path ?? readLastVault();
       }
     } else {
       initial = '/sample-vault';
@@ -548,6 +561,7 @@ const app = {
     }
 
     writeLastVault(state.vault.path);
+    await app.rememberVaultOpened(state.vault);
     app.watchVault();
     const fromCache = plan.index.length - plan.toRead.length;
     await backend.log(
@@ -561,6 +575,53 @@ const app = {
     // Whatever the cache could not describe is read in the background.
     app.startIndexPass(plan);
     app.scheduleUpdateCheck();
+  },
+
+  /** Read the installation's shared vault list, so the title bar can offer it. */
+  async loadKnownVaults() {
+    try {
+      state.knownVaults = parseRegistry(await backend.readLocalStorage(REGISTRY_FILE)).vaults;
+    } catch (error) {
+      state.knownVaults = [];
+      await backend.log('warn', `could not read the known vaults: ${error.message}`);
+    }
+    chrome?.renderIdentity();
+  },
+
+  /**
+   * Record a vault in the shared list, newest first. It is plain JSON in the
+   * installation's storage folder, so the menu survives a restart and can be
+   * read or edited by hand.
+   */
+  async rememberVaultOpened(vault) {
+    if (!vault?.path) return;
+    const registry = rememberKnownVault(
+      { vaults: state.knownVaults },
+      { path: vault.path, name: vault.name, lastOpened: Date.now() },
+    );
+    state.knownVaults = registry.vaults;
+    try {
+      await backend.writeLocalStorage(REGISTRY_FILE, serializeRegistry(registry));
+    } catch (error) {
+      await backend.log('warn', `could not record the known vaults: ${error.message}`);
+    }
+    chrome?.renderIdentity();
+  },
+
+  /** Vaults the title-bar menu offers: every known vault except the open one. */
+  switchableVaults() {
+    return selectKnownVaults(state.knownVaults, { current: state.vault?.path ?? null });
+  },
+
+  /** Switch to a vault picked from the title-bar menu. */
+  async openKnownVault(path) {
+    if (!path || path === state.vault?.path) return;
+    try {
+      await app.openVault(path);
+    } catch (error) {
+      app.toast(`Could not open “${path}”: ${error.message}`, 'error');
+      await backend.log('warn', `could not switch to ${path}: ${error.message}`);
+    }
   },
 
   /**

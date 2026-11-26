@@ -316,6 +316,83 @@ body.resizing {
   white-space: nowrap;
 }
 
+/* The identity is a button: the badge and name open the vault switch. */
+.vault-switch {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+button.vault-identity {
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 3px 7px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+button.vault-identity:hover,
+button.vault-identity[aria-expanded='true'] {
+  background: var(--panel);
+  border-color: var(--border);
+}
+
+.vault-caret {
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.vault-menu {
+  top: calc(100% + 5px);
+  left: 0;
+  min-width: 280px;
+  max-width: min(460px, 80vw);
+  max-height: min(60vh, 460px);
+  overflow-y: auto;
+}
+
+.vault-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.vault-menu-badge {
+  color: var(--accent);
+  line-height: 1.35;
+}
+
+.vault-menu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vault-menu-name {
+  font-weight: 620;
+}
+
+.vault-menu-path {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-menu-empty {
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 6px 10px;
+  max-width: 34ch;
+}
+
 .wiki-crumbs {
   display: flex;
   align-items: center;

@@ -10,6 +10,8 @@ import { colorSwatch } from './markdown.js';
 export function createChrome({ app, root }) {
   const menuBtn = qs('#menu-btn', root);
   const menu = qs('#menu', root);
+  const switchBtn = qs('#vault-switch-btn', root);
+  const vaultMenu = qs('#vault-menu', root);
   const badge = qs('.vault-badge', root);
   const vaultName = qs('#vault-name', root);
   const vaultDesc = qs('#vault-desc', root);
@@ -102,6 +104,7 @@ export function createChrome({ app, root }) {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       closeMenu();
+      closeVaultMenu();
       closeJump();
     }
   });
@@ -120,7 +123,75 @@ export function createChrome({ app, root }) {
     badge.title = live
       ? 'Following this vault: edits made outside Macusanite appear as they happen'
       : 'Vault badge';
+    switchBtn.title = vault
+      ? `${vault.path || vault.name} — click to switch to another vault`
+      : 'Open a vault — click to see the vaults on this computer';
   }
+
+  /* ------------------------------------------------------- vault switch -- */
+
+  /** One remembered vault: the badge, its name and the folder it lives in. */
+  function vaultMenuItem(vault) {
+    return el('button', {
+      class: 'menu-item vault-menu-item',
+      type: 'button',
+      role: 'menuitem',
+      title: vault.path,
+      onclick: (event) => {
+        event.stopPropagation();
+        closeVaultMenu();
+        app.openKnownVault(vault.path);
+      },
+    }, [
+      el('span', { class: 'vault-menu-badge', 'aria-hidden': 'true', text: '◈' }),
+      el('span', { class: 'vault-menu-text' }, [
+        el('span', { class: 'vault-menu-name', text: vault.name || titleFromPath(vault.path) }),
+        el('span', { class: 'vault-menu-path', text: vault.path }),
+      ]),
+    ]);
+  }
+
+  /**
+   * The identity in the top bar is also the vault switch. The list it opens is
+   * the installation's shared record of opened vaults (src/lib/vaultRegistry.js),
+   * so switching needs no folder picker and survives restarts.
+   */
+  function renderVaultMenu() {
+    const others = app.switchableVaults();
+    clear(vaultMenu).append(
+      el('div', { class: 'menu-group-label', text: 'Vaults on this computer' }),
+      ...(others.length
+        ? others.map(vaultMenuItem)
+        : [el('div', { class: 'vault-menu-empty', text: 'No other vaults yet — open one and it will be remembered here.' })]),
+      el('div', { class: 'menu-sep' }),
+      menuItem('Open another vault…', () => { closeVaultMenu(); app.chooseAndOpenVault(); }),
+      menuItem('New vault…', () => { closeVaultMenu(); app.createVaultInteractive(); }),
+    );
+  }
+
+  function openVaultMenu() {
+    renderVaultMenu();
+    vaultMenu.classList.remove('hidden');
+    switchBtn.setAttribute('aria-expanded', 'true');
+  }
+
+  function closeVaultMenu() {
+    vaultMenu.classList.add('hidden');
+    switchBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  switchBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    closeMenu();
+    if (vaultMenu.classList.contains('hidden')) openVaultMenu();
+    else closeVaultMenu();
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!vaultMenu.classList.contains('hidden')
+      && !vaultMenu.contains(event.target)
+      && !switchBtn.contains(event.target)) closeVaultMenu();
+  });
 
   /* ------------------------------------------------------- breadcrumbs -- */
 
@@ -295,6 +366,8 @@ export function createChrome({ app, root }) {
     renderNavbar,
     openMenu,
     closeMenu,
+    openVaultMenu,
+    closeVaultMenu,
     openJump,
     closeJump,
   };

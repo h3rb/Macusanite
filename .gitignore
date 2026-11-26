@@ -10,6 +10,10 @@ src-tauri/target/
 src-tauri/gen/
 logs/
 *.log
+# The app's shared data folder. On this machine it happens to sit inside the
+# checkout (Documents/Macusanite), so keep the recorded vault paths out of git;
+# the app recreates the folder and its README whenever it starts.
+localstorage/
 .DS_Store
 reference-vault/.macusanite/logs/
 reference-vault/.macusanite/state.json

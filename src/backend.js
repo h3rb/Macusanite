@@ -316,6 +316,23 @@ const fallbackCommands = {
     virtual.persist();
     return null;
   },
+  // The browser has no Documents folder, so the same files live under a
+  // localStorage prefix. The frontend never sees the difference.
+  async read_local_storage({ name }) {
+    try {
+      return globalThis.localStorage?.getItem(`macusanite.localstorage.${name}`) ?? null;
+    } catch {
+      return null;
+    }
+  },
+  async write_local_storage({ name, contents }) {
+    try {
+      globalThis.localStorage?.setItem(`macusanite.localstorage.${name}`, String(contents ?? ''));
+    } catch {
+      /* storage full or disabled — the session still works */
+    }
+    return name;
+  },
   async history_state() {
     return historyState();
   },
@@ -532,6 +549,13 @@ export const backend = {
   pickFolder: () => invoke('pick_folder', {}),
   /** One file, e.g. an SSH private key. Desktop only; the dialog hides its button in a browser. */
   pickFile: () => invoke('pick_file', {}),
+  /**
+   * The installation's shared storage, outside every vault: on the desktop
+   * `<Documents>/macusanite/localstorage`, in a browser a localStorage key.
+   * Only flat file names are accepted; see `src-tauri/src/appstore.rs`.
+   */
+  readLocalStorage: (name) => invoke('read_local_storage', { name }),
+  writeLocalStorage: (name, contents) => invoke('write_local_storage', { name, contents }),
   /** Save dialog for Export vault: the archive path the user chose. */
   pickSaveArchive: (defaultName) => invoke('pick_save_archive', { defaultName }),
   /** Open dialog for Import vault: the archive path the user chose. */

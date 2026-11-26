@@ -21,10 +21,23 @@
         ><span class="ui-icon" aria-hidden="true">☰</span><span class="ui-label">Menu</span></button>
         <div id="menu" class="menu-popover hidden" role="menu" aria-label="Main menu"></div>
 
-        <div class="vault-identity" title="Loaded vault">
-          <span class="vault-badge" aria-hidden="true">◈</span>
-          <span id="vault-name" class="vault-name">No vault loaded</span>
-          <span id="vault-desc" class="vault-desc"></span>
+        <!-- The identity is also the vault switch: click the badge or the name -->
+        <!-- to list the vaults this installation has opened.                  -->
+        <div class="vault-switch">
+          <button
+            id="vault-switch-btn"
+            class="vault-identity"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            title="Switch vault"
+          >
+            <span class="vault-badge" aria-hidden="true">◈</span>
+            <span id="vault-name" class="vault-name">No vault loaded</span>
+            <span id="vault-desc" class="vault-desc"></span>
+            <span class="vault-caret" aria-hidden="true">▾</span>
+          </button>
+          <div id="vault-menu" class="menu-popover vault-menu hidden" role="menu" aria-label="Vaults on this computer"></div>
         </div>
 
         <nav id="wiki-crumbs" class="wiki-crumbs" aria-label="Wiki breadcrumbs"></nav>

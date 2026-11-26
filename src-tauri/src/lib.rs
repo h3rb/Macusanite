@@ -4,6 +4,7 @@
 //! filesystem layer over the currently open vault: scan, read, write, undo,
 //! log and the native folder picker.
 
+mod appstore;
 mod history;
 mod meta;
 mod s3;
@@ -150,6 +151,20 @@ fn create_vault(
     state.set(root.clone())?;
     arm_watcher(&app, &root);
     Ok(info)
+}
+
+/// Read one file from the installation's shared storage folder
+/// (`<Documents>/macusanite/localstorage`). `None` means it does not exist yet.
+#[tauri::command]
+fn read_local_storage(app: AppHandle, name: String) -> Result<Option<String>, String> {
+    appstore::read(&app, &name)
+}
+
+/// Write one file in the installation's shared storage folder, returning its
+/// path. The file format belongs to the frontend; see `src/lib/vaultRegistry.js`.
+#[tauri::command]
+fn write_local_storage(app: AppHandle, name: String, contents: String) -> Result<String, String> {
+    appstore::write(&app, &name, &contents)
 }
 
 /// A vault passed on the command line (`macusanite C:\\Vaults\\Notes`), if any.
@@ -817,6 +832,8 @@ pub fn run() {
             read_archive_file,
             pick_save_archive,
             pick_open_archive,
+            read_local_storage,
+            write_local_storage,
             quit_app,
             open_external,
             open_attachment,
