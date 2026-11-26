@@ -34,6 +34,16 @@ The key variable may contain either the file path or the key contents, and `.env
 
 An unsigned build still works as a normal installation, but it writes no update manifest, so installed copies never offer an update.
 
+## Combining platforms
+
+`release/latest.json` describes every platform whose signed artifacts are in `release/`, not only the platform that ran the build. After the second host has built, copy its installer and `.sig` into `release/` and rewrite the manifest without building again:
+
+```sh
+npm run release:manifest
+```
+
+That step — `node scripts/collect-release.mjs --manifest-only` — scans `release/` for installers with a `.sig` beside them, keeps the newest artifact per platform, and writes one manifest naming all of them, so the Windows installer and the Linux AppImage end up in the same file with neither signature copied by hand. Artifacts of an earlier version, and bundles the updater cannot install (the deb), are ignored. The notes and `pub_date` already in the manifest are kept, so the second host does not restate the release.
+
 ## Publishing
 
 1. Bump the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
