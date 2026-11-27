@@ -29,6 +29,7 @@ read it, back it up, or edit it by hand, and the app will simply carry on.
 | File | What it holds |
 | --- | --- |
 | `vaults.json` | The vaults this installation has opened, newest first: each vault's folder path, its display name, and when it was last opened. The vault menu in the title bar lists this file. |
+| `tutorials.json` | The teaching notes that have been closed, by id with the date they were dismissed. One record covers every vault, so each note is dismissed once per computer. |
 | `README.md` | This explanation. |
 
 There is no note content here. Notes, settings, colours and undo history live
@@ -145,6 +146,7 @@ mod tests {
     #[test]
     fn the_readme_explains_the_folder_and_the_file() {
         assert!(README.contains("vaults.json"));
+        assert!(README.contains("tutorials.json"));
         assert!(README.contains("README.md"));
         assert!(README.contains("local storage"));
     }

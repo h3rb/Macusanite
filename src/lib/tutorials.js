@@ -3,15 +3,18 @@
  * has closed.
  *
  * A note is closed with its own control — “Got it” on the object-map note, “×”
- * beside the search tip and the editor hint — and remembered in `settings.json`
- * under `tutorialSeen`, stamped so a reader can see when they decided. It stays
- * closed for that vault until **Settings → Reading → Reset tutorials** forgets
- * the record, which is also what makes the notes teach again after a reader has
- * turned the whole set off and back on: the master switch (`tutorials: false`)
- * hides the notes but never forgets them.
+ * beside the search tip and the editor hint — and remembered once for the whole
+ * installation, stamped so a reader can see when they decided. The record is
+ * `tutorials.json` beside the vault list in the local-storage folder
+ * (`<CurrentUser>/Documents/macusanite/localstorage` on the desktop, a
+ * `localStorage` key in a plain browser), so a note dismissed in one vault
+ * stays dismissed in the next. It stays closed until **Settings → Reading →
+ * Reset tutorials** forgets the record, which is also what makes the notes
+ * teach again after a reader has turned the whole set off and back on: the
+ * master switch (`tutorials: false`) hides the notes but never forgets them.
  *
- * The ids are written into saved settings, so they are stable: adding a note is
- * a new id, and renaming one would strand every reader's decision.
+ * The ids are written into that file, so they are stable: adding a note is a
+ * new id, and renaming one would strand every reader's decision.
  */
 
 export const TUTORIALS = [
@@ -33,6 +36,12 @@ export const TUTORIALS = [
 ];
 
 export const TUTORIAL_IDS = TUTORIALS.map((tutorial) => tutorial.id);
+
+/** File name inside the installation's local-storage folder. */
+export const TUTORIALS_FILE = 'tutorials.json';
+
+/** The record shape's version, so a future build can migrate old files. */
+export const TUTORIALS_VERSION = 1;
 
 const TUTORIAL_ID_SET = new Set(TUTORIAL_IDS);
 
@@ -85,4 +94,53 @@ export function markTutorialSeen(seen, id, at = new Date().toISOString()) {
 /** Every note may teach again: the reset behind Settings → Reading. */
 export function clearTutorialSeen() {
   return {};
+}
+
+/** A brand-new record: nothing closed, nothing to remember. */
+export function emptyTutorialRecord() {
+  return { version: TUTORIALS_VERSION, seen: {} };
+}
+
+/**
+ * A record read from `tutorials.json`, or from whatever is on disk there.
+ *
+ * A damaged file is an empty record rather than an error — a note that teaches
+ * twice is a far smaller harm than a window that will not start — and a bare map
+ * (a file written by hand, or before the version frame existed) is read as its
+ * own `seen` map.
+ */
+export function parseTutorialRecord(raw) {
+  let value = raw;
+  if (typeof raw === 'string') {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return emptyTutorialRecord();
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return emptyTutorialRecord();
+  const seen = 'seen' in value ? value.seen : value;
+  return { version: TUTORIALS_VERSION, seen: cleanTutorialSeen(seen) };
+}
+
+/**
+ * The record as the file keeps it: plain, pretty JSON, so a reader can inspect
+ * or edit it by hand.
+ */
+export function serializeTutorialRecord(record) {
+  const seen = cleanTutorialSeen(record && typeof record === 'object' ? record.seen ?? record : null);
+  return `${JSON.stringify({ version: TUTORIALS_VERSION, seen }, null, 2)}\n`;
+}
+
+/**
+ * Every decision from every record given, by id. Used when a vault opened by an
+ * older build still carries its own closed notes: they join the installation's
+ * record instead of being forgotten.
+ */
+export function mergeTutorialSeen(...records) {
+  const out = {};
+  for (const record of records) {
+    Object.assign(out, cleanTutorialSeen(record && typeof record === 'object' ? record.seen ?? record : null));
+  }
+  return out;
 }

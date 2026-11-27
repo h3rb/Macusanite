@@ -38,9 +38,10 @@ export const DEFAULT_SETTINGS = {
   // same story for anyone who turns them back on. The switch hides the notes
   // without forgetting which ones a reader closed — `tutorialSeen` keeps that.
   tutorials: true,
-  // Teaching notes the reader has closed, by id, with the stamp of the
-  // decision. Settings → Reading → Reset tutorials empties it so every note
-  // can teach again; see src/lib/tutorials.js for the ids.
+  // Closed teaching notes as older builds kept them: per vault, in this file.
+  // The installation's own record (`tutorials.json`, see src/lib/tutorials.js)
+  // is the store now. A vault's copy is folded into it when the vault opens and
+  // then cleared, so a note is dismissed once for the whole computer.
   tutorialSeen: {},
   autosave: true,
   autosaveDelayMs: 800,

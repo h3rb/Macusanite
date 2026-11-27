@@ -3376,11 +3376,13 @@ export function createWorldbuildPanel({ app, root }) {
       'aria-label': note.title,
     });
     // The type icon in the node's own colour, when it has one, exactly as the
-    // semantic face showed it before the handoff.
+    // semantic face showed it before the handoff. The icon sits in a pill: at
+    // this scale the chip is the whole of a node, and a chip stays visible
+    // where a bare glyph only a few pixels wide would not.
     const icon = el('span', { class: 'wb-icon', 'aria-hidden': 'true', text: type.icon ?? '' });
     const tint = nodeColors[note.anchor] ?? type.color;
     if (tint) icon.style.color = tint;
-    card.append(icon);
+    card.append(el('span', { class: 'wb-icon-pill', 'aria-hidden': 'true' }, [icon]));
     card.append(linkHandle(note.anchor, `“${note.title || 'this card'}”`));
     wireCardGestures(card, card, { index, note });
     return card;

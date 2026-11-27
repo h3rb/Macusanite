@@ -3,11 +3,17 @@ import assert from 'node:assert/strict';
 import {
   TUTORIALS,
   TUTORIAL_IDS,
+  TUTORIALS_FILE,
+  TUTORIALS_VERSION,
   cleanTutorialSeen,
   markTutorialSeen,
   tutorialIsKnown,
   tutorialWasSeen,
   clearTutorialSeen,
+  emptyTutorialRecord,
+  parseTutorialRecord,
+  serializeTutorialRecord,
+  mergeTutorialSeen,
 } from '../../src/lib/tutorials.js';
 import { DEFAULT_SETTINGS, mergeSettings } from '../../src/lib/settings.js';
 
@@ -68,6 +74,43 @@ test('settings fold the old object-map flag into the shared record', () => {
 
   // A fresh vault starts with nothing closed.
   assert.deepEqual(mergeSettings(DEFAULT_SETTINGS, {}).tutorialSeen, {});
+});
+
+test('the closed notes live in one file shared by every vault', () => {
+  assert.equal(TUTORIALS_FILE, 'tutorials.json');
+  assert.deepEqual(emptyTutorialRecord(), { version: TUTORIALS_VERSION, seen: {} });
+
+  const written = serializeTutorialRecord({
+    seen: { 'search-quote': '2026-11-20T09:14:22.118Z', 'not-a-note': '2026-11-20T09:14:22.118Z' },
+  });
+  assert.ok(written.endsWith('\n'), 'the file is plain text');
+  assert.deepEqual(JSON.parse(written), {
+    version: TUTORIALS_VERSION,
+    seen: { 'search-quote': '2026-11-20T09:14:22.118Z' },
+  });
+  assert.deepEqual(parseTutorialRecord(written), {
+    version: TUTORIALS_VERSION,
+    seen: { 'search-quote': '2026-11-20T09:14:22.118Z' },
+  });
+
+  // A damaged or absent file teaches again rather than stopping the window.
+  assert.deepEqual(parseTutorialRecord('{ not json'), emptyTutorialRecord());
+  assert.deepEqual(parseTutorialRecord(null), emptyTutorialRecord());
+  assert.deepEqual(parseTutorialRecord([]), emptyTutorialRecord());
+
+  // A bare map — hand-written, or from before the version frame — still counts.
+  assert.deepEqual(parseTutorialRecord({ 'object-map': 'legacy' }).seen, { 'object-map': 'legacy' });
+});
+
+test('a vault\'s own closed notes join the shared record instead of replacing it', () => {
+  const shared = { 'search-quote': '2026-11-20T09:14:22.118Z' };
+  const vault = { 'object-map': '2026-11-19T10:00:00.000Z', 'not-a-note': '2026-11-19T10:00:00.000Z' };
+  assert.deepEqual(mergeTutorialSeen(shared, vault), {
+    'search-quote': '2026-11-20T09:14:22.118Z',
+    'object-map': '2026-11-19T10:00:00.000Z',
+  });
+  assert.deepEqual(mergeTutorialSeen({}, {}), {});
+  assert.deepEqual(shared, { 'search-quote': '2026-11-20T09:14:22.118Z' }, 'the records given are not mutated');
 });
 
 test('the decision record survives a reload, and the master switch does not erase it', () => {

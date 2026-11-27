@@ -18,7 +18,11 @@ import {
   REGISTRY_FILE, parseRegistry, serializeRegistry,
   rememberVault as rememberKnownVault, knownVaults as selectKnownVaults,
 } from './lib/vaultRegistry.js';
-import { tutorialWasSeen, markTutorialSeen, clearTutorialSeen } from './lib/tutorials.js';
+import { switchWithSavedDraft } from './lib/vaultSwitch.js';
+import {
+  TUTORIALS_FILE, tutorialWasSeen, markTutorialSeen, clearTutorialSeen,
+  cleanTutorialSeen, parseTutorialRecord, serializeTutorialRecord, mergeTutorialSeen,
+} from './lib/tutorials.js';
 import { THEME_HUE_VARS, cleanThemeHues, rotateHue } from './lib/themeHue.js';
 import { mermaidThemeVariables } from './lib/mermaidTheme.js';
 import * as colorStore from './lib/colorStore.js';
@@ -63,7 +67,6 @@ import { createResizers } from './ui/resizer.js';
 import { isAutoCheckEnabled, checkForUpdates, downloadInstallAndRestart, summarizeUpdate } from './lib/updater.js';
 import { createUpdateDialog } from './ui/updateDialog.js';
 
-const LAST_VAULT_KEY = 'macusanite.lastVault';
 const SYNTAX_GUIDE_PATH = 'Macusanite Wiki.md';
 // Veins read per turn of the lazy index pass, and per turn of the search read.
 // Small enough that a keystroke or a click never waits behind one.
@@ -98,6 +101,11 @@ const state = {
   current: null,
   draft: '',
   dirty: false,
+  // Teaching notes the reader has closed, by id with the stamp of the decision.
+  // This is the installation's record — `tutorials.json` in the local-storage
+  // folder — not the vault's: a note dismissed in one vault stays dismissed in
+  // every other. Read in `init`, before any vault opens.
+  tutorialSeen: {},
   // A draft that tries to rewrite a locked section structurally: it stays
   // dirty, but autosave and save refuse it until the reader answers.
   lockedBlocked: [],
@@ -358,18 +366,24 @@ const app = {
     // The known-vault list is read before anything opens, so the title bar can
     // offer other vaults straight away — even when none is open.
     await app.loadKnownVaults();
+    // Closed teaching notes are about the reader rather than about one vault,
+    // and the panes decide whether to teach as they paint: read them here, so
+    // the first vault already opens quiet where it should.
+    await app.loadTutorialSeen();
 
     // Precedence: a vault named on the command line, then the most recently
     // opened vault from the installation's shared list, then (in a plain
-    // browser) the sample vault.
+    // browser) the sample vault. That list is the only record of where the
+    // reader was: it is written when a vault opens, so it is as fresh as the
+    // old per-window key ever was and the two can never disagree.
     let initial = null;
     if (isDesktop) {
       try {
         const fromCli = await backend.startupVault();
-        initial = fromCli?.path ?? state.knownVaults[0]?.path ?? readLastVault();
+        initial = fromCli?.path ?? state.knownVaults[0]?.path ?? null;
       } catch (error) {
         await backend.log('warn', `startup_vault failed: ${error.message}`);
-        initial = state.knownVaults[0]?.path ?? readLastVault();
+        initial = state.knownVaults[0]?.path ?? null;
       }
     } else {
       initial = '/sample-vault';
@@ -494,6 +508,9 @@ const app = {
       created: info.created ?? null,
     };
     state.settings = mergeSettings(DEFAULT_SETTINGS, info.settings);
+    // A vault written by an older build kept its own closed-note record in
+    // `settings.json`. It joins the installation's record here, once.
+    await app.adoptVaultTutorialSeen();
     state.colors = colorStore.cloneColorSet(info.colors);
     state.ui.expanded = {};
     applyTheme();
@@ -560,7 +577,6 @@ const app = {
       graphPanel.render();
     }
 
-    writeLastVault(state.vault.path);
     await app.rememberVaultOpened(state.vault);
     app.watchVault();
     const fromCache = plan.index.length - plan.toRead.length;
@@ -613,15 +629,55 @@ const app = {
     return selectKnownVaults(state.knownVaults, { current: state.vault?.path ?? null });
   },
 
+  /**
+   * Run a change of vault only once the open vein's draft is on disk.
+   *
+   * The draft is the only copy of the last words typed — autosave is a short
+   * clock, not a promise — and every way of opening another vault replaces it
+   * with that vault's start vein. A save that leaves the draft dirty (a locked
+   * section, a failed write, unresolved merge markers) keeps the reader in the
+   * vault their words belong to, with a note saying why.
+   *
+   * @param {() => Promise<unknown>} change opens or creates the other vault
+   * @returns {Promise<boolean>} whether the change ran
+   */
+  async saveDraftThen(change) {
+    // The switch owns the draft from here: a timer left running would fire
+    // against whatever vault is open by then.
+    clearTimeout(autosaveTimer);
+    const left = state.vault?.name || 'this vault';
+    return switchWithSavedDraft({
+      isDirty: () => Boolean(state.current && state.dirty),
+      save: async () => {
+        // Autosave never writes our merge markers into a vein, and neither does
+        // this: a write the reader cannot see coming must not leave `<<<<<<<`
+        // in a file. The markers are the reader's to resolve first.
+        if (hasMergeMarkers(state.draft)) throw new Error('unresolved merge markers');
+        await app.saveCurrent({ silent: true });
+      },
+      open: change,
+      cancel: (error) => {
+        if (error?.message === 'unresolved merge markers') {
+          app.toast(`Resolve the merge markers in “${left}” before switching vaults`, 'warn', 5200);
+          return;
+        }
+        app.toast(`The draft in “${left}” could not be saved, so it stayed open`, 'warn', 4400);
+        if (error) backend.log('warn', `a draft was not saved before a vault change: ${error.message}`);
+      },
+    });
+  },
+
   /** Switch to a vault picked from the title-bar menu. */
   async openKnownVault(path) {
     if (!path || path === state.vault?.path) return;
-    try {
-      await app.openVault(path);
-    } catch (error) {
-      app.toast(`Could not open “${path}”: ${error.message}`, 'error');
-      await backend.log('warn', `could not switch to ${path}: ${error.message}`);
-    }
+    await app.saveDraftThen(async () => {
+      try {
+        await app.openVault(path);
+      } catch (error) {
+        app.toast(`Could not open “${path}”: ${error.message}`, 'error');
+        await backend.log('warn', `could not switch to ${path}: ${error.message}`);
+      }
+    });
   },
 
   /**
@@ -960,11 +1016,13 @@ const app = {
   async chooseAndOpenVault() {
     const path = await backend.pickFolder();
     if (!path) return;
-    try {
-      await app.openVault(path);
-    } catch (error) {
-      app.toast(`Could not open that folder: ${error.message}`, 'error');
-    }
+    await app.saveDraftThen(async () => {
+      try {
+        await app.openVault(path);
+      } catch (error) {
+        app.toast(`Could not open that folder: ${error.message}`, 'error');
+      }
+    });
   },
 
   async createVaultInteractive() {
@@ -978,12 +1036,14 @@ const app = {
       confirmLabel: 'Create vault',
     });
     if (!name) return;
-    try {
-      await backend.createVault(path, name, '');
-      await app.openVault(path);
-    } catch (error) {
-      app.toast(`Could not create the vault: ${error.message}`, 'error');
-    }
+    await app.saveDraftThen(async () => {
+      try {
+        await backend.createVault(path, name, '');
+        await app.openVault(path);
+      } catch (error) {
+        app.toast(`Could not create the vault: ${error.message}`, 'error');
+      }
+    });
   },
 
   async updateVaultMeta(patch) {
@@ -2332,17 +2392,52 @@ const app = {
 
   /** Whether the reader has closed one of the window's teaching notes. */
   tutorialSeen(id) {
-    return tutorialWasSeen(state.settings.tutorialSeen, id);
+    return tutorialWasSeen(state.tutorialSeen, id);
+  },
+
+  /** Read the installation's shared record of closed teaching notes. */
+  async loadTutorialSeen() {
+    try {
+      state.tutorialSeen = parseTutorialRecord(await backend.readLocalStorage(TUTORIALS_FILE)).seen;
+    } catch (error) {
+      state.tutorialSeen = {};
+      await backend.log('warn', `could not read the closed teaching notes: ${error.message}`);
+    }
+  },
+
+  /** Write that record; the decision itself is already applied in memory. */
+  async saveTutorialSeen() {
+    try {
+      await backend.writeLocalStorage(TUTORIALS_FILE, serializeTutorialRecord({ seen: state.tutorialSeen }));
+    } catch (error) {
+      await backend.log('warn', `could not record the closed teaching notes: ${error.message}`);
+    }
   },
 
   /**
-   * Remember that a teaching note was closed, so it stays closed for this
-   * vault. Settings → Reading → Reset tutorials is the way back; the master
-   * Tutorial notes switch hides notes without forgetting them.
+   * Fold a vault's own closed-note record into the installation's shared one.
+   * Older builds kept `settings.tutorialSeen` inside each vault; reading it here
+   * means an upgrade never reopens a note the reader closed, and clearing it
+   * means this vault cannot teach those notes again after a reset.
+   */
+  async adoptVaultTutorialSeen() {
+    const own = cleanTutorialSeen(state.settings.tutorialSeen);
+    if (!Object.keys(own).length) return;
+    state.settings.tutorialSeen = {};
+    app.persistSettings({ record: false });
+    state.tutorialSeen = mergeTutorialSeen(state.tutorialSeen, own);
+    await app.saveTutorialSeen();
+  },
+
+  /**
+   * Remember that a teaching note was closed, so it stays closed everywhere.
+   * Settings → Reading → Reset tutorials is the way back; the master Tutorial
+   * notes switch hides notes without forgetting them.
    */
   closeTutorial(id) {
-    state.settings.tutorialSeen = markTutorialSeen(state.settings.tutorialSeen, id);
-    app.persistSettings({ record: false });
+    state.tutorialSeen = markTutorialSeen(state.tutorialSeen, id);
+    // The note is already shut on screen; the file catches up on its own.
+    void app.saveTutorialSeen();
     return true;
   },
 
@@ -2354,6 +2449,10 @@ const app = {
    * editor hint the next time the source pane opens.
    */
   async resetTutorials() {
+    state.tutorialSeen = clearTutorialSeen();
+    await app.saveTutorialSeen();
+    // A vault last opened by an older build may still carry its own copy of the
+    // decisions; clearing it keeps that copy from teaching the notes again.
     state.settings.tutorialSeen = clearTutorialSeen();
     state.settings.tutorials = true;
     await app.updateSettings({});
@@ -3968,22 +4067,6 @@ function wireGlobalEvents() {
   window.addEventListener('beforeunload', () => {
     if (state.dirty && state.settings.autosave) app.saveCurrent({ silent: true });
   });
-}
-
-function readLastVault() {
-  try {
-    return globalThis.localStorage?.getItem(LAST_VAULT_KEY) ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function writeLastVault(path) {
-  try {
-    globalThis.localStorage?.setItem(LAST_VAULT_KEY, path);
-  } catch {
-    /* storage disabled — auto-open simply won't happen next launch */
-  }
 }
 
 /* ── vault archives in the window ─────────────────────────────────── */

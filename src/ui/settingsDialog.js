@@ -174,9 +174,9 @@ export function createSettingsDialog({ app }) {
               type: 'button',
               icon: 'reset',
               text: 'Reset tutorials',
-              title: 'Forget which teaching notes were closed and switch Tutorial notes back on',
+              title: 'Forget every closed teaching note on this computer and switch Tutorial notes back on',
               onclick: resetTutorials,
-            }), 'Every note that was closed with its own button comes back where it belongs — the object-map note, the search tip and the editor’s shortcut hint.'),
+            }), 'Every note that was closed with its own button comes back where it belongs — the object-map note, the search tip and the editor’s shortcut hint — in every vault, because one dismissal covers them all.'),
           ]),
         ]),
 

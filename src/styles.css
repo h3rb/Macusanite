@@ -6108,8 +6108,9 @@ body:not(.nav-dock-drawer) .wb-dock.is-open {
   pointer-events: auto;
 }
 
-/* An icon card keeps its box and its place, and nothing else: the type icon is
- * centred in it at the same screen size the semantic face used to give it. */
+/* An icon card keeps its box and its place, and nothing else: a screen-sized
+ * pill carrying the node's type icon, centred in it at the same screen size
+ * the semantic face used to give that icon. */
 .wb-card.is-icon-form {
   display: grid;
   place-items: center;
@@ -6128,8 +6129,30 @@ body:not(.nav-dock-drawer) .wb-dock.is-open {
   font-size: calc(var(--wb-icon-font, 18px) * var(--wb-inv-zoom, 1));
   line-height: 1;
   color: var(--text);
-  opacity: 0.9;
   pointer-events: none;
+}
+
+/* A node at icon scale is a pill: a rounded chip around its type icon, so a
+ * whole graph reads as a field of marks instead of the nodes dissolving into
+ * the canvas. Its padding, border and radius are scaled by the canvas's
+ * inverse zoom, which holds the chip at one screen size however far out the
+ * camera goes, while its width still follows the shrinking icon. */
+.wb-card.is-icon-form .wb-icon-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(2px * var(--wb-inv-zoom, 1)) calc(5px * var(--wb-inv-zoom, 1));
+  border: calc(1px * var(--wb-inv-zoom, 1)) solid var(--border-strong);
+  border-radius: calc(999px * var(--wb-inv-zoom, 1));
+  background: color-mix(in srgb, var(--bg-raised) 94%, transparent);
+  box-shadow: 0 calc(1px * var(--wb-inv-zoom, 1)) calc(6px * var(--wb-inv-zoom, 1)) rgba(0, 0, 0, 0.32);
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+[data-theme='light'] .wb-card.is-icon-form .wb-icon-pill {
+  box-shadow: 0 calc(1px * var(--wb-inv-zoom, 1)) calc(5px * var(--wb-inv-zoom, 1)) rgba(20, 30, 45, 0.18);
 }
 
 .wb-card.is-icon-form .wb-link-handle {
@@ -6138,25 +6161,26 @@ body:not(.nav-dock-drawer) .wb-dock.is-open {
   right: calc(-8px * var(--wb-inv-zoom, 1));
 }
 
-/* The states a full card shows as outlines around its face, on an icon box. */
-.wb-card.is-icon-form.is-selected .wb-icon {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+/* The states a full card shows as outlines around its face, on an icon pill.
+ * The outline is scaled by the inverse zoom so it stays a 2px ring on screen. */
+.wb-card.is-icon-form.is-selected .wb-icon-pill {
+  outline: calc(2px * var(--wb-inv-zoom, 1)) solid var(--accent);
+  outline-offset: calc(3px * var(--wb-inv-zoom, 1));
 }
 
-.wb-card.is-icon-form.is-search-hit .wb-icon {
-  outline: 2px solid var(--warn);
-  outline-offset: 2px;
+.wb-card.is-icon-form.is-search-hit .wb-icon-pill {
+  outline: calc(2px * var(--wb-inv-zoom, 1)) solid var(--warn);
+  outline-offset: calc(2px * var(--wb-inv-zoom, 1));
 }
 
-.wb-card.is-icon-form.is-search-current .wb-icon {
-  outline: 3px solid var(--warn);
-  outline-offset: 3px;
+.wb-card.is-icon-form.is-search-current .wb-icon-pill {
+  outline: calc(3px * var(--wb-inv-zoom, 1)) solid var(--warn);
+  outline-offset: calc(3px * var(--wb-inv-zoom, 1));
 }
 
-.wb-card.is-icon-form.is-link-target .wb-icon {
-  outline: 2px solid var(--warn);
-  outline-offset: 3px;
+.wb-card.is-icon-form.is-link-target .wb-icon-pill {
+  outline: calc(2px * var(--wb-inv-zoom, 1)) solid var(--warn);
+  outline-offset: calc(3px * var(--wb-inv-zoom, 1));
 }
 
 .wb-card.is-icon-form.is-dimmed {
@@ -6221,7 +6245,9 @@ body:not(.nav-dock-drawer) .wb-dock.is-open {
   box-shadow: none;
 }
 
-.wb-stage.is-semantic-zoom .wb-card > :not(.wb-semantic):not(.wb-resize):not(.wb-card-head),
+/* The icon pill and the icon card's own forge ring are the card's whole face
+ * at icon scale, which is also inside the semantic range: they stay visible. */
+.wb-stage.is-semantic-zoom .wb-card > :not(.wb-semantic):not(.wb-resize):not(.wb-card-head):not(.wb-icon-pill):not(.wb-link-handle),
 .wb-stage.is-semantic-zoom .wb-card-head > :not(.wb-fold-toggle),
 .wb-stage.is-semantic-zoom .wb-group-summary > :not(.wb-semantic) {
   opacity: 0;
@@ -6477,7 +6503,7 @@ body:not(.nav-dock-drawer) .wb-dock.is-open {
   display: none;
 }
 
-/* The card is only its type icon at this scale, but the head still holds the
+/* The card is only its icon pill at this scale, but the head still holds the
  * forge port. Drop the head box and its contents, keeping the handle as a
  * child of the card so the port survives the icon handoff. */
 .wb-stage.is-icon-zoom .wb-card-head {
