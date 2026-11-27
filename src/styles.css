@@ -1732,11 +1732,13 @@ mark.search-hit {
   scrollbar-width: none;
 }
 
-.dock-tab:first-child {
+/* `*-of-type` rather than `*-child`: a host may mount a grip above the tabs,
+   and the tabs still have to centre in what is left. */
+.dock-tab:first-of-type {
   margin-top: auto;
 }
 
-.dock-tab:last-child {
+.dock-tab:last-of-type {
   margin-bottom: auto;
 }
 
@@ -2620,6 +2622,18 @@ dialog::backdrop {
   gap: 10px;
 }
 
+/* A section that reads as pairs: two columns however wide the dialog is, and
+   one when the window is too narrow to give each field its own. */
+.settings-grid--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 560px) {
+  .settings-grid--two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .settings-row {
   display: flex;
   align-items: center;
@@ -3439,25 +3453,77 @@ dialog::backdrop {
   display: none;
 }
 
-.wb-inspector-head {
+/* ── the head every edge panel wears ──────────────────────────────────────
+ * One head for the navigator, the inspector, and whatever joins them: a name, an
+ * optional readout, the floating card's grip and the panel's own controls, in
+ * that order. The dock hides the name and the grip because its rail already
+ * names the panel and carries the edge's own grip; a floating card shows both.
+ */
+.wb-panel-head {
   position: sticky;
   top: 0;
   z-index: 2;
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  justify-content: space-between;
-  padding: 7px 8px 7px 12px;
+  gap: 6px;
+  min-height: 26px;
+  padding: 4px 6px 4px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
 
-.wb-inspector-kicker {
+.wb-panel-kicker {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-faint);
   font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.09em;
+  text-overflow: ellipsis;
   text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.wb-panel-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+/* A floating card is moved by the grip in its head; on the edge the card's rail
+ * grip does that job, so this one waits out of the way. */
+.wb-float-grip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 20px;
+  margin-right: 2px;
+  border-radius: 4px;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+}
+
+.wb-float-grip:hover,
+.wb-float-grip:focus-visible {
+  color: var(--accent);
+}
+
+.wb-float-grip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.wb-dock .wb-float-grip {
+  display: none;
 }
 
 .wb-inspector-body {
@@ -3758,6 +3824,14 @@ dialog::backdrop {
   color: var(--text-faint);
   font-size: 10.5px;
   line-height: 1.45;
+}
+
+/* Opened on nothing, the panel puts its one sentence in the middle rather than
+   leaving it hanging at the top of an empty card. */
+.wb-inspector-empty--panel {
+  max-width: 30ch;
+  margin: auto 0;
+  font-size: 11.5px;
 }
 
 .wb-inspector :focus-visible {
@@ -4064,6 +4138,45 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   backdrop-filter: blur(8px);
 }
 
+/* The inspector floats as the same kind of card, in its own corner: the top
+   left, which the map's drawer leaves free. */
+.wb-stage > .wb-inspector {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  /* Above the edge's rails: a floating card's head must stay its own. */
+  z-index: 10;
+  width: min(300px, calc(100vw - 96px));
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  box-shadow: var(--shadow-lg);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+/* A card that has been dragged carries its own left and top. */
+.wb-navigator.is-placed,
+.wb-stage > .wb-inspector.is-placed {
+  right: auto;
+  bottom: auto;
+}
+
+/* Both popped out: half the stage each, so their corners cannot meet. */
+.wb-stage.is-two-floats > .wb-navigator,
+.wb-stage.is-two-floats > .wb-inspector {
+  max-height: calc(50% - 18px);
+}
+
+/* The card under the pointer lifts over the canvas, like an edge card. */
+.wb-navigator.is-moving,
+.wb-stage > .wb-inspector.is-moving {
+  z-index: 12;
+  box-shadow: 0 0 0 1px var(--accent), var(--shadow-lg);
+}
+
 /* Opening a panel by hand puts focus on its body, so its own controls are one
    Tab away; the ring sits inside the panel so the dock's clip never cuts it. */
 .wb-nav-body:focus-visible,
@@ -4076,6 +4189,8 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
    own panel rather than running off the top of the canvas. */
 .wb-stage > .wb-navigator {
   max-height: calc(100% - 24px);
+  /* Above the edge's rails, like the floating inspector. */
+  z-index: 10;
 }
 
 .wb-stage > .wb-navigator > .wb-nav-body {
@@ -4084,26 +4199,38 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   overflow-y: auto;
 }
 
-/* ── the right-edge dock ──────────────────────────────────────────────────
- * One card on the canvas's right edge, holding a rail of vertical tabs and the
- * panel of whichever tab was chosen: the navigator and the inspector take
- * turns instead of competing for the edge. It takes the height of its content
- * and sits centred, reaching across the viewer's margin so the rail is hard
- * against the splitter; the canvas keeps its full width either way. */
+/* ── the right-edge panels ────────────────────────────────────────────────
+ * Two cards on the canvas's right edge, one for the navigator and one for the
+ * inspector. Each is its own fold with its own grip in the vertical, and each
+ * grip drags its card to any height along the edge; the pair is placed by a
+ * fraction of the edge's height so a window change keeps their spots. The
+ * stack reaches across the viewer's margin so the rails are hard against the
+ * splitter; the canvas keeps its full width either way. */
+.wb-dock-stack {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(var(--viewer-pad-x) * -1);
+  z-index: 9;
+  /* The gaps between the cards are the canvas's, not the stack's: a drag
+     starting on the canvas keeps panning it. */
+  pointer-events: none;
+}
+
 .wb-dock {
   --wb-dock-w: 202px;
   position: absolute;
-  top: 50%;
-  right: calc(var(--viewer-pad-x) * -1);
+  top: var(--wb-top, 0px);
+  right: 0;
   z-index: 9;
   display: flex;
   /* A column, so the card's own size clamp shrinks its panel along the main axis
      rather than only clipping the box: on a short canvas the panel scrolls
      inside the card instead of running out of the bottom of it. */
   flex-direction: column;
-  /* The rail and its one border: shut, this is the whole dock. */
+  /* The rail and its one border: shut, this is the whole card. */
   width: 31px;
-  max-height: calc(100% - 24px);
+  max-height: 100%;
   overflow: hidden;
   border-left: 1px solid var(--border);
   border-radius: 8px 0 0 8px;
@@ -4111,8 +4238,21 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   box-shadow: var(--shadow-lg);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
-  transform: translateY(-50%);
   transition: width 0.18s ease;
+  pointer-events: auto;
+}
+
+/* The card under the pointer is the one being moved, so it lifts over the
+   other rather than under it. */
+.wb-dock.is-moving {
+  z-index: 10;
+  box-shadow: 0 0 0 1px var(--accent), var(--shadow-lg);
+}
+
+/* Popped out, the map has its own card; its grip stays on the edge, dimmed,
+   until one press brings the map home. */
+.wb-dock.is-floating .dock-tab-label {
+  color: var(--text-faint);
 }
 
 .wb-dock.is-open {
@@ -4161,11 +4301,14 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
 }
 
 /* Below 1080px the graph column is gone with its splitter, so there is no edge
-   for the dock to sit flush against: it becomes a card inside the canvas, with
+   for the stack to sit flush against: it becomes cards inside the canvas, with
    all four corners rather than one rim cut off by the window. */
 @media (max-width: 1080px) {
-  .wb-dock {
+  .wb-dock-stack {
     right: 12px;
+  }
+
+  .wb-dock {
     border: 1px solid var(--border);
     border-radius: 8px;
   }
@@ -4188,17 +4331,46 @@ body.is-touch-canvas .wb-stage.is-forge-zoom .wb-link-handle-core {
   border-left: 1px solid var(--border);
 }
 
-/* Floating, the dock holds the inspector alone: the navigator is its own card,
-   so the rail has one tab to offer and would stretch it down the panel's whole
-   height — a handle rather than a choice, and a second close beside the panel's
-   own. The inspector then names itself in its head, which the docked tab did. */
-body:not(.nav-dock-drawer) .wb-dock .dock-rail {
-  display: none;
+/* The rail is the dock, and both panels fold into it: the inspector's tab is
+   its fold the way the navigator's is, so the edge keeps one card whether the
+   map is docked, floating, or closed. */
+/* A short window scrolls the rail; the handle that moves the dock stays put at
+   its top, on the dock's own background rather than over a sliding tab. */
+.wb-dock-grip {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 
-/* Without the rail beside it, the panel is the whole card. */
-body:not(.nav-dock-drawer) .wb-dock.is-open {
-  width: var(--wb-dock-w);
+.wb-dock-grip-mark {
+  line-height: 0.8;
+}
+
+.wb-dock-grip:hover,
+.wb-dock-grip:focus-visible {
+  color: var(--accent);
+}
+
+.wb-dock-grip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.wb-dock-grip.dragging {
+  cursor: grabbing;
+  color: var(--accent);
 }
 
 .wb-dock .dock-tab {
@@ -4237,12 +4409,22 @@ body:not(.nav-dock-drawer) .wb-dock.is-open {
   overflow-y: auto;
 }
 
-/* The navigator's head is a row of its own controls and the tab beside it names
-   the panel, so its kicker would only cost them the room; the inspector's head
-   has the room to name itself in either placement. */
-.wb-dock .wb-nav-kicker {
-  display: none;
+/* The inspector, docked, is a panel in the slot rather than a card: the card
+   chrome belongs to the dock, and the head the dock's head. */
+.wb-dock .wb-inspector {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
+
 
 /* The rail keeps the tabs always there, so a shut navigator is one press away;
    on a pane too short for both it scrolls rather than cutting one off. */
@@ -4287,13 +4469,60 @@ body:not(.nav-dock-drawer) .wb-dock.is-open {
   outline-offset: -2px;
 }
 
-/* Popping out only means something while the navigator is in the dock. */
-.wb-nav-popout {
+/* Each head offers the trip its placement allows: Pop out on the edge, the
+ * rail's right arrow on the floating card. The rail does the same from the
+ * edge, for a card the reader has folded away. */
+.wb-panel-popout {
   display: none;
 }
 
-.wb-dock .wb-nav-popout {
+.wb-dock .wb-panel-popout {
   display: inline-flex;
+}
+
+.wb-panel-popin {
+  display: none;
+}
+
+/* The card's way home is the rail's own arrow, at the rail's own weight. */
+.wb-panel-glyph {
+  display: block;
+  font-size: 20px;
+  line-height: 1;
+  transform: translateY(-1px);
+}
+
+.wb-stage > .wb-navigator .wb-panel-popin,
+.wb-stage > .wb-inspector .wb-panel-popin {
+  display: inline-flex;
+}
+
+/* A peek shows its own clock: a hairline under the inspector's head that burns
+ * down with the seconds left, so the fold is never a surprise. It sits on the
+ * head because the panel's body scrolls and a foot bar would scroll away. */
+.wb-inspector .wb-panel-head::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transform: scaleX(0);
+  transform-origin: left center;
+  pointer-events: none;
+}
+
+.wb-inspector.is-peeking .wb-panel-head::after {
+  opacity: 0.5;
+  animation: wb-peek-burn var(--wb-peek, 7s) linear forwards;
+}
+
+@keyframes wb-peek-burn {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
 }
 
 /* The slide is decoration; the panel still opens and closes at once. */
@@ -4301,27 +4530,40 @@ body:not(.nav-dock-drawer) .wb-dock.is-open {
   .wb-dock {
     transition: none;
   }
+
+  /* No burn, but the peek still says so: a faint full line until it folds. */
+  .wb-inspector.is-peeking .wb-panel-head::after {
+    animation: none;
+    opacity: 0.3;
+    transform: none;
+  }
+}
+
+/* The dock's head is the rail's neighbour, not a card's: no name (the rail has
+   it), no border and no sticky lift. */
+.wb-dock .wb-panel-head {
+  position: static;
+  padding: 0 1px;
+  border-bottom: 0;
+  background: transparent;
+}
+
+/* Capped against the navigator, the docked inspector scrolls its own content;
+   its head stays put so its controls never scroll away, and it anchors the
+   peek's hairline (the dock leaves heads static to sit flat against the rail). */
+.wb-dock .wb-inspector .wb-panel-head {
+  position: sticky;
+  top: 0;
+}
+
+.wb-dock .wb-panel-kicker {
+  display: none;
 }
 
 /* A hard hide, used by the harness so the minimap cannot cover a hit target it
    is testing. The navigator's own close button closes it to its tab instead. */
 .hide-canvas-navigator .wb-navigator {
   display: none;
-}
-
-.wb-nav-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 1px;
-}
-
-.wb-nav-kicker {
-  color: var(--text-faint);
-  font-size: 9px;
-  font-weight: 650;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .wb-nav-mode {

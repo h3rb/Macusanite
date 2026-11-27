@@ -93,9 +93,32 @@ export const DEFAULT_SETTINGS = {
     // the placement a closed navigator comes back from. Settings → Worldbuilding
     // → Navigator placement switches between the two.
     navigatorDock: 'float',
+    // The inspector's own placement, kept apart from the navigator's: either
+    // panel can hold the edge or float, and the edge keeps a rail for whichever
+    // has floated away. Pop out in a panel's head flips it; its rail brings it
+    // back.
+    inspectorDock: 'drawer',
+    // Seconds a folded inspector stays open when a selected card changes what
+    // it would show, after which it folds itself away again. 0 keeps it open
+    // until the reader folds it, the way an opened panel has always behaved.
+    inspectorPeek: 7,
     // How wide the drawer's panel is, in pixels, remembered from the grip on
     // its inner edge. The rail that opens it is a fixed 30px either way.
     navigatorWidth: 202,
+    // The canvas's two edge panels, top to bottom: the navigator and the
+    // inspector are separate cards, and this is the order of the centred pair
+    // before either grip has been dragged. Unknown ids are dropped and missing
+    // ones appended, so an old setting never hides a panel.
+    dockOrder: ['navigator', 'inspector'],
+    // Where each card was left along that edge, as a fraction of its height
+    // (0 the top, 1 the bottom). Both are null until a grip is dragged, which
+    // keeps the centred pair; after that each panel stays where it was put.
+    dockSlides: { navigator: null, inspector: null },
+    // Where each popped-out card was left on the stage, as fractions of the
+    // room it has to move in (x 0 the left, 1 the right; y 0 the top, 1 the
+    // bottom). Null keeps the card's own corner — the navigator's bottom
+    // right, the inspector's top left — so a fresh vault needs no entry.
+    floatPlaces: { navigator: null, inspector: null },
     // Whether the one-time note about the object map has been shown. It opens
     // the first time the canvas passes below 65%, where the link port becomes
     // a screen-sized corner ring and the rings are the whole way to bond.
@@ -137,6 +160,59 @@ const OPEN_MAP_KEYS = new Set(['tutorialSeen']);
  * top-level settings object, so running it on a nested object (say `graph`)
  * would graft the top-level keys onto it.
  */
+/** The canvas dock's tabs: the ones it has, once each, then the ones it lost. */
+const DOCK_TABS = ['navigator', 'inspector'];
+
+function normalizeDockOrder(value) {
+  const saved = Array.isArray(value) ? value.filter((id) => DOCK_TABS.includes(id)) : [];
+  const order = [...new Set(saved)];
+  for (const id of DOCK_TABS) if (!order.includes(id)) order.push(id);
+  return order;
+}
+
+/** A place on the edge, as a fraction of its height; null means "not moved". */
+function normalizeSlide(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(1, value));
+}
+
+function normalizeDockSlides(value) {
+  const saved = isPlainObject(value) ? value : {};
+  const out = {};
+  for (const id of DOCK_TABS) out[id] = normalizeSlide(saved[id]);
+  return out;
+}
+
+/**
+ * Put the edge's cards back in their centred pair.
+ *
+ * A settings patch cannot do it: `deepMerge` drops null, and null is the value
+ * that means “never moved”, so once either grip has been dragged there would be
+ * no way back. The reset replaces the slides outright instead.
+ */
+export function resetDockSlides(settings) {
+  const next = structuredCloneSafe(settings);
+  next.worldbuild = {
+    ...next.worldbuild,
+    dockSlides: { ...DEFAULT_SETTINGS.worldbuild.dockSlides },
+  };
+  return validateSettings(next);
+}
+
+/** A floating card's place, as fractions of the room it has to move in. */
+function normalizeFloatPlace(value) {
+  if (!isPlainObject(value) || typeof value.x !== 'number' || typeof value.y !== 'number') return null;
+  if (!Number.isFinite(value.x) || !Number.isFinite(value.y)) return null;
+  return { x: Math.max(0, Math.min(1, value.x)), y: Math.max(0, Math.min(1, value.y)) };
+}
+
+function normalizeFloatPlaces(value) {
+  const saved = isPlainObject(value) ? value : {};
+  const out = {};
+  for (const id of DOCK_TABS) out[id] = normalizeFloatPlace(saved[id]);
+  return out;
+}
+
 export function mergeSettings(base, saved) {
   return validateSettings(deepMerge(base, saved));
 }
@@ -199,7 +275,13 @@ export function validateSettings(settings) {
   s.worldbuild.cardSize = s.worldbuild.cardSize === 'content' ? 'content' : DEFAULT_SETTINGS.worldbuild.cardSize;
   s.worldbuild.navigator = s.worldbuild.navigator !== false;
   s.worldbuild.navigatorDock = s.worldbuild.navigatorDock === 'drawer' ? 'drawer' : 'float';
+  s.worldbuild.inspectorDock = s.worldbuild.inspectorDock === 'float' ? 'float' : 'drawer';
   s.worldbuild.navigatorWidth = clamp(Number(s.worldbuild.navigatorWidth), 160, 420, DEFAULT_SETTINGS.worldbuild.navigatorWidth);
+  s.worldbuild.inspectorPeek = clamp(Number(s.worldbuild.inspectorPeek), 0, 120, DEFAULT_SETTINGS.worldbuild.inspectorPeek);
+  s.worldbuild.dockOrder = normalizeDockOrder(s.worldbuild.dockOrder);
+  s.worldbuild.dockSlides = normalizeDockSlides(s.worldbuild.dockSlides);
+  s.worldbuild.floatPlaces = normalizeFloatPlaces(s.worldbuild.floatPlaces);
+
   s.worldbuild.lowZoomTipSeen = s.worldbuild.lowZoomTipSeen === true;
   // Before `tutorialSeen` existed, the object-map note's “Got it” was
   // remembered here. Fold that decision in once, so an upgrade does not reopen

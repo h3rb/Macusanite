@@ -220,39 +220,81 @@ export function createWorldbuildPanel({ app, root }) {
     onclick: () => zoomToFitGroup(),
   });
   const navBodyId = `wb-dock-navigator-${++navBodySeq}`;
+  /* ── the shape every edge panel shares ──────────────────────────────────
+   * The navigator and the inspector are the same kind of thing: a panel that
+   * lives either in a slot on the canvas's right edge or in a card over the
+   * canvas, with a head that names it, its own controls and — while it floats —
+   * a grip that moves the card. Building that head once means a third panel
+   * only has to say its name, its readout and its buttons.
+   */
+  /**
+   * One control in a panel's head: an icon, or a glyph such as the rail's own
+   * arrow, which the reader already knows as “bring this panel to the edge”.
+   */
+  function panelButton({ icon, glyph = null, label, title, className = '', onclick }) {
+    return el('button', {
+      class: `icon-btn btn-mini ui-icon-only ${className}`.trim(),
+      type: 'button',
+      ...(glyph ? { 'aria-label': label } : { icon, iconLabel: label }),
+      title,
+      onclick,
+    }, glyph ? [el('span', { class: 'wb-panel-glyph', 'aria-hidden': 'true', text: glyph })] : []);
+  }
+
+  /** The one control every panel has: send it out to a card, or bring it home. */
+  function panelPopOut(id, label) {
+    return panelButton({
+      icon: 'popout',
+      label: 'Pop out',
+      className: 'wb-panel-popout',
+      title: `Pop the ${label} out of the edge into a floating card`,
+      onclick: () => popOutPanel(id),
+    });
+  }
+
+  /**
+   * The other half of the trip: the same right arrow the panel's rail shows on
+   * the edge, so the card's way home reads exactly like the rail's.
+   */
+  function panelPopIn(id, label) {
+    return panelButton({
+      glyph: '›',
+      label: `Dock the ${label} on the canvas’s right edge`,
+      className: 'wb-panel-popin',
+      title: `Dock the ${label} back on the canvas’s right edge`,
+      onclick: () => dockPanel(id),
+    });
+  }
+
+  /** The head: name, optional readout, the floating grip and the controls. */
+  function panelHead({ kicker, meta = null, grip = null, controls = [] }) {
+    return el('div', { class: 'wb-panel-head' }, [
+      el('span', { class: 'wb-panel-kicker', text: kicker }),
+      meta,
+      el('div', { class: 'wb-panel-actions' }, [grip, ...controls].filter(Boolean)),
+    ]);
+  }
+
   // The navigator's panel: the map, its mode and its two framings. The tab that
-  // names it and opens it lives on the dock's rail, beside the inspector's, so
-  // the panel itself carries no tab.
+  // names it and opens it lives on the dock's rail, so the panel itself carries
+  // no tab — only its place in the edge and its float grip say where it is.
   const navBody = el('div', { class: 'wb-nav-body', id: navBodyId, tabindex: '-1' }, [
-    el('div', { class: 'wb-nav-head' }, [
-      el('span', { class: 'wb-nav-kicker', text: 'Navigator' }),
-      navMode,
-      el('button', {
-        class: 'icon-btn btn-mini ui-icon-only wb-nav-popout',
-        type: 'button',
-        icon: 'popout',
-        iconLabel: 'Pop out',
-        title: 'Pop the navigator out of the dock into a floating panel',
-        onclick: () => {
-          app.updateSettings({ worldbuild: { navigator: true, navigatorDock: 'float' } });
-          syncDock();
-          navBody.focus({ preventScroll: true });
-        },
-      }),
-      el('button', {
-        class: 'icon-btn btn-mini ui-icon-only wb-nav-hide',
-        type: 'button',
-        icon: 'hide',
-        iconLabel: 'Close',
-        title: 'Close the navigator — its tab on the edge opens it again',
-        onclick: () => {
-          app.updateSettings({ worldbuild: { navigator: false, navigatorDock: 'drawer' } });
-          // The panel goes with it, so focus returns to the tab that reopens it.
-          syncDock();
-          dock.tab('navigator')?.focus({ preventScroll: true });
-        },
-      }),
-    ]),
+    panelHead({
+      kicker: 'Navigator',
+      meta: navMode,
+      grip: floatGrip('navigator'),
+      controls: [
+        panelPopOut('navigator', 'navigator'),
+        panelPopIn('navigator', 'navigator'),
+        panelButton({
+          icon: 'hide',
+          label: 'Close',
+          className: 'wb-nav-hide',
+          title: 'Close the navigator — its tab on the edge opens it again',
+          onclick: closeNavigator,
+        }),
+      ],
+    }),
     navMap,
     el('div', { class: 'wb-nav-actions' }, [navFitSelection, navFitGroup]),
   ]);
@@ -315,17 +357,20 @@ export function createWorldbuildPanel({ app, root }) {
     id: inspectorId,
     'aria-label': 'Selected card inspector',
   }, [
-    el('div', { class: 'wb-inspector-head' }, [
-      el('span', { class: 'wb-inspector-kicker', text: 'Inspector' }),
-      el('button', {
-        class: 'icon-btn btn-mini ui-icon-only',
-        type: 'button',
-        icon: 'close',
-        iconLabel: 'Close',
-        title: 'Clear the selection and close the inspector',
-        onclick: closeInspector,
-      }),
-    ]),
+    panelHead({
+      kicker: 'Inspector',
+      grip: floatGrip('inspector'),
+      controls: [
+        panelPopOut('inspector', 'inspector'),
+        panelPopIn('inspector', 'inspector'),
+        panelButton({
+          icon: 'hide',
+          label: 'Close',
+          title: 'Clear the selection and close the inspector',
+          onclick: closeInspector,
+        }),
+      ],
+    }),
     inspectorBody,
   ]);
   /* ── the right-edge dock ────────────────────────────────────────────────
@@ -336,57 +381,529 @@ export function createWorldbuildPanel({ app, root }) {
    * closed navigator stays one press away. The dock sits over the canvas rather
    * than beside it, so panning never costs a panel's width.
    */
-  let dockChoice = null;      // 'navigator' | 'inspector', when picked by hand
-  let inspectorShown = false; // there is a selection to read
+  let inspectorShown = false;    // the inspector's card is open
+  let inspectorHadCards = false; // the open panel was reading a card
+  let inspectorMuted = false;    // shut by hand while the cards stay selected
+  let inspectorPeekTimer = 0;    // the seconds a folded inspector stays open
+  let inspectorPinned = false;   // opened by hand: the peek never folds it
   const navOpenInSettings = () => app.state.settings.worldbuild?.navigator !== false;
+  // The two cards, top to bottom, in the order the reader left their grips. An
+  // id the setting does not name keeps its declared place, so an older vault's
+  // order can never lose a panel.
+  const PANEL_IDS = ['navigator', 'inspector'];
+  const dockOrder = () => {
+    const saved = app.state.settings.worldbuild?.dockOrder;
+    const list = Array.isArray(saved) ? [...new Set(saved.filter((id) => PANEL_IDS.includes(id)))] : [];
+    for (const id of PANEL_IDS) if (!list.includes(id)) list.push(id);
+    return list;
+  };
   const navigatorDocked = () => document.body.classList.contains('nav-dock-drawer');
 
-  /**
-   * Which panel the dock is showing: the inspector whenever a selection is
-   * there to read and the map was not asked for instead, otherwise the
-   * navigator while it is docked and open.
+  /* ── the edge's panels, and where each one lives ────────────────────────
+   * The navigator and the inspector are not tabs of one dock: each has its own
+   * card on the canvas's right edge, its own fold handle and its own grip in the
+   * vertical. Either can be open at once, and either can be popped out into a
+   * card over the canvas; the one left behind keeps its rail on the edge, so a
+   * popped-out panel is always one press from home. The table below is the
+   * whole difference between the two — a third panel is one more entry.
    */
-  function panelNow() {
-    const docked = navigatorDocked();
-    if (inspectorShown && (dockChoice !== 'navigator' || !docked)) return 'inspector';
-    if (docked && navOpenInSettings() && !document.body.classList.contains('hide-canvas-navigator')) return 'navigator';
-    return null;
-  }
-
-  // The canvas's edge dock: the navigator and the inspector, one at a time,
-  // over the canvas's right edge. The rail, its tabs and their state are the
-  // shared dock's; only the sizes and the clip are the canvas's own.
-  const dockHost = el('div', { class: 'wb-dock hidden' });
-  const dock = createDock({
-    root: dockHost,
-    labels: [
-      { id: 'navigator', label: 'Navigator', title: 'Navigator — the whole canvas, with the part it is showing' },
-      { id: 'inspector', label: 'Inspector', title: 'Inspector — the selected cards, their fields and their bonds' },
-    ],
-    panels: [navigator, inspector],
+  // `data-card` is the card's own id, which the order is kept by; `data-panel`
+  // below is the dock's, naming the panel it is showing, so it comes and goes
+  // with the fold and cannot be the card's identity.
+  const navCard = el('div', { class: 'wb-dock', dataset: { card: 'navigator' } });
+  const inspectorCard = el('div', { class: 'wb-dock', dataset: { card: 'inspector' } });
+  const stack = el('div', { class: 'wb-dock-stack' }, [navCard, inspectorCard]);
+  const navDock = createDock({
+    root: navCard,
+    labels: [{ id: 'navigator', label: 'Navigator', title: 'Navigator — the whole canvas, with the part it is showing' }],
+    panels: [navigator],
     variant: 'overlay',
     railSide: 'end',
-    railLabel: 'Canvas panels',
-    onChoose: (id, showing) => {
-      if (id === 'navigator') {
-        // The map's own tab always opens the dock, never the floating card.
-        dockChoice = showing ? null : 'navigator';
-        app.updateSettings({ worldbuild: { navigator: !showing, navigatorDock: 'drawer' } });
-        syncDock();
-        if (showing) dock.tab('navigator')?.focus({ preventScroll: true });
-        else navBody.focus({ preventScroll: true });
-        return;
-      }
-      // Pressing the open inspector tab shuts the panel, exactly as its × does.
-      if (showing) {
-        closeInspector();
-        return;
-      }
-      dockChoice = 'inspector';
+    railLabel: 'Navigator',
+    onChoose: () => toggleNavigatorCard(),
+  });
+  const inspectorDock = createDock({
+    root: inspectorCard,
+    labels: [{ id: 'inspector', label: 'Inspector', title: 'Inspector — the selected cards, their fields and their bonds' }],
+    panels: [inspector],
+    variant: 'overlay',
+    railSide: 'end',
+    railLabel: 'Inspector',
+    onChoose: () => toggleInspectorCard(),
+  });
+
+  const EDGE = [
+    { id: 'navigator', label: 'Navigator', card: navCard, dock: navDock, panel: navigator, body: navBody },
+    { id: 'inspector', label: 'Inspector', card: inspectorCard, dock: inspectorDock, panel: inspector, body: inspectorBody },
+  ];
+  const panelOf = (id) => EDGE.find((entry) => entry.id === id);
+  /** `drawer` holds the edge, `float` is a card over the canvas. */
+  const placementOf = (id) => (app.state.settings.worldbuild?.[`${id}Dock`] === 'float' ? 'float' : 'drawer');
+  const floatingPanels = () => EDGE.filter((entry) => placementOf(entry.id) === 'float');
+
+  /** A floating card's head button: bring it home to the edge, open, focused. */
+  function dockPanel(id) {
+    const entry = panelOf(id);
+    if (!entry) return;
+    if (id === 'inspector') {
+      inspectorMuted = false;
+      inspectorPinned = true;
+      app.updateSettings({ worldbuild: { inspectorDock: 'drawer' } });
+      showInspector(true);
+      syncDock();
+    } else {
+      app.updateSettings({ worldbuild: { navigator: true, navigatorDock: 'drawer' } });
+      syncDock();
+    }
+    entry.body.focus({ preventScroll: true });
+  }
+
+  /** A popped-out panel's head button: send it off the edge, open, focused. */
+  function popOutPanel(id) {
+    const entry = panelOf(id);
+    if (!entry) return;
+    if (id === 'inspector') {
+      inspectorMuted = false;
+      inspectorPinned = true;
+      inspectorHadCards = false;
+      showInspector(true);
+      // One write, like the navigator's: settings are persisted whole, and two
+      // overlapping writes can land out of order.
+      app.updateSettings({ worldbuild: { inspectorDock: 'float' } });
+    } else {
+      app.updateSettings({ worldbuild: { navigator: true, navigatorDock: 'float' } });
+    }
+    syncDock();
+    entry.body.focus({ preventScroll: true });
+  }
+
+  /** The map's close button: off, and home to the edge so its rail can reopen it. */
+  function closeNavigator() {
+    app.updateSettings({ worldbuild: { navigator: false, navigatorDock: 'drawer' } });
+    // The panel goes with it, so focus returns to the tab that reopens it.
+    syncDock();
+    navDock.tab('navigator')?.focus({ preventScroll: true });
+  }
+
+  /**
+   * A panel's rail is its fold, or its way home. Popped out, a press docks it
+   * back on the edge and opens it there; on the edge, a press folds it and
+   * leaves the selection on the canvas, and the next press brings it back —
+   * with nothing selected, it says what it would read. The inspector's × still
+   * clears the selection.
+   */
+  function toggleNavigatorCard() {
+    if (!navigatorDocked()) {
+      app.updateSettings({ worldbuild: { navigator: true, navigatorDock: 'drawer' } });
+      syncDock();
+      navBody.focus({ preventScroll: true });
+      return;
+    }
+    const open = navOpenInSettings() && !document.body.classList.contains('hide-canvas-navigator');
+    app.updateSettings({ worldbuild: { navigator: !open, navigatorDock: 'drawer' } });
+    syncDock();
+    if (open) navDock.tab('navigator')?.focus({ preventScroll: true });
+    else navBody.focus({ preventScroll: true });
+  }
+
+  function toggleInspectorCard() {
+    if (placementOf('inspector') === 'float') {
+      inspectorMuted = false;
+      inspectorPinned = true;
+      app.updateSettings({ worldbuild: { inspectorDock: 'drawer' } });
+      showInspector(true);
       syncDock();
       inspectorBody.focus({ preventScroll: true });
-    },
-  });
+      return;
+    }
+    if (inspectorShown) {
+      inspectorMuted = true;
+      showInspector(false);
+      inspectorDock.tab('inspector')?.focus({ preventScroll: true });
+      return;
+    }
+    inspectorMuted = false;
+    // A fresh open, by hand: it stays until the reader folds it.
+    inspectorPinned = true;
+    inspectorHadCards = false;
+    showInspector(true);
+    renderInspector();
+    inspectorBody.focus({ preventScroll: true });
+  }
+
+  /* ── where each card sits on the edge ───────────────────────────────────
+   * A card's place is a fraction of the edge's height, so it keeps its spot
+   * when the window changes: 0 is the top, 1 the bottom. Until a grip is
+   * dragged, the two keep the centred pair they have always been. After that
+   * each stays where it was left, and the layout moves them apart only when a
+   * panel's own height would close the gap between them.
+   */
+  const EDGE_GAP = 12;   // clear space above and below a card
+  const CARD_GAP = 10;   // and between the two
+  // A capped inspector keeps its head and a couple of rows before it scrolls.
+  const INSPECTOR_MIN = 140;
+  const clampTo = (value, min, max) => Math.max(min, Math.min(max, value));
+
+  /** The cards' saved fractions, or null while neither grip has been dragged. */
+  const savedSlides = () => {
+    const slides = app.state.settings.worldbuild?.dockSlides;
+    if (!slides || typeof slides !== 'object') return null;
+    const out = {};
+    for (const { id } of EDGE) {
+      const value = slides[id];
+      if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+      out[id] = value;
+    }
+    return out;
+  };
+
+  const topLimit = (card) => Math.max(EDGE_GAP, stack.clientHeight - card.offsetHeight - EDGE_GAP);
+
+  function placeCard(card, top) {
+    card.style.setProperty('--wb-top', `${Math.round(clampTo(top, EDGE_GAP, topLimit(card)))}px`);
+  }
+
+  /**
+   * Lay wanted tops out top to bottom, a card's height and a gap apart, inside
+   * the edge: wherever one lands the next starts below it, so no two cards can
+   * overlap. A run taller than the edge moves up until it starts at the top.
+   */
+  function stackTops(items, height) {
+    items.sort((a, b) => a.want - b.want);
+    let cursor = EDGE_GAP;
+    for (const item of items) {
+      item.top = Math.max(item.want, cursor);
+      cursor = item.top + item.height + CARD_GAP;
+    }
+    const overflow = cursor - CARD_GAP - (height - EDGE_GAP);
+    if (overflow > 0) for (const item of items) item.top -= overflow;
+    if (items.some((item) => item.top < EDGE_GAP)) {
+      let top = EDGE_GAP;
+      for (const item of items) {
+        item.top = top;
+        top += item.height + CARD_GAP;
+      }
+    }
+    for (const item of items) item.top = clampTo(item.top, EDGE_GAP, Math.max(EDGE_GAP, height - item.height - EDGE_GAP));
+    return items;
+  }
+
+  /**
+   * The inspector gives way. When the two edge cards cannot both sit on the
+   * edge, its card is capped to the room the navigator leaves and its own
+   * content scrolls inside it, so the pair never lies over each other. A card
+   * that fits keeps its natural height, and the cap is dropped as soon as the
+   * edge has room again.
+   */
+  function fitInspector(height) {
+    const entry = panelOf('inspector');
+    if (!entry || !height) return;
+    entry.card.style.removeProperty('max-height');
+    const other = EDGE.find((panel) => panel.id !== 'inspector');
+    const room = height - EDGE_GAP * 2 - CARD_GAP - (other ? other.card.offsetHeight : 0);
+    if (entry.card.offsetHeight > room) {
+      entry.card.style.maxHeight = `${Math.max(INSPECTOR_MIN, Math.round(room))}px`;
+    }
+  }
+
+  /** Put the cards where they were left — or, never moved, as one centred pair. */
+  function layoutCards() {
+    const height = stack.clientHeight;
+    if (!height || EDGE.some(({ card }) => card.classList.contains('is-moving'))) return;
+    fitInspector(height);
+    const cards = dockOrder()
+      .map((id) => panelOf(id))
+      .filter(Boolean)
+      .map((entry) => ({ card: entry.card, height: entry.card.offsetHeight, want: 0 }));
+    const saved = savedSlides();
+    if (!saved) {
+      const total = cards.reduce((sum, item) => sum + item.height, 0) + CARD_GAP * (cards.length - 1);
+      let top = (height - total) / 2;
+      for (const item of cards) {
+        placeCard(item.card, top);
+        top += item.height + CARD_GAP;
+      }
+      return;
+    }
+    for (const item of cards) item.want = saved[item.card.dataset.card] * height;
+    stackTops(cards, height);
+    for (const item of cards) placeCard(item.card, item.top);
+  }
+
+  /**
+   * Each card's grip: it drags that card to any height along the edge, open or
+   * folded. One card cannot cover another, so the layout slides the cards below
+   * it farther down as it comes, and a card dragged past another's place simply
+   * changes places with it; every card's place is kept in `worldbuild.dockSlides`.
+   */
+  function mountGrip(entry) {
+    const { card, dock, label } = entry;
+    const grip = el('div', {
+      class: 'wb-dock-grip',
+      role: 'button',
+      tabindex: '0',
+      'aria-label': `Move the ${label} panel`,
+      title: `Drag the ${label} to any height on the edge`,
+    }, [el('span', { class: 'wb-dock-grip-mark', 'aria-hidden': 'true', text: '⠿' })]);
+    dock.rail.prepend(grip);
+    let drag = null;
+
+    /** Slide this card to a client height, laying the run out around it. */
+    function slideTo(clientTop) {
+      const height = stack.clientHeight;
+      if (!height) return;
+      const wanted = clientTop - stack.getBoundingClientRect().top;
+      fitInspector(height);
+      const items = EDGE.map((panel) => ({
+        card: panel.card,
+        height: panel.card.offsetHeight,
+        want: panel.card.offsetTop,
+      }));
+      const mine = items.find((item) => item.card === card);
+      mine.want = clampTo(wanted, EDGE_GAP, Math.max(EDGE_GAP, height - card.offsetHeight - EDGE_GAP));
+      stackTops(items, height);
+      for (const item of items) placeCard(item.card, item.top);
+    }
+
+    function saveSlides() {
+      const height = stack.clientHeight || 1;
+      const slides = {};
+      for (const panel of EDGE) slides[panel.id] = Math.round((panel.card.offsetTop / height) * 10000) / 10000;
+      app.updateSettings({ worldbuild: { dockSlides: slides } });
+    }
+
+    grip.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      grip.focus({ preventScroll: true });
+      layoutCards();
+      drag = { id: event.pointerId, grab: event.clientY - stack.getBoundingClientRect().top - card.offsetTop };
+      // Capture trails the pointer; a browser that refuses it still gets the
+      // grip's own moves, so the drag must not be abandoned.
+      try { grip.setPointerCapture?.(event.pointerId); } catch { /* its own listeners follow */ }
+      card.classList.add('is-moving');
+      document.body.classList.add('resizing');
+    });
+    grip.addEventListener('pointermove', (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      slideTo(event.clientY - drag.grab);
+    });
+    const end = () => {
+      if (!drag) return;
+      drag = null;
+      card.classList.remove('is-moving');
+      document.body.classList.remove('resizing');
+      saveSlides();
+    };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+    window.addEventListener('mouseup', end);
+    // The same slide from the keyboard, with ArrowUp/ArrowDown.
+    grip.addEventListener('keydown', (event) => {
+      const step = event.shiftKey ? 48 : 16;
+      const delta = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+      if (!delta) return;
+      event.preventDefault();
+      event.stopPropagation();
+      layoutCards();
+      slideTo(stack.getBoundingClientRect().top + card.offsetTop + delta);
+      saveSlides();
+    });
+  }
+  for (const entry of EDGE) mountGrip(entry);
+
+  /* ── the floating card's place ──────────────────────────────────────────
+   * A popped-out panel is a card over the canvas, and its head carries a grip:
+   * drag it anywhere inside the canvas, or nudge it with the arrow keys. The
+   * place is kept as fractions of the room the card has to move in, so the
+   * window keeps it where it was left, and an untouched card keeps its own
+   * corner — the navigator's bottom right, the inspector's top left.
+   */
+  const FLOAT_EDGE = 12;
+
+  /**
+   * The nearest way out of the other floating card's way: a card that would lie
+   * over its neighbour slides along it instead, by whichever side is closest
+   * while staying on the canvas. With two cards on a short window there may be
+   * no clear place; then the card keeps the place it was given.
+   */
+  function keepClear(id, left, top, width, height) {
+    const other = floatingPanels().find((entry) => entry.id !== id && !entry.panel.classList.contains('hidden'));
+    if (!other) return { left, top };
+    const stageBox = stage.getBoundingClientRect();
+    const box = other.panel.getBoundingClientRect();
+    const o = {
+      left: box.left - stageBox.left,
+      top: box.top - stageBox.top,
+      right: box.right - stageBox.left,
+      bottom: box.bottom - stageBox.top,
+    };
+    if (left >= o.right || left + width <= o.left || top >= o.bottom || top + height <= o.top) return { left, top };
+    const maxLeft = Math.max(FLOAT_EDGE, stage.clientWidth - width - FLOAT_EDGE);
+    const maxTop = Math.max(FLOAT_EDGE, stage.clientHeight - height - FLOAT_EDGE);
+    const ways = [
+      { left: o.left - width, top, d: Math.abs(left - (o.left - width)) },
+      { left: o.right, top, d: Math.abs(left - o.right) },
+      { left, top: o.top - height, d: Math.abs(top - (o.top - height)) },
+      { left, top: o.bottom, d: Math.abs(top - o.bottom) },
+    ].filter((way) => way.left >= FLOAT_EDGE && way.top >= FLOAT_EDGE && way.left <= maxLeft && way.top <= maxTop);
+    if (!ways.length) return { left, top };
+    ways.sort((a, b) => a.d - b.d);
+    return { left: Math.round(ways[0].left), top: Math.round(ways[0].top) };
+  }
+
+  /** Where a popped-out card sits, from its saved fractions or its corner. */
+  function placeFloat(id, clear = true) {
+    const entry = panelOf(id);
+    if (!entry || entry.panel.classList.contains('hidden') || entry.panel.classList.contains('is-moving')) return;
+    if (!stage.clientWidth || !stage.clientHeight) return;
+    const saved = app.state.settings.worldbuild?.floatPlaces?.[id];
+    const travelX = Math.max(1, stage.clientWidth - entry.panel.offsetWidth - FLOAT_EDGE * 2);
+    const travelY = Math.max(1, stage.clientHeight - entry.panel.offsetHeight - FLOAT_EDGE * 2);
+    // Its own corner unless it has been dragged: the map takes the bottom
+    // right, where it has always floated, and the inspector the top left — the
+    // corner the map's drawer leaves free.
+    const fx = saved ? clampTo(Number(saved.x) || 0, 0, 1) : (id === 'inspector' ? 0 : 1);
+    const fy = saved ? clampTo(Number(saved.y) || 0, 0, 1) : (id === 'inspector' ? 0 : 1);
+    const left = Math.round(FLOAT_EDGE + fx * travelX);
+    const top = Math.round(FLOAT_EDGE + fy * travelY);
+    const spot = clear
+      ? keepClear(id, left, top, entry.panel.offsetWidth, entry.panel.offsetHeight)
+      : { left, top };
+    entry.panel.style.left = `${spot.left}px`;
+    entry.panel.style.top = `${spot.top}px`;
+    entry.panel.classList.add('is-placed');
+  }
+
+  /**
+   * Place every floating card. All of them first take their own saved spot, then
+   * the later ones give way to the earlier ones in a single pass: resolving one
+   * at a time against a neighbour that still moves would leave the pair to
+   * chase each other on every resize.
+   */
+  function placeFloats() {
+    const cards = floatingPanels();
+    for (const entry of cards) placeFloat(entry.id, false);
+    for (const entry of cards.slice(1)) placeFloat(entry.id, true);
+  }
+
+  /** The grip a floating card carries: drag it, or move it with the arrows. */
+  function floatGrip(id) {
+    const grip = el('span', {
+      class: 'wb-float-grip',
+      role: 'button',
+      tabindex: '0',
+      'aria-label': `Move the floating ${id} card`,
+      title: 'Drag the card anywhere on the canvas, or press the arrow keys',
+      text: '⠿',
+    });
+    let drag = null;
+    const node = () => panelOf(id)?.panel;
+
+    function moveTo(card, left, top) {
+      if (!card) return;
+      const maxLeft = Math.max(FLOAT_EDGE, stage.clientWidth - card.offsetWidth - FLOAT_EDGE);
+      const maxTop = Math.max(FLOAT_EDGE, stage.clientHeight - card.offsetHeight - FLOAT_EDGE);
+      const spot = keepClear(
+        id,
+        Math.round(clampTo(left, FLOAT_EDGE, maxLeft)),
+        Math.round(clampTo(top, FLOAT_EDGE, maxTop)),
+        card.offsetWidth,
+        card.offsetHeight,
+      );
+      card.style.left = `${spot.left}px`;
+      card.style.top = `${spot.top}px`;
+      card.classList.add('is-placed');
+    }
+
+    /**
+     * Keep the card's place — but only for a card that is really this floating
+     * panel, still on the page and on screen, and only when the caller knows it
+     * was just moved. A place is written by a drag or an arrow-key nudge and by
+     * nothing else: a press that never moved, or one whose panel has since been
+     * rebuilt or docked, must not spend the reader's saved place on whatever
+     * pixels the old card happened to carry.
+     */
+    function savePlace(card) {
+      if (!card || !card.isConnected || card.classList.contains('hidden')) return;
+      if (panelOf(id)?.panel !== card || placementOf(id) !== 'float') return;
+      const box = card.getBoundingClientRect();
+      const stageBox = stage.getBoundingClientRect();
+      const travelX = Math.max(1, stage.clientWidth - card.offsetWidth - FLOAT_EDGE * 2);
+      const travelY = Math.max(1, stage.clientHeight - card.offsetHeight - FLOAT_EDGE * 2);
+      const share = (px, travel) => Math.round(clampTo((px - FLOAT_EDGE) / travel, 0, 1) * 10000) / 10000;
+      app.updateSettings({
+        worldbuild: {
+          floatPlaces: {
+            [id]: {
+              x: share(box.left - stageBox.left, travelX),
+              y: share(box.top - stageBox.top, travelY),
+            },
+          },
+        },
+      });
+    }
+
+    grip.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      grip.focus({ preventScroll: true });
+      const card = node();
+      if (!card) return;
+      const box = card.getBoundingClientRect();
+      drag = {
+        id: event.pointerId,
+        card,
+        startX: event.clientX,
+        startY: event.clientY,
+        dx: event.clientX - box.left,
+        dy: event.clientY - box.top,
+        moved: false,
+      };
+      // Capture trails the pointer; a browser that refuses it still gets the
+      // grip's own moves, so the drag must not be abandoned.
+      try { grip.setPointerCapture?.(event.pointerId); } catch { /* its own listeners follow */ }
+      card.classList.add('is-moving');
+      document.body.classList.add('resizing');
+    });
+    grip.addEventListener('pointermove', (event) => {
+      if (!drag || drag.id !== event.pointerId) return;
+      // A press that never left its starting pixel is a click, not a drag: let
+      // the jitter of a shaky hand pass without moving or saving anything.
+      if (!drag.moved && Math.abs(event.clientX - drag.startX) < 2 && Math.abs(event.clientY - drag.startY) < 2) return;
+      drag.moved = true;
+      const box = stage.getBoundingClientRect();
+      moveTo(drag.card, event.clientX - box.left - drag.dx, event.clientY - box.top - drag.dy);
+    });
+    const end = () => {
+      if (!drag) return;
+      const { card, moved } = drag;
+      drag = null;
+      card.classList.remove('is-moving');
+      document.body.classList.remove('resizing');
+      if (moved) savePlace(card);
+    };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+    window.addEventListener('mouseup', end);
+    grip.addEventListener('keydown', (event) => {
+      const step = event.shiftKey ? 48 : 16;
+      const delta = {
+        ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step],
+      }[event.key];
+      if (!delta) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const card = node();
+      if (!card) return;
+      const left = card.offsetLeft;
+      const top = card.offsetTop;
+      moveTo(card, left + delta[0], top + delta[1]);
+      // At the canvas's edge an arrow has nowhere to go; that is not a move.
+      if (card.offsetLeft !== left || card.offsetTop !== top) savePlace(card);
+    });
+    return grip;
+  }
 
   /* ── the drawer's width ─────────────────────────────────────────────────
    * The drawer is dragged by the grip on its inner edge and the width is
@@ -405,7 +922,7 @@ export function createWorldbuildPanel({ app, root }) {
   function applyNavWidth(px) {
     const cap = Math.min(NAV_WIDTH_MAX, Math.max(NAV_WIDTH_MIN, Math.round(window.innerWidth * 0.6)));
     const width = Math.max(NAV_WIDTH_MIN, Math.min(cap, Math.round(px)));
-    dockHost.style.setProperty('--wb-nav-w', `${width}px`);
+    navCard.style.setProperty('--wb-nav-w', `${width}px`);
     navGrip.setAttribute('aria-valuenow', String(width));
     navGrip.setAttribute('aria-valuemax', String(cap));
     return width;
@@ -438,7 +955,10 @@ export function createWorldbuildPanel({ app, root }) {
   window.addEventListener('mouseup', endNavResize);
   // The ceiling follows the window, so a resize re-reads both the vault's width
   // and the room this window has for it.
-  window.addEventListener('resize', () => applyNavWidth(navWidth()));
+  window.addEventListener('resize', () => {
+    applyNavWidth(navWidth());
+    placeFloats();
+  });
   // The same width from the keyboard, for a grip that cannot be dragged.
   navGrip.addEventListener('keydown', (event) => {
     const step = event.shiftKey ? 48 : 16;
@@ -450,42 +970,72 @@ export function createWorldbuildPanel({ app, root }) {
   });
   applyNavWidth(navWidth());
 
-  // Whether the map was open when the dock last settled: turning it on is an
-  // ask for the map, so it shows rather than sitting under the inspector.
-  let navWasOpen = false;
-
-  /** Put the dock in the state `panelNow` names, and the navigator in its home. */
-  function syncDock() {
-    // The width lives in this vault's settings, which finish loading after the
-    // canvas is built: the dock re-reads it whenever the layout settles.
-    applyNavWidth(navWidth());
-    const mapOpen = navigatorDocked() && navOpenInSettings();
-    if (mapOpen && !navWasOpen) dockChoice = 'navigator';
-    navWasOpen = mapOpen;
-    const panel = panelNow();
-    const docked = navigatorDocked();
-    // One element, two homes: a panel in the dock, a card over the canvas when
-    // it floats. Moving it keeps the map, its camera and its listeners.
-    if (navigator.parentElement !== (docked ? dock.slot : stage)) {
-      if (docked) dock.slot.insertBefore(navigator, inspector);
-      else stage.append(navigator);
+  /** Put one panel in its home: the slot on the edge, or a card on the stage. */
+  function syncPanel(id, open) {
+    const entry = panelOf(id);
+    if (!entry) return;
+    const floating = placementOf(id) === 'float';
+    // One element, two homes: moving it keeps the map, its camera, its content
+    // and its listeners.
+    const home = floating ? stage : entry.dock.slot;
+    if (entry.panel.parentElement !== home) home.append(entry.panel);
+    entry.panel.classList.toggle('hidden', !open);
+    // A floating panel keeps its rail at the rail's own width: opening the card
+    // out on the stage must not swing an empty drawer open over it.
+    entry.dock.show(floating ? null : (open ? id : null));
+    // A docked panel is placed by the edge, not the stage: drop the floating
+    // card's offsets or they would push the panel down inside its own slot.
+    if (!floating) {
+      entry.panel.classList.remove('is-placed');
+      entry.panel.style.removeProperty('left');
+      entry.panel.style.removeProperty('top');
     }
-    navigator.classList.toggle('hidden', docked ? panel !== 'navigator' : false);
-    inspector.classList.toggle('hidden', panel !== 'inspector');
-    // A floating map stays clear of the panel on the right edge: the dock takes
-    // the corner the card would otherwise sit in.
-    stage.classList.toggle('is-inspector-edge', panel === 'inspector');
-    // The rail's navigator tab is how a closed navigator comes back, so it only
-    // goes away when the map floats instead; the inspector's tab exists only
-    // while there is a selection to read.
-    dock.tab('navigator')?.classList.toggle('hidden', !docked);
-    dock.tab('inspector')?.classList.toggle('hidden', !inspectorShown);
-    dock.show(panel);
-    // Floating, the rail has nothing to offer until a card is selected.
-    dockHost.classList.toggle('hidden', !docked && !inspectorShown);
+    // Popped out, the panel is its own card but its grip stays on the edge:
+    // one press brings it home, and it can still be moved along the vertical.
+    entry.card.classList.toggle('is-floating', floating);
+    const tab = entry.dock.tab(id);
+    if (tab) {
+      tab.title = floating
+        ? `Bring the popped-out ${id} back to the edge`
+        : (open ? `Fold the ${id} to its grip` : `Open the ${id}`);
+    }
   }
 
-  const workbench = el('div', { class: 'wb-workbench' }, [stage, dockHost]);
+  /** Put every panel in its state and its place, and the cards in their order. */
+  function syncDock() {
+    // The width, the order and the places live in this vault's settings, which
+    // finish loading after the canvas is built: re-read them whenever the
+    // layout settles.
+    applyNavWidth(navWidth());
+    const ordered = dockOrder().map((id) => panelOf(id)).filter(Boolean);
+    if (ordered.some((entry, index) => stack.children[index] !== entry.card)) {
+      for (const entry of ordered) stack.append(entry.card);
+    }
+    // The map is open wherever it lives, unless the setting or the harness says
+    // otherwise; a floating one used to ignore its switch entirely.
+    const mapOpen = navOpenInSettings() && !document.body.classList.contains('hide-canvas-navigator');
+    syncPanel('navigator', mapOpen);
+    syncPanel('inspector', inspectorShown);
+    stage.classList.toggle('is-two-floats', floatingPanels().length > 1);
+    // A floating map stays clear of a panel that holds the edge: the inspector
+    // takes the corner the card would otherwise sit in.
+    stage.classList.toggle('is-inspector-edge', inspectorShown && placementOf('inspector') === 'drawer');
+    layoutCards();
+    placeFloats();
+  }
+
+  const workbench = el('div', { class: 'wb-workbench' }, [stage, stack]);
+  // A card changes height when its panel folds open, when the inspector's
+  // content grows or shrinks, and when the window changes the edge's height;
+  // each re-places the run — and a floating card's corner — without disturbing
+  // anything being dragged.
+  const cardSizer = new ResizeObserver(() => {
+    layoutCards();
+    placeFloats();
+  });
+  cardSizer.observe(navCard);
+  cardSizer.observe(inspectorCard);
+  cardSizer.observe(stack);
   // Docking is chrome, not canvas state: where a panel sits takes effect at
   // once, with no rebuild of the vein. The open state lives on <body>
   // (applyLayout), so the panel watches it rather than every caller having to
@@ -5991,6 +6541,8 @@ export function createWorldbuildPanel({ app, root }) {
   function closeInspector() {
     const anchor = [...selected][0] ?? null;
     setSelection([]);
+    inspectorMuted = true;
+    showInspector(false);
     const index = anchor && model ? model.notes.findIndex((note) => note.anchor === anchor) : -1;
     if (index >= 0) cardEls[index]?.focus();
   }
@@ -6144,8 +6696,8 @@ export function createWorldbuildPanel({ app, root }) {
     ]);
   }
 
-  function inspectorEmpty(text) {
-    return el('p', { class: 'wb-inspector-empty', text });
+  function inspectorEmpty(text, modifier = '') {
+    return el('p', { class: `wb-inspector-empty${modifier ? ` ${modifier}` : ''}`, text });
   }
 
   /*
@@ -6155,24 +6707,91 @@ export function createWorldbuildPanel({ app, root }) {
    * the splitter.
    */
   function showInspector(open) {
+    // Any fold ends a running peek, and a panel closed by hand or by its own
+    // clock is no longer held open by the reader.
+    if (!open) {
+      clearPeekTimer();
+      inspectorPinned = false;
+    }
     if (inspectorShown === open) return;
     inspectorShown = open;
     syncDock();
   }
 
+  function clearPeekTimer() {
+    inspector.classList.remove('is-peeking');
+    if (!inspectorPeekTimer) return;
+    clearTimeout(inspectorPeekTimer);
+    inspectorPeekTimer = 0;
+  }
+
+  /** The seconds a peek lasts, as Settings names them, or the seven it started with. */
+  function peekSeconds() {
+    const saved = Number(app.state.settings.worldbuild?.inspectorPeek);
+    return Number.isFinite(saved) ? clampTo(saved, 0, 120) : 7;
+  }
+
+  /**
+   * The peek's clock, from now: whatever it was counting is forgotten. The
+   * head's hairline burns down with it, so the fold never comes unannounced.
+   */
+  function startPeekClock() {
+    const seconds = peekSeconds();
+    clearPeekTimer();
+    inspector.style.setProperty('--wb-peek', `${seconds}s`);
+    if (!seconds) return; // 0 keeps it open until it is folded by hand
+    // Reading the box between removing and re-adding the mark restarts the
+    // burn from full; the class alone would keep the old progress.
+    void inspector.offsetWidth;
+    inspector.classList.add('is-peeking');
+    inspectorPeekTimer = setTimeout(() => {
+      inspectorPeekTimer = 0;
+      if (inspectorPinned) return;
+      // Folded by its own clock: a later render must not open it again. Only a
+      // fresh selection (which clears the mute) or the reader's own press will.
+      inspectorMuted = true;
+      showInspector(false);
+    }, seconds * 1000);
+  }
+
+  /**
+   * A card arriving asks for the inspector. Held open by the reader, it simply
+   * follows the selection; folded into its tab, it opens for the seconds
+   * Settings names and then folds itself back, so a glance at a card never
+   * leaves the panel standing over the canvas.
+   */
+  function peekInspector() {
+    if (inspectorPinned || inspectorShown) return;
+    showInspector(true);
+    startPeekClock();
+  }
+
+  /**
+   * A new card during a peek gets the whole time again — the clock belongs to
+   * the card the panel is showing, not to the one that happened to open it. A
+   * panel the reader opened has no clock, so this leaves it alone.
+   */
+  function restartPeekClock() {
+    if (inspectorPinned || !inspectorShown || !inspectorPeekTimer) return;
+    startPeekClock();
+  }
+
   function renderInspector() {
-    if (!model || !selected.size) {
-      showInspector(false);
-      clear(inspectorBody);
-      return;
-    }
-    const notes = model.notes ?? [];
-    const picked = notes.filter((note) => selected.has(note.anchor));
+    const notes = model?.notes ?? [];
+    const picked = selected.size ? notes.filter((note) => selected.has(note.anchor)) : [];
     if (!picked.length) {
-      showInspector(false);
       clear(inspectorBody);
+      // A panel that was reading a card folds back with it; one the reader
+      // opened from its tab stays open and says what would fill it.
+      if (inspectorHadCards) {
+        inspectorHadCards = false;
+        showInspector(false);
+      } else if (inspectorShown) {
+        inspectorBody.append(inspectorEmpty('Nothing selected — click a card to read its fields, its bonds and its group here.', 'wb-inspector-empty--panel'));
+      }
       return;
     }
+    inspectorHadCards = true;
     clear(inspectorBody);
 
     if (picked.length > 1) {
@@ -6224,7 +6843,7 @@ export function createWorldbuildPanel({ app, root }) {
         connectionsSection(),
         actions,
       );
-      showInspector(true);
+      if (!inspectorMuted) peekInspector();
       return;
     }
 
@@ -6305,7 +6924,7 @@ export function createWorldbuildPanel({ app, root }) {
     pieces.push(connectionsSection(outgoing, incoming));
 
     inspectorBody.append(...pieces);
-    showInspector(true);
+    if (!inspectorMuted) peekInspector();
   }
 
   /** Toggle the canvas search bar. */
@@ -6488,11 +7107,14 @@ export function createWorldbuildPanel({ app, root }) {
   function setSelection(anchors) {
     const live = new Set((model?.notes ?? []).map((note) => note.anchor));
     const next = new Set([...(anchors ?? [])].filter((anchor) => live.has(anchor)));
+    const changed = next.size !== selected.size || [...next].some((anchor) => !selected.has(anchor));
     // A new selection asks for the inspector, so a reader who was looking at
-    // the map gets handed back the panel that follows the cards.
-    if (next.size !== selected.size || [...next].some((anchor) => !selected.has(anchor))) dockChoice = null;
+    // the map gets the panel that follows the cards back.
+    if (changed) inspectorMuted = false;
     selected = next;
     syncSelectionUi();
+    // The panel may have opened for this card; a peek then counts from here.
+    if (changed) restartPeekClock();
     announceSelection();
     // `showInspector` only syncs when the flag itself changes, so hand the dock
     // the reset explicitly: a reader who was on the map gets the inspector back

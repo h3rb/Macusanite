@@ -169,14 +169,6 @@ export function createSettingsDialog({ app }) {
             field('Button icons', checkbox(settings.icons !== false, (v) => app.updateSettings({ icons: v })), 'Show a small symbol or emoji beside button labels. Off leaves plain text buttons.'),
             field('Autosave', checkbox(settings.autosave, (v) => app.updateSettings({ autosave: v })), 'Save the open vein shortly after you stop typing.'),
             field('Tutorial notes', checkbox(settings.tutorials !== false, (v) => app.updateSettings({ tutorials: v })), 'The one-time object-map note on the canvas, the search tip and the editor’s shortcut hint. Off keeps teaching notes out of the way without forgetting which ones were closed; Help has the same story either way.'),
-            field('Reset tutorials', el('button', {
-              class: 'btn btn-ghost btn-mini',
-              type: 'button',
-              icon: 'reset',
-              text: 'Reset tutorials',
-              title: 'Forget every closed teaching note on this computer and switch Tutorial notes back on',
-              onclick: resetTutorials,
-            }), 'Every note that was closed with its own button comes back where it belongs — the object-map note, the search tip and the editor’s shortcut hint — in every vault, because one dismissal covers them all.'),
           ]),
         ]),
 
@@ -200,7 +192,8 @@ export function createSettingsDialog({ app }) {
 
         el('section', { class: 'settings-section' }, [
           el('h3', { text: 'Worldbuilding' }),
-          el('div', { class: 'settings-grid' }, [
+          // Pairs, not a run of three: the panel settings read best side by side.
+          el('div', { class: 'settings-grid settings-grid--two' }, [
             field('Card height', el('select', {
               class: 'md-input',
               onchange: (event) => app.updateSettings({ worldbuild: { cardSize: event.target.value } }),
@@ -215,7 +208,22 @@ export function createSettingsDialog({ app }) {
             }, [
               el('option', { value: 'drawer', text: 'Docked — a drawer on the canvas’s right edge', selected: settings.worldbuild?.navigatorDock === 'drawer' ? '' : null }),
               el('option', { value: 'float', text: 'Floating — a card over the canvas’s corner', selected: settings.worldbuild?.navigatorDock !== 'drawer' ? '' : null }),
-            ]), 'Docked, the map shares the canvas’s right edge with the inspector: one panel shows at a time behind their tabs, and the drawer’s width is dragged from its inner edge and kept with the vault. Floating, it is a card that keeps its own corner.'),
+            ]), 'Docked, the map is one of two panels on the canvas’s right edge, each with its own grip and fold; either can be open at once, and each grip drags its panel to any height along that edge, the two keeping clear of each other. The drawer’s width is dragged from its inner edge and kept with the vault. Floating, it is a card you can drag anywhere over the canvas, and **Pop in** on that card — or its rail, left on the edge — brings it back. Every one of those places is kept with the vault.'),
+            field('Inspector placement', el('select', {
+              class: 'md-input',
+              onchange: (event) => app.updateSettings({ worldbuild: { inspectorDock: event.target.value } }),
+            }, [
+              el('option', { value: 'drawer', text: 'Docked — a panel on the canvas’s right edge', selected: settings.worldbuild?.inspectorDock !== 'float' ? '' : null }),
+              el('option', { value: 'float', text: 'Floating — a card over the canvas', selected: settings.worldbuild?.inspectorDock === 'float' ? '' : null }),
+            ]), 'Docked, the inspector is the second card on the canvas’s right edge, with its own grip and fold; floating, it is a card you can drag anywhere, and the **›** in its head — or its rail on the edge — brings it back. Its place is kept with the vault whether it is docked or floating.'),
+            field('Inspector peek', numberInput(settings.worldbuild?.inspectorPeek ?? 7, { min: 0, max: 120, onchange: (v) => app.updateSettings({ worldbuild: { inspectorPeek: v } }) }), 'Seconds a folded inspector stays open when a selection changes what it would show, then it folds itself away. 0 keeps it open until you fold it. Opening the inspector by hand keeps it open.'),
+            field('Panel places', el('button', {
+              class: 'btn btn-ghost btn-mini',
+              type: 'button',
+              text: 'Centre the panels',
+              title: 'Put the navigator and inspector back in the middle of the canvas’s right edge',
+              onclick: () => app.resetPanelPlaces(),
+            }), 'Each grip drags its panel anywhere along the edge; this puts both back as the centred pair a fresh vault starts with. A floating card keeps the place it was dragged to.'),
             field('Tablet gestures', checkbox(settings.worldbuild?.touch === true, (v) => app.updateSettings({ worldbuild: { touch: v } })), 'Long-press a card or group to forge a relationship from it, larger rings and grips to aim at, and two-finger pinch and pan on the canvas. Off for a mouse, which keeps drag-to-forge and the wheel.'),
           ]),
         ]),
@@ -231,6 +239,20 @@ export function createSettingsDialog({ app }) {
             field('Tags', checkbox(settings.graph.showTags, (v) => app.setGraphOption('showTags', v))),
             field('Unwritten pages', checkbox(settings.graph.showUnresolved, (v) => app.setGraphOption('showUnresolved', v))),
             field('Vault context', checkbox(settings.graph.showContext, (v) => app.setGraphOption('showContext', v))),
+          ]),
+        ]),
+
+        el('section', { class: 'settings-section' }, [
+          el('h3', { text: 'Help and Guidance' }),
+          el('div', { class: 'settings-grid' }, [
+            field('Reset tutorials', el('button', {
+              class: 'btn btn-ghost btn-mini',
+              type: 'button',
+              icon: 'reset',
+              text: 'Reset tutorials',
+              title: 'Forget every closed teaching note on this computer and switch Tutorial notes back on',
+              onclick: resetTutorials,
+            }), 'Every note that was closed with its own button comes back where it belongs — the object-map note, the search tip and the editor’s shortcut hint — in every vault, because one dismissal covers them all.'),
           ]),
         ]),
 

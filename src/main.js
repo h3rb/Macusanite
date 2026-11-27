@@ -13,7 +13,7 @@ import { NavHistory } from './lib/history.js';
 import { LIVE_META, isWatched, isLiveMeta, metaChanges, metaPlan, planRefresh, currentOutcome, describeRefresh, describeMeta, staleBodies } from './lib/watch.js';
 import { mergeVein, hasMergeMarkers, countConflicts, describeMerge } from './lib/merge.js';
 import { tokenize, plainText, buildSearchCorpus, searchVault } from './lib/search.js';
-import { mergeSettings, mergeVaultMeta, rememberColor, DEFAULT_SETTINGS } from './lib/settings.js';
+import { mergeSettings, mergeVaultMeta, rememberColor, resetDockSlides, DEFAULT_SETTINGS } from './lib/settings.js';
 import {
   REGISTRY_FILE, parseRegistry, serializeRegistry,
   rememberVault as rememberKnownVault, knownVaults as selectKnownVaults,
@@ -2274,6 +2274,19 @@ const app = {
     await app.persistColors('reset all colours');
     await rerenderCurrent();
     app.toast('All colour assignments cleared', 'ok');
+  },
+
+  /**
+   * Put the canvas's two edge panels back in their centred pair. A settings
+   * patch cannot write null — the value that means “never moved” — so the
+   * places are replaced and the canvas rebuilt around them.
+   */
+  async resetPanelPlaces() {
+    state.settings = resetDockSlides(state.settings);
+    applyLayout();
+    await app.persistSettings({ record: false });
+    await rerenderCurrent();
+    app.toast('Panels centred on the edge', 'ok');
   },
 
   setDefaultColor(slot, hex, options = {}) {

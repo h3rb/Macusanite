@@ -4,22 +4,24 @@
  *
  * Three panes had grown their own version of this. The vault sidebar and the
  * concept graph fold their whole grid column to a single tab, and the canvas
- * keeps a rail of two tabs — Navigator and Inspector — over its right edge.
- * The tab's shape, its rotated label, the hover and focus states, the pressed
- * state, the arrow-key walk and the "which panel is showing" bookkeeping were
- * written once per pane; they live here now.
+ * keeps a rail of one panel per card — Navigator and Inspector are separate
+ * cards, each with its own rail and grip. The tab's shape, its rotated label,
+ * the hover and focus states, the pressed state, the arrow-key walk and the
+ * "which panel is showing" bookkeeping were written once per pane; they live
+ * here now.
  *
  * The host keeps the decisions — its setting, its selection, where the pane
  * sits and how wide it is — and calls `show()`. The dock keeps the rail, the
  * slot and the state, and reports a press through `onChoose` so the host can
  * change what it owns (a setting, a selected panel) and call `show()` again.
+ * A host that wants a grip above the tabs mounts one in `rail`.
  *
  * Variants:
  *   - `column`: the pane is a grid column that gives up its width when folded
  *     (the sidebar and the graph), so the rail is the whole of the pane and the
  *     slot is simply not displayed.
  *   - `overlay`: the pane floats over the canvas and the rail must stay on the
- *     edge (the canvas dock), so the host sizes the pane and clips the slot.
+ *     edge (the canvas cards), so the host sizes the pane and clips the slot.
  */
 import { el } from './dom.js';
 
@@ -135,6 +137,8 @@ export function createDock({
     el: dockEl,
     /** The box the panels live in: a host may move one out and back. */
     slot,
+    /** The rail itself, for a host that mounts a grip above the tabs. */
+    rail,
     show,
     /** The tab button for a panel, so a host can hand focus back to it. */
     tab: (id) => tabs.find((tab) => tab.id === id)?.button ?? null,
