@@ -1,0 +1,8 @@
+Macusanite 0.1.18. The canvas's right edge is now two panels you can place, float and fold on their own.
+
+## Highlights
+- **Two panels, two grips.** The navigator and the inspector are separate cards on the canvas's right edge, each with its own grip and fold handle. Either can be open at once, each grip drags its card to any height along the edge, and the two keep clear of each other open or folded. Every place is saved with the vault as a share of the edge, so a window change moves nothing; **Settings → Worldbuilding → Centre the panels** puts the pair back in the middle.
+- **Pop out, pop in.** **Pop out** in either head sends that panel to a card over the canvas, moved by the grip in its head and kept clear of the other card. The **›** in the card's head — the same arrow its rail shows on the edge — brings it home, and where a card was left is kept with the vault.
+- **A folded inspector peeks.** Selecting a card while the inspector is folded into its tab opens it for seven seconds, with a hairline under its head burning down with the time left; each new card starts the count again. Opening the panel by hand keeps it open. The duration is **Settings → Worldbuilding → Inspector peek**, and 0 keeps it open.
+- **The edge gives way.** On a short window, or with a tall card selected, the inspector's own content scrolls under its sticky head instead of the two cards meeting, and the cap is dropped as soon as there is room again.
+- **Settings** gains **Inspector placement**, the **Centre the panels** reset and **Inspector peek**; the inspector's close button now carries the navigator's ⇥ mark, and Reset tutorials lives in a new **Help and Guidance** section above Updates. The Worldbuilding section reads as two columns.
