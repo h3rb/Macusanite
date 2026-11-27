@@ -11,7 +11,32 @@ import {
   platformForArtifact,
   readPreviousManifest,
   readSignedArtifacts,
+  supersededInstallers,
 } from '../../scripts/collect-release.mjs';
+
+test('a replaced installer takes its signature with it', () => {
+  const names = [
+    'Macusanite_0.1.0_x64-setup.exe',
+    'Macusanite_0.1.0_x64-setup.exe.sig',
+    'Macusanite_0.1.16_x64-setup.exe',
+    'Macusanite_0.1.16_x64-setup.exe.sig',
+    'Macusanite_0.1.17_x64-setup.exe',
+    'Macusanite_0.1.17_x64-setup.exe.sig',
+  ];
+  assert.deepEqual([...supersededInstallers(names)].sort(), [
+    'Macusanite_0.1.0_x64-setup.exe',
+    'Macusanite_0.1.0_x64-setup.exe.sig',
+    'Macusanite_0.1.16_x64-setup.exe',
+    'Macusanite_0.1.16_x64-setup.exe.sig',
+  ], 'the older installers and their signatures are the ones replaced');
+
+  // A new installer replaces nothing, and an architecture never replaces another.
+  assert.equal(supersededInstallers(['Macusanite_0.1.17_x64-setup.exe']).size, 0);
+  assert.equal(supersededInstallers([
+    'Macusanite_0.1.16_aarch64-setup.exe',
+    'Macusanite_0.1.17_x64-setup.exe',
+  ]).size, 0);
+});
 
 // `release/` is shared by every build host, so the manifest step sees installers
 // from both and must describe all of them at once — the merge that used to be

@@ -79,6 +79,36 @@ export function artifactVersion(name) {
   return match ? parseVersion(match[1]) : null;
 }
 
+/** Order two parsed versions; a missing one counts as the oldest. */
+function compareVersion(a, b) {
+  if (!a || !b) return 0;
+  for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
+  return String(a[3]).localeCompare(String(b[3]));
+}
+
+/**
+ * The leftovers of an older build that a newer one replaces: a setup installer
+ * that a newer installer of the same architecture supersedes, together with its
+ * `.sig`. The signature is named here as well, so removing the installer never
+ * leaves a copy entry pointing at a file that is already gone.
+ */
+export function supersededInstallers(names = []) {
+  const list = names.map((name) => String(name ?? ''));
+  const superseded = new Set();
+  for (const name of list) {
+    if (!/-setup\.exe$/i.test(name)) continue;
+    const version = artifactVersion(name);
+    const arm = name.toLowerCase().includes('aarch64');
+    const newer = list.some((other) => other !== name && /-setup\.exe$/i.test(other)
+      && other.toLowerCase().includes('aarch64') === arm
+      && compareVersion(artifactVersion(other), version) > 0);
+    if (!newer) continue;
+    superseded.add(name);
+    superseded.add(`${name}.sig`);
+  }
+  return superseded;
+}
+
 /** Prefer the first listed kind when a platform has more than one artifact. */
 export const PLATFORM_PREFERENCE = [/setup\.exe$/i, /\.app\.tar\.gz$/i, /\.appimage$/i, /\.msi$/i];
 
@@ -166,6 +196,8 @@ export function readSignedArtifacts(dir) {
 /* ── the command itself ────────────────────────────────────────────────── */
 
 function bytes(path) {
+  // A file pruned between copying and reporting has no size to report.
+  if (!existsSync(path)) return 0;
   const stat = statSync(path);
   if (!stat.isDirectory()) return stat.size;
   let total = 0;
@@ -220,12 +252,14 @@ function collect() {
   // new binary looking current. Other kinds are not this build's business, so
   // the other host's artifacts stay put.
   const STALE_PATTERNS = {
-    nsis: /^Macusanite_.*-setup\.exe$/,
-    deb: /\.deb$/,
-    appimage: /\.AppImage$/,
+    // Each pattern takes the signature file too, so a replaced installer never
+    // leaves its `.sig` behind with nothing to sign.
+    nsis: /^Macusanite_.*-setup\.exe(?:\.sig)?$/,
+    deb: /\.deb(?:\.sig)?$/,
+    appimage: /\.AppImage(?:\.sig)?$/,
     // Tauri puts both macOS bundles in bundle/macos/: the .app directory and
     // the .dmg that wraps it.
-    macos: /^Macusanite\.app$|\.dmg$/,
+    macos: /^Macusanite\.app$|\.dmg(?:\.sig)?$/,
   };
   for (const { kind, names } of bundles) {
     const pattern = STALE_PATTERNS[kind];
@@ -239,27 +273,14 @@ function collect() {
 
   // A stale installer left in the bundle dir by an earlier build must not win
   // selection: its URL would be paired with the new build's signature, and the
-  // updater would reject the artifact. Keep only the newest setup exe per arch.
-  function compareVersion(a, b) {
-    if (!a || !b) return 0;
-    for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
-    return String(a[3]).localeCompare(String(b[3]));
-  }
-  for (const name of [...copied]) {
-    if (!/-setup\.exe$/i.test(name)) continue;
-    const version = artifactVersion(name);
-    const newer = copied.find(
-      (other) => other !== name && /-setup\.exe$/i.test(other)
-        && (other.toLowerCase().includes('aarch64') === name.toLowerCase().includes('aarch64'))
-        && compareVersion(artifactVersion(other), version) > 0,
-    );
-    if (newer) {
-      rmSync(join(to, name), { recursive: true, force: true });
-      rmSync(join(to, `${name}.sig`), { force: true });
-      copied.splice(copied.indexOf(name), 1);
-      const bundle = bundles.find((entry) => entry.names.includes(name));
-      if (bundle) bundle.names.splice(bundle.names.indexOf(name), 1);
-    }
+  // updater would reject the artifact. Keep only the newest setup exe per arch,
+  // and forget each replaced installer's signature along with it.
+  for (const name of supersededInstallers(copied)) {
+    rmSync(join(to, name), { recursive: true, force: true });
+    const at = copied.indexOf(name);
+    if (at >= 0) copied.splice(at, 1);
+    const bundle = bundles.find((entry) => entry.names.includes(name));
+    if (bundle) bundle.names.splice(bundle.names.indexOf(name), 1);
   }
 
   for (const name of copied) console.log(`release/${name}  ${megabytes(bytes(join(to, name)))}`);
